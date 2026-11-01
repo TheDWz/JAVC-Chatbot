@@ -1,5 +1,6 @@
 // Connection profiles: pure state functions (no Electron) so they can be unit-tested.
 // Stored profile: {id, name, endpoint, model, format, meta, keyEnc | keyPlain}. Keys are opaque here; main.js encrypts them.
+const Lib = require('./lib');
 const TEMPLATES = [
   { id: 'nanogpt', name: 'NanoGPT', endpoint: 'https://nano-gpt.com/api/v1' },
   { id: 'openrouter', name: 'OpenRouter', endpoint: 'https://openrouter.ai/api/v1' },
@@ -35,25 +36,29 @@ function migrate(raw) {
   return finishState(state, raw);
 }
 
-// Personas: {id, name, user, bot, prompt}. 'default' always exists and can't be deleted. `rich` (tell the model it may reply with HTML) defaults to on.
+// Personas: {id, name, user, bot, prompt}. 'default' always exists and can't be deleted. `render` (which reply formats are shown and hinted) and `theme` have defaults; `rich` is the old single switch.
 const str = (v) => (typeof v === 'string' ? v : '');
 function finishState(state, raw) {
   const personas = (Array.isArray(raw?.personas) ? raw.personas : []).filter((p) => p && typeof p.id === 'string' && p.id)
     .map((p) => ({ id: p.id, name: str(p.name), user: str(p.user), bot: str(p.bot), prompt: str(p.prompt) }));
   if (!personas.some((p) => p.id === 'default')) personas.unshift({ id: 'default', name: 'Default', user: '', bot: '', prompt: '' });
-  return { ...state, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', rich: raw?.rich !== false };
+  const richOff = raw?.rich === false; // old single switch: off meant "no HTML/CSS/JS", Markdown stayed on
+  const r = raw?.render && typeof raw.render === 'object' ? raw.render : {};
+  const render = Object.fromEntries(Lib.RENDER_KEYS.map((k) => [k, typeof r[k] === 'boolean' ? r[k] : !(richOff && k !== 'markdown')]));
+  return { ...state, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
 }
 
 const newId = () => 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-// Insert or update a profile and make it active. Key fields in `p` replace the stored key only when present.
+// Insert a profile (made active) or update one (active profile unchanged). Key fields in `p` replace the stored key only when present.
 function upsert(state, p) {
   const profiles = state.profiles.map((x) => ({ ...x }));
   let target = p.id && profiles.find((x) => x.id === p.id);
   if (!target) { target = { id: newId(), model: '', format: 'auto', meta: false }; profiles.push(target); }
   for (const k of ['name', 'endpoint', 'format', 'model', 'meta']) if (p[k] !== undefined) target[k] = p[k];
   if (p.keyEnc !== undefined || p.keyPlain !== undefined) { for (const k of KEY_FIELDS) delete target[k]; Object.assign(target, keyOf(p)); }
-  return { ...state, profiles, activeId: target.id };
+  const editing = p.id && state.profiles.some((x) => x.id === p.id) && state.profiles.some((x) => x.id === state.activeId);
+  return { ...state, profiles, activeId: editing ? state.activeId : target.id }; // a new profile becomes active; editing another one doesn't switch
 }
 
 function remove(state, id) {
@@ -64,7 +69,7 @@ function remove(state, id) {
 // What the window gets: never the keys themselves.
 function publicView(state) {
   return {
-    activeId: state.activeId, effort: state.effort, templates: TEMPLATES, personas: state.personas, personaId: state.personaId, rich: state.rich,
+    activeId: state.activeId, effort: state.effort, templates: TEMPLATES, personas: state.personas, personaId: state.personaId, render: state.render, theme: state.theme,
     profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, ...rest }) => ({
       id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, hasKey: hasKey(rest),
     })),

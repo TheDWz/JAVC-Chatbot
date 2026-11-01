@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const api = require('./api');
@@ -9,13 +9,23 @@ const makeStore = require('./store');
 // Rich replies (HTML/CSS/JS from the model) run in sandboxed iframes loaded from this scheme. Being a non-local scheme,
 // the documents don't inherit the app's CSP; the `sandbox` header and attribute keep them in an opaque origin with no access to the app.
 protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
-const richDocs = new Map();
+const richDocs = new Map(); // id -> {doc, csp}
 const safeColor = (c) => (typeof c === 'string' && /^[\w#(),.\s%/-]{1,60}$/.test(c) ? c : '#888');
-const richDoc = (html, color, scheme) => `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${scheme}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:${scheme}}html,body{margin:0;background:transparent}body{color:${color};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}</style></head><body>${html}<script>(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()</script></body></html>`;
-ipcMain.handle('sandbox:create', (_e, html, color, scheme) => {
+const RESIZE = '(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()';
+const sha = (s) => `'sha256-${createHash('sha256').update(s).digest('base64')}'`;
+// css/js off => the frame's CSP only allows our own <style> and resize <script> (by hash, which a script can't read back like a nonce).
+// shortcut: with CSS off but JS on, scripts can still set element.style from JS (CSSOM isn't covered by CSP); fine for a display preference.
+function richDoc(html, color, scheme, { css, js }) {
+  const style = `:root{color-scheme:${scheme}}html,body{margin:0;background:transparent}body{color:${color};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}`;
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${scheme}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${style}</style></head><body>${html}<script>${RESIZE}</script></body></html>`;
+  const csp = ['sandbox allow-scripts', !css && `style-src ${sha(style)}`, !js && `script-src ${sha(RESIZE)}`].filter(Boolean).join('; ');
+  return { doc, csp };
+}
+ipcMain.handle('sandbox:create', (_e, html, color, scheme, flags) => {
   if (typeof html !== 'string' || html.length > 2_000_000) throw new Error('This content is too large to display');
   const id = randomUUID();
-  richDocs.set(id, richDoc(html, safeColor(color), scheme === 'light' ? 'light' : 'dark')); // must match the app's scheme or the frame gets an opaque white background
+  // scheme must match the app's or the frame gets an opaque white background
+  richDocs.set(id, richDoc(html, safeColor(color), scheme === 'light' ? 'light' : 'dark', { css: flags?.css !== false, js: flags?.js !== false }));
   if (richDocs.size > 300) richDocs.delete(richDocs.keys().next().value);
   return 'chatbot-sandbox://doc/' + id;
 });
@@ -76,9 +86,9 @@ app.whenReady().then(() => {
   });
   win.setMenu(null);
   protocol.handle('chatbot-sandbox', (req) => {
-    const doc = richDocs.get(new URL(req.url).pathname.slice(1));
-    return doc
-      ? new Response(doc, { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': 'sandbox allow-scripts' } })
+    const rec = richDocs.get(new URL(req.url).pathname.slice(1));
+    return rec
+      ? new Response(rec.doc, { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': rec.csp } })
       : new Response('Not found', { status: 404 });
   });
   // Rich content gets no camera, microphone, location, notifications, etc.
