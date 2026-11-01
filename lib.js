@@ -81,7 +81,7 @@
       out.push('You may also write raw HTML' + (extra.length ? ' with ' + extra.join(' and ') : ' only (CSS and JavaScript are switched off)')
         + ' directly in a reply, starting each HTML block at the beginning of a line and not inside a code fence. It renders live in a sandboxed frame with internet access'
         + (js ? ', so CDN libraries work' : '') + '. Use it when visuals help, such as charts, diagrams, interactive demos or styled layouts, and keep ordinary answers in plain '
-        + (markdown ? 'Markdown' : 'text') + '. Show code the user should read rather than run in a fenced code block.');
+        + (markdown ? 'Markdown' : 'text') + '.' + (markdown ? ' Show code the user should read rather than run in a fenced code block.' : ''));
     }
     return out.join(' ');
   };

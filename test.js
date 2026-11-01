@@ -400,6 +400,7 @@ test('Lib.renderHint only mentions what is switched on', () => {
   assert.match(h({ css: false, js: false }), /HTML only \(CSS and JavaScript are switched off\)/);
   assert.doesNotMatch(h({ html: false }), /HTML/); assert.match(h({ html: false }), /Markdown/);
   assert.match(h({ markdown: false }), /plain text, so do not use Markdown/);
+  assert.match(h({}), /fenced code block/); assert.doesNotMatch(h({ markdown: false }), /fenced|code block/); // fences would show as literal backticks
   assert.match(h({ markdown: false, html: false }), /plain text\. Do not use Markdown or HTML/);
 });
 

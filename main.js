@@ -14,11 +14,12 @@ const safeColor = (c) => (typeof c === 'string' && /^[\w#(),.\s%/-]{1,60}$/.test
 const RESIZE = '(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()';
 const sha = (s) => `'sha256-${createHash('sha256').update(s).digest('base64')}'`;
 // css/js off => the frame's CSP only allows our own <style> and resize <script> (by hash, which a script can't read back like a nonce).
+// js off also blocks child frames/objects/embeds: a remote child document isn't covered by our script-src and would run its own scripts.
 // shortcut: with CSS off but JS on, scripts can still set element.style from JS (CSSOM isn't covered by CSP); fine for a display preference.
 function richDoc(html, color, scheme, { css, js }) {
   const style = `:root{color-scheme:${scheme}}html,body{margin:0;background:transparent}body{color:${color};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}`;
   const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${scheme}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${style}</style></head><body>${html}<script>${RESIZE}</script></body></html>`;
-  const csp = ['sandbox allow-scripts', !css && `style-src ${sha(style)}`, !js && `script-src ${sha(RESIZE)}`].filter(Boolean).join('; ');
+  const csp = ['sandbox allow-scripts', !css && `style-src ${sha(style)}`, !js && `script-src ${sha(RESIZE)}; frame-src 'none'; object-src 'none'`].filter(Boolean).join('; ');
   return { doc, csp };
 }
 ipcMain.handle('sandbox:create', (_e, html, color, scheme, flags) => {
