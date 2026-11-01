@@ -1,0 +1,94 @@
+const { app, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
+const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const api = require('./api');
+const makeChats = require('./chats');
+const makeStore = require('./store');
+
+// Rich replies (HTML/CSS/JS from the model) run in sandboxed iframes loaded from this scheme. Being a non-local scheme,
+// the documents don't inherit the app's CSP; the `sandbox` header and attribute keep them in an opaque origin with no access to the app.
+protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+const richDocs = new Map();
+const safeColor = (c) => (typeof c === 'string' && /^[\w#(),.\s%/-]{1,60}$/.test(c) ? c : '#888');
+const richDoc = (html, color, scheme) => `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${scheme}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:${scheme}}html,body{margin:0;background:transparent}body{color:${color};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}</style></head><body>${html}<script>(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()</script></body></html>`;
+ipcMain.handle('sandbox:create', (_e, html, color, scheme) => {
+  if (typeof html !== 'string' || html.length > 2_000_000) throw new Error('This content is too large to display');
+  const id = randomUUID();
+  richDocs.set(id, richDoc(html, safeColor(color), scheme === 'light' ? 'light' : 'dark')); // must match the app's scheme or the frame gets an opaque white background
+  if (richDocs.size > 300) richDocs.delete(richDocs.keys().next().value);
+  return 'chatbot-sandbox://doc/' + id;
+});
+
+try { // the app was called "chatbot" before the JAVC rename; bring its settings and chats along
+  const moved = makeStore.migrateLegacy(path.join(app.getPath('appData'), 'chatbot'), app.getPath('userData'));
+  if (moved.length) console.log('Moved from the old chatbot folder:', moved.join(', '));
+} catch (e) { console.error('Could not move data from the old chatbot folder:', e); }
+
+const store = makeStore({
+  file: path.join(app.getPath('userData'), 'settings.json'),
+  crypto: {
+    available: () => safeStorage.isEncryptionAvailable(),
+    enc: (t) => safeStorage.encryptString(t).toString('base64'),
+    dec: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
+  },
+});
+
+ipcMain.handle('settings:get', () => ({ ...store.get(), notice: store.takeNotice() }));
+ipcMain.handle('settings:patch', (_e, patch) => store.patch(patch));
+ipcMain.handle('profiles:save', (_e, p) => store.saveProfile(p));
+ipcMain.handle('personas:save', (_e, p) => store.savePersona(p));
+ipcMain.handle('personas:delete', (_e, id) => store.deletePersona(id));
+ipcMain.handle('profiles:delete', (_e, id) => store.deleteProfile(id));
+ipcMain.handle('profiles:activate', (_e, id) => store.activate(id));
+ipcMain.handle('profiles:key', (_e, id) => store.key(id));
+ipcMain.handle('models:list', () => { const s = store.load(); return api.listModelsDetailed(s.endpoint, s.key); });
+
+const running = new Map(); // request id -> AbortController, so the Stop button can cancel a reply
+ipcMain.handle('chat:abort', (_e, id) => running.get(id)?.abort());
+ipcMain.handle('chat:send', async (e, id, messages) => {
+  const s = store.load(), ctl = new AbortController();
+  running.set(id, ctl);
+  const onDelta = (d) => { if (!e.sender.isDestroyed()) e.sender.send('chat:delta', id, d); };
+  try { return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), onDelta, undefined, ctl.signal); }
+  finally { running.delete(id); }
+});
+
+const chats = () => makeChats(path.join(app.getPath('userData'), 'chats'));
+ipcMain.handle('chats:list', () => chats().list());
+ipcMain.handle('chats:load', (_e, id) => chats().load(id));
+ipcMain.handle('chats:save', (_e, chat) => chats().save(chat));
+ipcMain.handle('chats:delete', (_e, id) => chats().remove(id));
+
+ipcMain.handle('pdf:extract', async (_e, buf) => {
+  const { PDFParse } = require('pdf-parse');
+  const parser = new PDFParse({ data: new Uint8Array(buf) });
+  try { return (await parser.getText()).text; }
+  finally { await parser.destroy(); }
+});
+
+app.whenReady().then(() => {
+  const win = new BrowserWindow({
+    width: 900, height: 700, backgroundColor: '#15161a', autoHideMenuBar: true,
+    // shortcut: Wayland ignores this and uses the .desktop file's icon; it matters on Windows and X11.
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  });
+  win.setMenu(null);
+  protocol.handle('chatbot-sandbox', (req) => {
+    const doc = richDocs.get(new URL(req.url).pathname.slice(1));
+    return doc
+      ? new Response(doc, { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': 'sandbox allow-scripts' } })
+      : new Response('Not found', { status: 404 });
+  });
+  // Rich content gets no camera, microphone, location, notifications, etc.
+  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
+  // A clicked link opens in the system browser; the app window never navigates away.
+  const external = (url) => { if (/^(https?:|mailto:)/i.test(url)) shell.openExternal(url); };
+  win.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: 'deny' }; });
+  win.webContents.on('will-navigate', (e, url) => { if (url !== win.webContents.getURL()) { e.preventDefault(); external(url); } });
+  win.loadFile('index.html');
+});
+
+app.on('window-all-closed', () => app.quit());

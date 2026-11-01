@@ -1,0 +1,41 @@
+name: Build packages
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: --linux
+            artifacts: |
+              dist/*.AppImage
+              dist/*.deb
+              dist/*.rpm
+              dist/*.tar.gz
+          - os: windows-latest
+            target: --win
+            artifacts: dist/*.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install rpmbuild
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - run: npm ci
+      - run: npm test
+      - run: npx electron-builder ${{ matrix.target }} --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: javc-chatbot-${{ runner.os }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
