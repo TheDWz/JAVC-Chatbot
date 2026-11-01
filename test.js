@@ -262,7 +262,7 @@ test('store: undecryptable key is a clear error, plaintext keys upgrade, patch n
   assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).profiles[0].keyPlain, undefined);
   store.patch({ effort: 'high', model: 'gpt' }); const v = store.get();
   assert.strictEqual(v.effort, 'high'); assert.strictEqual(v.profiles[0].model, 'gpt');
-  assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600); // Windows has no POSIX modes; %APPDATA% is per-user
   fs.rmSync(dir, { recursive: true });
 });
 
