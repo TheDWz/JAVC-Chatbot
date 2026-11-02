@@ -71,6 +71,7 @@ const SAFE_HREF = /^(https?:|mailto:)/i;
 
 // Harmless inline tags such as <kbd> and <br> survive inside prose; any other tag is dropped and its text kept.
 function htmlish(parent, src, open = []) {
+  if (!state.render.html) { (open.at(-1) ?? parent).append(src); return; } // HTML off: show the raw markup as text
   for (const piece of src.replace(/<!--[\s\S]*?-->/g, '').split(/(<\/?[a-zA-Z][^>]*>)/)) {
     const m = /^<(\/?)([a-zA-Z][\w-]*)[^>]*>$/.exec(piece), at = open.at(-1) ?? parent;
     if (!m) { if (piece) at.append(decode(piece)); continue; }
