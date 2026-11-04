@@ -6,7 +6,10 @@ export const RICH_HEIGHT = 160;
 const frame = (delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Handles /v1/* and returns true; anything else is left to the caller.
+/**
+ * Answers /v1/models and /v1/chat/completions (streamed) and returns true; anything else is left to the caller.
+ * @param {object[]} requests Each request is recorded here ({method, path, auth, body}) so the test can check what was sent.
+ */
 export async function handleApi(req, res, requests) {
   const url = new URL(req.url, 'http://x');
   if (!url.pathname.startsWith('/v1/')) return false;

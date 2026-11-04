@@ -11,6 +11,7 @@ const { makeDisk, migrateLegacy } = require('./disk');
 // the documents don't inherit the app's CSP; the `sandbox` header and attribute keep them in an opaque origin with no access to the app.
 protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const richDocs = new Map(); // id -> {doc, csp}; the page and its CSP come from Lib.richDoc, shared with the Android app
+/** Stores a rich block's page and returns the chatbot-sandbox: URL it's served from (the 300 newest are kept). */
 ipcMain.handle('sandbox:create', async (_e, html, color, scheme, flags) => {
   if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
   const id = randomUUID();
@@ -33,6 +34,7 @@ const store = makeStore({
   },
 });
 
+/** The settings for the page, with any one-time notice (such as a damaged settings file). */
 ipcMain.handle('settings:get', async () => { const st = await store.get(); return { ...st, notice: store.takeNotice() }; });
 ipcMain.handle('settings:patch', (_e, patch) => store.patch(patch));
 ipcMain.handle('profiles:save', (_e, p) => store.saveProfile(p));
@@ -45,6 +47,7 @@ ipcMain.handle('models:list', async () => { const s = await store.load(); return
 
 const running = new Map(); // request id -> AbortController, so the Stop button can cancel a reply
 ipcMain.handle('chat:abort', (_e, id) => running.get(id)?.abort());
+/** Streams a reply: deltas go to the page as 'chat:delta' events; resolves to the full reply. */
 ipcMain.handle('chat:send', async (e, id, messages) => {
   const ctl = new AbortController();
   running.set(id, ctl); // before any await, so Stop works from the first moment

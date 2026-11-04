@@ -22,6 +22,7 @@ s = MARK / 620
 t = 54 - 512 * s
 
 def write(rel, text):
+    """Write `text` to `rel` under the Android res folder, creating folders as needed."""
     f = os.path.join(RES, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
     open(f, 'w').write(text)
 

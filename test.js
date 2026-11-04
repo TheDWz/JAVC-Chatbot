@@ -619,3 +619,80 @@ test('native crypto: a failing Keystore self-test means keys stay in private sto
   assert.strictEqual(JSON.parse(fake.files.get('settings.json')).profiles[0].keyPlain, 'sk-2');
   assert.strictEqual(tries, 1);
 });
+
+// ---- Review fixes: storage that survives interruptions and read errors ----
+test('chat list follows the files: a chat missing from the index appears, a deleted file disappears', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  fs.rmSync(path.join(dir, 'b2.json')); // as if the app stopped between deleting the file and updating the index
+  fs.writeFileSync(path.join(dir, 'c3.json'), JSON.stringify({ id: 'c3', title: 'C', updated: 3, messages: [] })); // saved, index not yet updated
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['c3', 'a1']);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, '_index.json'), 'utf8')).map((c) => c.id).sort(), ['a1', 'c3']); // repaired on disk
+  const before = fs.statSync(path.join(dir, '_index.json')).mtimeMs;
+  await store.list(); assert.strictEqual(fs.statSync(path.join(dir, '_index.json')).mtimeMs, before); // nothing changed: not rewritten
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: a read error leaves settings.json alone instead of treating it as damaged', async () => {
+  const { dir, file, store } = tmpStore();
+  await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' });
+  const flaky = makeStore({ io: { ...makeDisk(dir), read: async () => { throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' }); } }, crypto: rot });
+  await assert.rejects(flaky.get(), /EBUSY/);
+  assert.ok(!fs.existsSync(file + '.bad')); assert.strictEqual(flaky.takeNotice(), '');
+  assert.strictEqual((await store.load()).key, 'sk-1'); // still there once reading works again
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: a second damaged settings file never overwrites the first backup', async () => {
+  const { dir, file, store } = tmpStore();
+  fs.writeFileSync(file, '{first'); await store.get();
+  fs.writeFileSync(file, '{second'); await store.get();
+  assert.strictEqual(fs.readFileSync(file + '.bad', 'utf8'), '{first');
+  assert.strictEqual(fs.readFileSync(file + '.bad-2', 'utf8'), '{second');
+  assert.match(store.takeNotice(), /settings\.json\.bad-2/);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: reading without a settings file writes nothing until something is saved', async () => {
+  const { dir, file, store } = tmpStore();
+  assert.deepStrictEqual((await store.get()).profiles, []);
+  assert.ok(!fs.existsSync(file));
+  await store.patch({ effort: 'low' });
+  assert.ok(fs.existsSync(file));
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('migrateLegacy: an interrupted move is finished on a later launch, merging chats without overwriting', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-')), from = path.join(root, 'chatbot'), to = path.join(root, 'javc-chatbot');
+  fs.mkdirSync(path.join(from, 'chats'), { recursive: true }); fs.mkdirSync(to, { recursive: true });
+  fs.writeFileSync(path.join(to, 'settings.json'), '{"new":1}'); // settings already moved, then the app stopped
+  fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{"a":1}');
+  assert.deepStrictEqual(migrateLegacy(from, to), ['chats']); // the chats left behind still move
+  assert.strictEqual(fs.readFileSync(path.join(to, 'chats', 'a.json'), 'utf8'), '{"a":1}');
+  fs.mkdirSync(path.join(from, 'chats')); // an older copy that shows up again, next to chats the new folder already has
+  fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{"old":1}'); fs.writeFileSync(path.join(from, 'chats', 'b.json'), '{"b":1}');
+  fs.writeFileSync(path.join(from, 'chats', '_index.json'), '[]');
+  assert.deepStrictEqual(migrateLegacy(from, to), [path.join('chats', 'b.json')]);
+  assert.strictEqual(fs.readFileSync(path.join(to, 'chats', 'a.json'), 'utf8'), '{"a":1}'); // never overwritten
+  assert.ok(!fs.existsSync(path.join(to, 'chats', '_index.json'))); // the old index stays behind; chats.js rebuilds its own
+  fs.rmSync(root, { recursive: true });
+});
+
+test('native fetch: a 204 response leaves nothing behind and asks the plugin to abort nothing', async () => {
+  for (const status of [204, 205, 304]) {
+    const h = fakeHttp((req, send) => { send({ type: 'end' }); return { status, headers: {} }; });
+    const res = await h.fetch('http://x');
+    assert.strictEqual(res.status, status); assert.strictEqual(res.body, null);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.deepStrictEqual(h.aborted, []);
+  }
+});
+
+test('Lib.fitSize scales the long side down to the limit, keeps the shape, and never enlarges', () => {
+  assert.deepStrictEqual(Lib.fitSize(4000, 3000, 2048), { w: 2048, h: 1536, scaled: true });
+  assert.deepStrictEqual(Lib.fitSize(3000, 4000, 2048), { w: 1536, h: 2048, scaled: true });
+  assert.deepStrictEqual(Lib.fitSize(800, 600, 2048), { w: 800, h: 600, scaled: false });
+  assert.deepStrictEqual(Lib.fitSize(2048, 2048, 2048), { w: 2048, h: 2048, scaled: false });
+  assert.deepStrictEqual(Lib.fitSize(100000, 10, 2048), { w: 2048, h: 1, scaled: true }); // never 0 px
+});

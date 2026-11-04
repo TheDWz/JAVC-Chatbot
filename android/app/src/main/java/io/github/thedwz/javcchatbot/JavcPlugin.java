@@ -15,21 +15,24 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,8 +60,13 @@ public class JavcPlugin extends Plugin {
 
     private final ExecutorService http = Executors.newCachedThreadPool();
     private final Map<String, HttpURLConnection> requests = new ConcurrentHashMap<>();
-    private final Set<String> stopped = ConcurrentHashMap.newKeySet();
+    private final Set<String> stopped = ConcurrentHashMap.newKeySet(); // stop requested; read by the worker while it streams
+    private final Set<String> active = new HashSet<>(); // started and not finished; guards `stopped` (both under this lock)
 
+    /**
+     * Starts an HTTP request on its own thread. The call resolves with {status, headers} once they arrive; the body then
+     * follows as "http" events ({id, type: data|end|error}), data as base64. Options: id, url, method, headers, body (text).
+     */
     @PluginMethod
     public void httpStart(PluginCall call) {
         final String id = call.getString("id");
@@ -69,6 +77,9 @@ public class JavcPlugin extends Plugin {
         if (id == null || url == null) {
             call.reject("Missing request id or URL");
             return;
+        }
+        synchronized (active) {
+            active.add(id);
         }
         http.execute(() -> {
             HttpURLConnection conn = null;
@@ -116,27 +127,34 @@ public class JavcPlugin extends Plugin {
                     }
                 }
                 emit(id, "end", null);
-            } catch (Exception e) {
-                String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            } catch (Exception | OutOfMemoryError e) { // a huge chat can exhaust memory; report it instead of crashing
+                String msg = e instanceof OutOfMemoryError ? "Not enough memory: this chat is too large to send on this phone" : message(e);
                 if (answered) emit(id, "error", msg);
                 else onMain(() -> call.reject(msg));
             } finally {
                 requests.remove(id);
-                stopped.remove(id);
+                synchronized (active) {
+                    active.remove(id);
+                    stopped.remove(id);
+                }
                 if (conn != null) conn.disconnect();
             }
         });
     }
 
+    /** Stops request `id`. A request that already finished is left alone, so nothing is remembered for it. */
     @PluginMethod
     public void httpAbort(PluginCall call) {
         String id = call.getString("id", "");
-        stopped.add(id);
+        synchronized (active) {
+            if (active.contains(id)) stopped.add(id); // a request that hasn't connected yet sees this and doesn't start
+        }
         HttpURLConnection conn = requests.remove(id);
         if (conn != null) http.execute(conn::disconnect); // disconnecting may wait on the network
         call.resolve();
     }
 
+    /** Sends one "http" event for request `id`: data (base64), end, or error (with a message). */
     private void emit(String id, String type, String value) {
         JSObject ev = new JSObject();
         ev.put("id", id);
@@ -145,13 +163,14 @@ public class JavcPlugin extends Plugin {
         onMain(() -> notifyListeners("http", ev));
     }
 
-    // Everything bound for the page goes through the main thread, so events arrive in the order they were sent.
+    /** Runs `r` on the main thread. Everything bound for the page goes this way, so events arrive in the order they were sent. */
     private void onMain(Runnable r) {
         getBridge().executeOnMainThread(r);
     }
 
     // ---- Files, inside the app's private storage only ----
 
+    /** The file at `rel` inside the app's private files folder; anything that resolves outside it is refused. */
     private File fileAt(String rel) throws IOException {
         File base = getContext().getFilesDir().getCanonicalFile();
         File f = new File(base, rel == null ? "" : rel).getCanonicalFile();
@@ -159,26 +178,23 @@ public class JavcPlugin extends Plugin {
         return f;
     }
 
+    /** Reads a text file: {exists, text}. A missing file is {exists: false}, not an error. */
     @PluginMethod
     public void fsRead(PluginCall call) {
         try {
             File f = fileAt(call.getString("path"));
             JSObject r = new JSObject();
             r.put("exists", f.isFile());
-            if (f.isFile()) {
-                try (InputStream in = new FileInputStream(f)) {
-                    ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(f.length(), Integer.MAX_VALUE));
-                    byte[] buf = new byte[65536];
-                    for (int n; (n = in.read(buf)) != -1; ) out.write(buf, 0, n);
-                    r.put("text", new String(out.toByteArray(), StandardCharsets.UTF_8));
-                }
-            }
+            if (f.isFile()) r.put("text", new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8)); // one copy of the bytes, not two
             call.resolve(r);
+        } catch (OutOfMemoryError e) {
+            call.reject("Not enough memory: this chat is too large to open on this phone");
         } catch (Exception e) {
             call.reject(message(e));
         }
     }
 
+    /** Writes a text file atomically: to a .tmp file first, then renamed over the old one, so a crash can't leave half a file. */
     @PluginMethod
     public void fsWrite(PluginCall call) {
         try {
@@ -186,17 +202,21 @@ public class JavcPlugin extends Plugin {
             File tmp = new File(f.getPath() + ".tmp");
             File dir = f.getParentFile();
             if (dir != null && !dir.isDirectory() && !dir.mkdirs()) throw new IOException("Could not create " + dir.getName());
-            try (FileOutputStream out = new FileOutputStream(tmp)) {
-                out.write(call.getString("text", "").getBytes(StandardCharsets.UTF_8));
-                out.getFD().sync();
+            try (FileOutputStream fos = new FileOutputStream(tmp); Writer w = new BufferedWriter(new OutputStreamWriter(fos, StandardCharsets.UTF_8), 65536)) {
+                w.write(call.getString("text", "")); // encoded as it goes, instead of building the whole file as bytes first
+                w.flush();
+                fos.getFD().sync();
             }
-            if (!tmp.renameTo(f)) throw new IOException("Could not save " + f.getName()); // a crash mid-write can't leave a half-written file
+            if (!tmp.renameTo(f)) throw new IOException("Could not save " + f.getName());
             call.resolve();
+        } catch (OutOfMemoryError e) {
+            call.reject("Not enough memory to save this chat on this phone");
         } catch (Exception e) {
             call.reject(message(e));
         }
     }
 
+    /** Deletes a file; a file that is already gone is fine. */
     @PluginMethod
     public void fsRemove(PluginCall call) {
         try {
@@ -208,6 +228,7 @@ public class JavcPlugin extends Plugin {
         }
     }
 
+    /** The names in a folder: {names}; a missing folder gives an empty list. */
     @PluginMethod
     public void fsList(PluginCall call) {
         try {
@@ -220,6 +241,7 @@ public class JavcPlugin extends Plugin {
         }
     }
 
+    /** Renames a file, replacing any file already at the new name. */
     @PluginMethod
     public void fsRename(PluginCall call) {
         try {
@@ -236,6 +258,7 @@ public class JavcPlugin extends Plugin {
     private static final String KEY_ALIAS = "javc-api-keys";
     private static final int IV_BYTES = 12;
 
+    /** The app's AES key in the Android Keystore, created on first use. */
     private SecretKey secretKey() throws Exception {
         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
         ks.load(null);
@@ -252,6 +275,7 @@ public class JavcPlugin extends Plugin {
         return g.generateKey();
     }
 
+    /** Encrypts `text` with a fresh IV; returns base64(iv | ciphertext). */
     private String encryptText(String text) throws Exception {
         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
         c.init(Cipher.ENCRYPT_MODE, secretKey());
@@ -263,6 +287,7 @@ public class JavcPlugin extends Plugin {
         return Base64.encodeToString(out, Base64.NO_WRAP);
     }
 
+    /** Decrypts what encryptText produced; throws if the data was changed or the key is not the one it was made with. */
     private String decryptText(String data) throws Exception {
         byte[] all = Base64.decode(data, Base64.NO_WRAP);
         if (all.length <= IV_BYTES) throw new IllegalArgumentException("Not an encrypted key");
@@ -271,6 +296,7 @@ public class JavcPlugin extends Plugin {
         return new String(c.doFinal(all, IV_BYTES, all.length - IV_BYTES), StandardCharsets.UTF_8);
     }
 
+    /** Whether the Keystore works on this device: {available}. Some devices have a broken one, so this is a real round trip. */
     @PluginMethod
     public void cryptoAvailable(PluginCall call) {
         boolean ok;
@@ -284,6 +310,7 @@ public class JavcPlugin extends Plugin {
         call.resolve(r);
     }
 
+    /** Encrypts an API key: {text} in, {data} out. */
     @PluginMethod
     public void encrypt(PluginCall call) {
         try {
@@ -295,6 +322,7 @@ public class JavcPlugin extends Plugin {
         }
     }
 
+    /** Decrypts an API key: {data} in, {text} out. */
     @PluginMethod
     public void decrypt(PluginCall call) {
         try {
@@ -320,6 +348,10 @@ public class JavcPlugin extends Plugin {
         }
     );
 
+    /**
+     * Stores a rich-reply page and its Content-Security-Policy ({html, csp}) and returns its URL ({url}). The policy must be
+     * "sandbox allow-scripts", optionally followed by more rules, so every page runs in an opaque origin.
+     */
     @PluginMethod
     public void sandboxCreate(PluginCall call) {
         String html = call.getString("html");
@@ -340,6 +372,7 @@ public class JavcPlugin extends Plugin {
         call.resolve(r);
     }
 
+    /** The response for a request to the sandbox host: the stored page with its policy, or a 404. Called by MainActivity's WebViewClient. */
     static WebResourceResponse serveSandbox(Uri url) {
         String path = url.getPath();
         String[] doc = path != null && path.startsWith("/doc/") ? docs.get(path.substring(5)) : null;
@@ -352,6 +385,7 @@ public class JavcPlugin extends Plugin {
 
     // ---- Clipboard ----
 
+    /** Copies {text} to the clipboard. */
     @PluginMethod
     public void copyText(PluginCall call) {
         String text = call.getString("text", "");
@@ -366,7 +400,8 @@ public class JavcPlugin extends Plugin {
         });
     }
 
-    private static String message(Exception e) {
+    /** A readable message for an error, falling back to its type when it has none. */
+    private static String message(Throwable e) {
         return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     }
 }

@@ -3,8 +3,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// io: { read(name) -> text | null when missing, write(name, text), remove(name), list() -> names, rename(from, to) }
+/**
+ * File access rooted at one folder, with flat file names.
+ * @param {string} root The folder.
+ * @returns {{read(name): Promise<string|null>, write(name, text): Promise<void>, remove(name): Promise<void>, list(): Promise<string[]>, rename(from, to): Promise<void>}}
+ *   `read` gives null for a missing file; `write` is atomic and owner-only; `remove` of a missing file is fine; `list` of a missing folder is [].
+ */
 function makeDisk(root) {
+  /** The full path of `name`, which must be a plain file name (no folders, no `..`). */
   const at = (name) => {
     if (typeof name !== 'string' || !name || /[\\/]/.test(name) || name === '.' || name === '..') throw new Error('Invalid file name');
     return path.join(root, name);
@@ -27,14 +33,20 @@ function makeDisk(root) {
   };
 }
 
-// One-time move of settings and chats from an old data folder (the app was named "chatbot" before the JAVC rename).
-// Item by item, because Electron may already have created the new folder; nothing in `to` is ever overwritten.
+/**
+ * Moves settings and chats from the old data folder (the app was named "chatbot" before the JAVC rename).
+ * Each item moves on its own and is retried on every launch, so a move that was interrupted is finished later.
+ * Nothing in `to` is ever overwritten: settings only move into a folder that has none, and chats are merged file by
+ * file into an existing chats folder (chats.js adds files that aren't in its index).
+ * @returns {string[]} What was moved.
+ */
 function migrateLegacy(from, to) {
-  if (fs.existsSync(path.join(to, 'settings.json')) || !fs.existsSync(path.join(from, 'settings.json'))) return [];
-  fs.mkdirSync(to, { recursive: true });
-  const moved = [];
-  for (const name of ['settings.json', 'settings.json.bad', 'chats']) {
-    if (fs.existsSync(path.join(from, name)) && !fs.existsSync(path.join(to, name))) { fs.renameSync(path.join(from, name), path.join(to, name)); moved.push(name); }
+  const moved = [], has = (...p) => fs.existsSync(path.join(...p));
+  const move = (name) => { fs.mkdirSync(path.dirname(path.join(to, name)), { recursive: true }); fs.renameSync(path.join(from, name), path.join(to, name)); moved.push(name); };
+  for (const name of ['settings.json', 'settings.json.bad']) if (has(from, name) && !has(to, name)) move(name);
+  if (has(from, 'chats')) {
+    if (!has(to, 'chats')) move('chats');
+    else for (const n of fs.readdirSync(path.join(from, 'chats'))) if (n.endsWith('.json') && n !== '_index.json' && !has(to, 'chats', n)) move(path.join('chats', n));
   }
   return moved;
 }

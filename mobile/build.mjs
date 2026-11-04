@@ -18,6 +18,7 @@ await build({
   bundle: true, format: 'iife', platform: 'browser', target: 'chrome123', legalComments: 'eof', logLevel: 'warning',
 });
 
+/** Copies a file from the repository into www/. */
 const copy = (from, to = from) => fs.copyFileSync(path.join(root, from), path.join(out, to));
 copy('renderer.js');
 copy('lib.js');
@@ -26,6 +27,7 @@ copy('node_modules/pdf-parse/dist/pdf-parse/web/pdf-parse.es.js', 'vendor/pdf-pa
 copy('node_modules/pdf-parse/dist/pdf-parse/web/pdf.worker.mjs', 'vendor/pdf.worker.mjs');
 
 let html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+/** Replaces one piece of index.html for Android; fails the build if index.html no longer has it, so a change can't slip through. */
 const swap = (from, to) => {
   if (!html.includes(from)) throw new Error(`index.html no longer contains ${JSON.stringify(from)}; update mobile/build.mjs to match`);
   html = html.replace(from, to);

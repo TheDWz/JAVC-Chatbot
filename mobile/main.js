@@ -16,6 +16,7 @@ const chats = makeChats(makeNativeDisk(Javc, 'chats'));
 let current = null; // the reply in progress; the page runs one at a time and locks everything else meanwhile
 let pdfParse = null;
 const asset = (p) => new URL(p, location.href).href;
+/** pdf-parse's browser build, loaded the first time a PDF is attached (and again if that load failed). */
 const loadPdfParse = () => (pdfParse ??= import(asset('vendor/pdf-parse.es.js')).then(
   (m) => { m.PDFParse.setWorker(asset('vendor/pdf.worker.mjs')); return m.PDFParse; },
   (e) => { pdfParse = null; throw e; },
@@ -30,13 +31,14 @@ window.api = {
   deleteProfile: (id) => store.deleteProfile(id),
   activateProfile: (id) => store.activate(id),
   getProfileKey: (id) => store.key(id),
+  /** Stores a rich block's page in the plugin and returns the sandbox-host URL it's served from. */
   async createSandbox(html, color, scheme, flags) {
     if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
     const { doc, csp } = await Lib.richDoc(html, color, scheme, flags); // csp switches CSS/JavaScript off, as on the desktop
     return (await Javc.sandboxCreate({ html: doc, csp })).url;
   },
   listModels: async () => { const s = await store.load(); return api.listModelsDetailed(s.endpoint, s.key, nativeFetch); },
-  // Streams: onDelta gets {reasoning, content} pieces as they arrive; resolves to the full reply.
+  /** Streams a reply: onDelta gets {reasoning, content} pieces as they arrive; resolves to the full reply. */
   async chat(messages, onDelta) {
     const ctl = (current = new AbortController());
     try {
@@ -49,7 +51,7 @@ window.api = {
   loadChat: (id) => chats.load(id),
   saveChat: (chat) => chats.save(chat),
   deleteChat: (id) => chats.remove(id),
-  // Same pdf-parse as the desktop, in its browser build; the text never leaves the phone.
+  /** A PDF's text, with the same pdf-parse as the desktop (its browser build); the text never leaves the phone. */
   async extractPdf(buf) {
     const PDFParse = await loadPdfParse();
     const parser = new PDFParse({ data: new Uint8Array(buf) });

@@ -22,6 +22,7 @@ await new Promise((r) => server.listen(8787, '0.0.0.0', r)); // the emulator rea
 const [device] = await _android.devices();
 if (!device) throw new Error('No Android device found');
 log('Device', device.model(), 'serial', device.serial());
+/** Runs an adb shell command on the device and returns its output. */
 const sh = async (cmd) => (await device.shell(cmd)).toString();
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -38,9 +39,12 @@ try {
   page.on('console', (m) => { if (!['startGroupCollapsed', 'startGroup', 'endGroup', 'dir'].includes(m.type())) log(`[page ${m.type()}]`, m.text()); });
   page.on('pageerror', (e) => log('[page error]', e.message));
 
-  // A real Back key event, which reaches the page through Capacitor's App plugin. While the on-screen keyboard is up,
-  // Android gives Back to the keyboard first (that's normal), so let it close before pressing.
-  const keyboardUp = async () => /\bmInputShown=true\b/.test(await sh('dumpsys input_method')); // (mIsInputViewShown stays true after it closes)
+  /** Whether the on-screen keyboard is showing (mIsInputViewShown stays true after it closes, so it isn't used). */
+  const keyboardUp = async () => /\bmInputShown=true\b/.test(await sh('dumpsys input_method'));
+  /**
+   * A real Back key event, which reaches the page through Capacitor's App plugin. While the on-screen keyboard is up,
+   * Android gives Back to the keyboard first (that's normal), so let it close before pressing.
+   */
   const back = async () => {
     await page.evaluate(() => { const a = document.activeElement; if (a?.matches?.('input, textarea')) a.blur(); });
     let waited = 0;

@@ -2,9 +2,10 @@
 // stream a reply with a rich block, read a PDF. `page` is a Playwright page; `back` presses the platform's back button.
 import { MODEL, REPLY, RICH_HEIGHT } from './mock-api.mjs';
 
+/** Fails the smoke test with `what` unless `ok`. */
 const check = (ok, what) => { if (!ok) throw new Error('Smoke check failed: ' + what); };
 
-// A one-page PDF with a line of text, built by hand so the test needs no files.
+/** A one-page PDF with a line of text, as base64, built by hand so the test needs no files. */
 function tinyPdf(text) {
   const content = `BT /F1 18 Tf 20 70 Td (${text}) Tj ET`;
   const objs = [
@@ -22,6 +23,11 @@ function tinyPdf(text) {
   return Buffer.from(pdf, 'latin1').toString('base64');
 }
 
+/**
+ * Runs the walk-through; throws on the first check that fails.
+ * @param {import('playwright').Page} page The app's page.
+ * @param {{endpoint: string, key: string, back: () => Promise<void>, log?: Function}} opts The mock API's endpoint and key, and how to press Back.
+ */
 export async function runFlow(page, { endpoint, key, back, log = console.log }) {
   log('Waiting for the first-run profile dialog');
   await page.waitForSelector('#settings[open]', { timeout: 60_000 });
@@ -74,8 +80,29 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   });
   check(jsOff.sized && !jsOff.ran, `the frame's own resize script ran and the model's did not (${JSON.stringify(jsOff)})`);
 
-  log('Chat is saved');
+  log('A frame cannot reach the native bridge');
+  const bridge = await page.evaluate(async () => {
+    // Runs in a rich-reply frame, as model-written code would. If the bridge were ever exposed to frames (for example
+    // through Capacitor's addJavascriptInterface fallback), `androidBridge` would be defined here.
+    const probe = '<script>let parentCap; try { parentCap = typeof parent.Capacitor; } catch { parentCap = "blocked"; }'
+      + 'let call = "none"; try { if (window.androidBridge) { androidBridge.postMessage(JSON.stringify({ type: "message", callbackId: "x", pluginId: "Javc", methodName: "fsList", options: { path: "" } })); call = "sent"; } } catch (e) { call = "threw"; }'
+      + 'parent.postMessage({ probe: { bridge: typeof androidBridge, cap: typeof Capacitor, parentCap, call } }, "*")</script>';
+    const src = await window.api.createSandbox(probe, '#888', 'dark', { css: true, js: true });
+    const f = document.createElement('iframe');
+    const got = await new Promise((ok) => {
+      const on = (e) => { if (e.source === f.contentWindow && e.data?.probe) { removeEventListener('message', on); ok(e.data.probe); } };
+      addEventListener('message', on); setTimeout(() => ok(null), 5000);
+      f.setAttribute('sandbox', 'allow-scripts'); f.src = src; document.body.append(f);
+    });
+    f.remove(); return got;
+  });
+  check(bridge && bridge.bridge === 'undefined' && bridge.cap === 'undefined' && bridge.parentCap === 'blocked' && bridge.call === 'none',
+    `no bridge, no Capacitor and no way into the app from a frame (${JSON.stringify(bridge)})`);
+
+  log('Chat is saved and opens again');
   await page.waitForFunction(() => document.querySelectorAll('.chat-item').length === 1, null, { timeout: 10_000 });
+  const saved = await page.evaluate(async () => (await window.api.loadChat((await window.api.listChats())[0].id)).messages.length);
+  check(saved >= 2, `the saved chat loads with its messages (got ${saved})`);
 
   log('Reading a PDF on the device');
   const text = await page.evaluate(async (b64) => window.api.extractPdf(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer), tinyPdf('JAVC PDF OK'));
