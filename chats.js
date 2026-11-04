@@ -20,12 +20,17 @@ module.exports = (io) => {
   const chatFiles = async () => {
     try { return (await io.list()).filter((n) => n.endsWith('.json') && n !== INDEX); } catch { return null; }
   };
-  /** Index entries read from the given chat files; a corrupt file is skipped instead of losing the whole list. */
+  /**
+   * Index entries read from the given chat files. A corrupt file, or one whose id doesn't match its name, is skipped
+   * instead of losing the whole list (an entry under the wrong id could never be opened, and would be re-added forever).
+   */
   const entries = async (names) => {
     const out = [];
     for (const n of names) {
-      try { const c = JSON.parse(await io.read(n)); out.push({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId }); }
-      catch {}
+      try {
+        const c = JSON.parse(await io.read(n));
+        if (c && c.id + '.json' === n) out.push({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId });
+      } catch {}
     }
     return out;
   };

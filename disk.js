@@ -41,13 +41,18 @@ function makeDisk(root) {
  * @returns {string[]} What was moved.
  */
 function migrateLegacy(from, to) {
-  const moved = [], has = (...p) => fs.existsSync(path.join(...p));
-  const move = (name) => { fs.mkdirSync(path.dirname(path.join(to, name)), { recursive: true }); fs.renameSync(path.join(from, name), path.join(to, name)); moved.push(name); };
+  const moved = [], failed = [], has = (...p) => fs.existsSync(path.join(...p));
+  // Each move is tried on its own, so one item that can't move (a locked file, say) doesn't hold back the others.
+  const move = (name) => {
+    try { fs.mkdirSync(path.dirname(path.join(to, name)), { recursive: true }); fs.renameSync(path.join(from, name), path.join(to, name)); moved.push(name); }
+    catch (e) { failed.push(e); }
+  };
   for (const name of ['settings.json', 'settings.json.bad']) if (has(from, name) && !has(to, name)) move(name);
   if (has(from, 'chats')) {
     if (!has(to, 'chats')) move('chats');
     else for (const n of fs.readdirSync(path.join(from, 'chats'))) if (n.endsWith('.json') && n !== '_index.json' && !has(to, 'chats', n)) move(path.join('chats', n));
   }
+  if (failed.length) throw new AggregateError(failed, `Moved ${moved.join(', ') || 'nothing'}; ${failed.length} item(s) will be retried next launch`);
   return moved;
 }
 

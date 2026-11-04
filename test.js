@@ -696,3 +696,27 @@ test('Lib.fitSize scales the long side down to the limit, keeps the shape, and n
   assert.deepStrictEqual(Lib.fitSize(2048, 2048, 2048), { w: 2048, h: 2048, scaled: false });
   assert.deepStrictEqual(Lib.fitSize(100000, 10, 2048), { w: 2048, h: 1, scaled: true }); // never 0 px
 });
+
+test('chat list skips a chat file whose id does not match its name, and leaves the index alone after that', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  fs.writeFileSync(path.join(dir, 'b2.json'), JSON.stringify({ title: 'no id', updated: 2, messages: [] }));
+  fs.writeFileSync(path.join(dir, 'c3.json'), JSON.stringify({ id: 'zz', title: 'wrong id', updated: 3, messages: [] }));
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['a1']);
+  const before = fs.readFileSync(path.join(dir, '_index.json'), 'utf8');
+  await store.list(); assert.strictEqual(fs.readFileSync(path.join(dir, '_index.json'), 'utf8'), before);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('migrateLegacy: an item that cannot move does not hold back the others, and is retried', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-')), from = path.join(root, 'chatbot'), to = path.join(root, 'javc-chatbot');
+  fs.mkdirSync(path.join(from, 'chats'), { recursive: true });
+  fs.writeFileSync(path.join(from, 'settings.json'), '{"old":1}'); fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{}');
+  const rename = fs.renameSync; // settings.json is locked this time
+  fs.renameSync = (a, b) => { if (a.endsWith('settings.json')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return rename(a, b); };
+  try { assert.throws(() => migrateLegacy(from, to), (e) => e instanceof AggregateError && /Moved chats/.test(e.message)); }
+  finally { fs.renameSync = rename; }
+  assert.ok(fs.existsSync(path.join(to, 'chats', 'a.json'))); // the chats still moved
+  assert.deepStrictEqual(migrateLegacy(from, to), ['settings.json']); // and settings follow on the next launch
+  fs.rmSync(root, { recursive: true });
+});
