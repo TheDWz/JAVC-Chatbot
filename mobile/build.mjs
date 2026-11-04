@@ -15,7 +15,7 @@ fs.mkdirSync(path.join(out, 'vendor'), { recursive: true });
 await build({
   entryPoints: [path.join(root, 'mobile', 'main.js')],
   outfile: path.join(out, 'mobile.js'),
-  bundle: true, format: 'iife', platform: 'browser', target: 'chrome111', legalComments: 'eof', logLevel: 'warning',
+  bundle: true, format: 'iife', platform: 'browser', target: 'chrome123', legalComments: 'eof', logLevel: 'warning',
 });
 
 const copy = (from, to = from) => fs.copyFileSync(path.join(root, from), path.join(out, to));

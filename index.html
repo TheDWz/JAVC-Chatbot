@@ -6,32 +6,29 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; frame-src chatbot-sandbox:">
 <title>JAVC Chatbot</title>
 <style>
+  /* One token set: light-dark(light value, dark value) follows the color-scheme below. */
   :root {
-    --bg: #0f1014; --surface: #17181e; --surface-2: #1f2129; --line: #2a2c36; --line-soft: #22242c;
-    --text: #ecedf2; --muted: #8d91a0; --faint: #5d6170;
+    color-scheme: dark; accent-color: var(--a1);
+    --bg: light-dark(#f6f6f9, #0f1014); --surface: light-dark(#fff, #17181e); --surface-2: light-dark(#f0f0f5, #1f2129);
+    --line: light-dark(#e2e3ea, #2a2c36); --line-soft: light-dark(#ececf2, #22242c);
+    --text: light-dark(#1a1b22, #ecedf2); --muted: light-dark(#666a78, #8d91a0); --faint: light-dark(#9a9daa, #5d6170);
     --a1: #8b5cf6; --a2: #3b82f6; --grad: linear-gradient(135deg, var(--a1), var(--a2));
-    --err: #f87171; --err-bg: rgba(248,113,113,.08); --err-line: rgba(248,113,113,.3);
-    --code-bg: #0b0c10; --shadow: 0 10px 30px rgba(0,0,0,.35); --ring: rgba(139,92,246,.55);
-    color-scheme: dark;
+    --err: light-dark(#dc2626, #f87171); --err-bg: light-dark(rgb(220 38 38 / .06), rgb(248 113 113 / .08));
+    --err-line: light-dark(rgb(220 38 38 / .25), rgb(248 113 113 / .3));
+    --code-bg: light-dark(#f3f3f7, #0b0c10); --shadow: 0 10px 30px light-dark(rgb(20 20 40 / .08), rgb(0 0 0 / .35));
+    --ring: light-dark(color-mix(in srgb, var(--a1) 45%, transparent), color-mix(in srgb, var(--a1) 55%, transparent));
+    --accent-text: color-mix(in oklab, var(--a1) 65%, var(--text)); /* accent for text/links: pulled toward the text color so any theme stays readable */
+    --glow: color-mix(in srgb, var(--a1) 35%, transparent); --halo: 0 0 0 3px color-mix(in srgb, var(--a1) 15%, transparent);
   }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #f6f6f9; --surface: #ffffff; --surface-2: #f0f0f5; --line: #e2e3ea; --line-soft: #ececf2;
-      --text: #1a1b22; --muted: #666a78; --faint: #9a9daa;
-      --err: #dc2626; --err-bg: rgba(220,38,38,.06); --err-line: rgba(220,38,38,.25);
-      --code-bg: #f3f3f7; --shadow: 0 10px 30px rgba(20,20,40,.08); --ring: rgba(139,92,246,.45);
-      color-scheme: light;
-    }
-  }
+  /* Kept as a resolved value (not "light dark"): renderer.js passes it to sandboxed reply frames. */
+  @media (prefers-color-scheme: light) { :root { color-scheme: light; } }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.6 Inter, "Segoe UI", system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
   button, input, select, textarea { font: inherit; color: inherit; }
   :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
-  ::-webkit-scrollbar-thumb:hover { background-color: var(--faint); }
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
   svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 
   .app { display: flex; height: 100%; }
@@ -80,31 +77,33 @@
   /* Top bar */
   header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line-soft);
     background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(12px); }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; margin-right: auto; }
-  .mark { width: 26px; height: 26px; border-radius: 8px; background: var(--grad); box-shadow: 0 4px 14px rgba(139,92,246,.35);
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; margin-right: auto; white-space: nowrap; }
+  .main { container-type: inline-size; }
+  @container (width < 760px) { .brand-name { display: none; } }
+  .mark { width: 26px; height: 26px; border-radius: 8px; background: var(--grad); box-shadow: 0 4px 14px var(--glow);
     display: grid; place-items: center; color: #fff; }
   .mark svg { width: 22px; height: 22px; stroke-width: 1.8; }
-  .pill { position: relative; display: flex; align-items: center; }
+  .pill { position: relative; display: flex; align-items: center; min-width: 0; }
   .pill select { appearance: none; background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
-    padding: 6px 34px 6px 14px; max-width: 300px; font-size: 13.5px; cursor: pointer; transition: border-color .15s; }
+    padding: 6px 34px 6px 14px; max-width: 300px; min-width: 0; text-overflow: ellipsis; font-size: 13.5px; cursor: pointer; transition: border-color .15s; }
   .pill select:hover { border-color: var(--faint); }
-  .modelbtn { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 34px 6px 14px; max-width: 300px; font-size: 13.5px;
+  .modelbtn { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 34px 6px 14px; max-width: 300px; min-width: 0; font-size: 13.5px;
     cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; transition: border-color .15s; }
   .modelbtn:hover, .modelbtn[aria-expanded="true"] { border-color: var(--faint); }
   #modelpop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; width: min(380px, calc(100vw - 32px)); display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; animation: rise .15s ease-out; }
   #modelq { margin: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); outline: 0; font-size: 14px; }
-  #modelq:focus { border-color: var(--a1); box-shadow: 0 0 0 3px rgba(139,92,246,.15); }
+  #modelq:focus { border-color: var(--a1); box-shadow: var(--halo); }
   #modellist { max-height: 320px; overflow-y: auto; padding: 0 6px 6px; }
   .mopt { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: 8px;
     background: transparent; cursor: pointer; font-size: 13.5px; overflow-wrap: anywhere; }
   .mopt.hi { background: var(--surface-2); }
-  .mopt.cur { color: var(--a1); font-weight: 600; }
+  .mopt.cur { color: var(--accent-text); font-weight: 600; }
   .mopt svg { width: 14px; height: 14px; }
   .mnote { padding: 12px 14px; font-size: 13px; color: var(--muted); }
   .mcount { padding: 7px 14px; font-size: 12px; color: var(--faint); border-top: 1px solid var(--line-soft); }
   .pill svg { position: absolute; right: 12px; width: 14px; height: 14px; pointer-events: none; color: var(--muted); }
-  .icon-btn { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; border: 1px solid transparent;
+  .icon-btn { width: 34px; height: 34px; flex-shrink: 0; display: grid; place-items: center; border-radius: 10px; border: 1px solid transparent;
     background: transparent; color: var(--muted); cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
   .icon-btn:hover { background: var(--surface-2); color: var(--text); border-color: var(--line-soft); }
   .icon-btn:disabled { opacity: .45; cursor: default; }
@@ -123,16 +122,16 @@
   button.avatar:hover { filter: brightness(1.12); }
   .row.open .avatar { box-shadow: 0 0 0 2px var(--ring); }
   .row.thinking .avatar { animation: ring 1.4s ease-out infinite; }
-  @keyframes ring { 0% { box-shadow: 0 0 0 0 rgba(139,92,246,.55); } 100% { box-shadow: 0 0 0 9px rgba(139,92,246,0); } }
+  @keyframes ring { 0% { box-shadow: 0 0 0 0 var(--ring); } 100% { box-shadow: 0 0 0 9px transparent; } }
   .think { display: none; min-width: 260px; max-width: 560px; margin-bottom: 8px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--surface-2); overflow: hidden; }
   .row.open .think { display: block; }
   .think-head { padding: 8px 12px 0; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
-  .row.thinking .think-head::after { content: ' · live'; color: var(--a1); }
+  .row.thinking .think-head::after { content: ' · live'; color: var(--accent-text); }
   .think-body { padding: 4px 12px 10px; max-height: 300px; overflow-y: auto; font-size: 13px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
   .think-body.placeholder { font-style: italic; color: var(--faint); }
   .avatar svg { width: 24px; height: 24px; stroke-width: 1.8; }
   .bubble { max-width: 82%; padding: 10px 15px; border-radius: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .user .bubble { background: var(--grad); color: #fff; border-bottom-right-radius: 6px; box-shadow: 0 6px 18px rgba(80,90,246,.22); }
+  .user .bubble { background: var(--grad); color: #fff; border-bottom-right-radius: 6px; box-shadow: 0 6px 18px color-mix(in srgb, var(--a2) 22%, transparent); }
   .assistant .body { min-width: 0; max-width: calc(100% - 42px); }
   .assistant .bubble { max-width: 100%; background: var(--surface); border: 1px solid var(--line-soft); border-top-left-radius: 6px; }
   .bubble code.inline { font: 13px/1.5 "JetBrains Mono", "Fira Code", ui-monospace, monospace; background: var(--surface-2);
@@ -158,22 +157,22 @@
 
   .empty { margin: auto; text-align: center; padding: 40px 0; animation: rise .3s ease-out; }
   .empty .big { width: 64px; height: 64px; border-radius: 20px; margin: 0 auto 18px; background: var(--grad); display: grid; place-items: center;
-    color: #fff; box-shadow: 0 14px 40px rgba(139,92,246,.35); }
+    color: #fff; box-shadow: 0 14px 40px var(--glow); }
   .empty .big svg { width: 52px; height: 52px; stroke-width: 1.8; }
-  .empty h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.02em; font-weight: 650; }
+  .empty h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.02em; font-weight: 650; text-wrap: balance; }
   .empty p { margin: 0 0 22px; color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   .chip { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; font-size: 13.5px;
     color: var(--muted); cursor: pointer; transition: all .15s; }
   .chip:hover { color: var(--text); border-color: var(--a1); transform: translateY(-1px); }
-  .linkish { background: none; border: 0; padding: 0; color: var(--a1); cursor: pointer; text-decoration: underline; }
+  .linkish { background: none; border: 0; padding: 0; color: var(--accent-text); cursor: pointer; text-decoration: underline; }
 
   /* Composer */
   footer { padding: 8px 20px 14px; }
   .composer { max-width: 780px; margin: 0 auto; display: flex; align-items: flex-end; gap: 8px; padding: 8px 8px 8px 16px;
     background: var(--surface); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; }
-  .composer:focus-within { border-color: var(--a1); box-shadow: var(--shadow), 0 0 0 3px rgba(139,92,246,.15); }
-  .composer textarea { flex: 1; border: 0; outline: 0; background: transparent; resize: none; height: 38px; max-height: 200px; overflow-y: auto; padding: 6px 0; line-height: 1.5; }
+  .composer:focus-within { border-color: var(--a1); box-shadow: var(--shadow), var(--halo); }
+  .composer textarea { flex: 1; border: 0; outline: 0; background: transparent; resize: none; field-sizing: content; min-height: 35px; max-height: 200px; overflow-y: auto; padding: 6px 0; line-height: 1.5; }
   .composer textarea::placeholder { color: var(--faint); }
   .send { width: 38px; height: 38px; border-radius: 50%; border: 0; background: var(--grad); color: #fff; display: grid; place-items: center;
     cursor: pointer; flex-shrink: 0; transition: transform .15s, opacity .15s, filter .15s; }
@@ -230,7 +229,7 @@
   dialog .sub { margin: -10px 0 0; color: var(--muted); font-size: 13.5px; }
   .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); font-weight: 500; }
   .input { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 11px; transition: border-color .15s, box-shadow .15s; }
-  .input:focus-within { border-color: var(--a1); box-shadow: 0 0 0 3px rgba(139,92,246,.15); }
+  .input:focus-within { border-color: var(--a1); box-shadow: var(--halo); }
   .input select { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
   .input option { background: var(--surface); }
   .input input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
@@ -242,6 +241,46 @@
   .btn.primary { background: var(--grad); border-color: transparent; color: #fff; }
   .btn.primary:hover { filter: brightness(1.1); }
 
+  /* Settings dialog: category tabs on the left, one panel on the right */
+  #prefs { width: min(780px, calc(100vw - 32px)); height: min(560px, calc(100vh - 32px)); }
+  .prefs { display: flex; height: 100%; }
+  .prefs-nav { width: 190px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; padding: 20px 10px; background: var(--surface-2); border-right: 1px solid var(--line-soft); }
+  .prefs-nav h2 { margin: 0 10px 12px; }
+  .prefs-nav [role=tab] { text-align: left; padding: 9px 12px; border-radius: 10px; border: 1px solid transparent; background: transparent; cursor: pointer; font-size: 14px; color: var(--muted); }
+  .prefs-nav [role=tab]:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .prefs-nav [role=tab][aria-selected=true] { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--a1) 14%, transparent); border-color: color-mix(in srgb, var(--a1) 45%, transparent); }
+  .prefs-body { position: relative; flex: 1; min-width: 0; overflow-y: auto; padding: 22px 24px; }
+  .prefs-body section { display: flex; flex-direction: column; gap: 12px; }
+  .prefs-body h3 { margin: 6px 0 0; font-size: 15px; font-weight: 650; }
+  .prefs-body .sub { margin: -6px 0 0; font-size: 13px; color: var(--muted); }
+  .prefs-close { position: absolute; top: 14px; right: 14px; }
+  .themegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+  .theme { display: flex; flex-direction: column; gap: 8px; padding: 8px; text-align: left; font-size: 13px; border-radius: 12px; cursor: pointer; background: transparent; border: 1px solid var(--line); }
+  .theme:hover { border-color: var(--faint); }
+  .theme[aria-checked=true] { border-color: var(--a1); box-shadow: var(--halo); font-weight: 600; }
+  .theme i { display: block; height: 34px; border-radius: 8px; }
+  .customrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .customrow label { display: flex; align-items: center; gap: 8px; }
+  .customrow input[type=color] { inline-size: 44px; block-size: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); cursor: pointer; }
+  .proflist { display: flex; flex-direction: column; gap: 8px; }
+  .prow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; }
+  .prow.active { border-color: color-mix(in srgb, var(--a1) 55%, transparent); }
+  .prow > div { flex: 1; min-width: 0; }
+  .prow strong { font-weight: 600; } .prow small { display: block; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow .tag { margin-left: 6px; font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
+  .prefs-body .opt { margin-top: 0; padding-top: 12px; }
+  .prefs-body .opt:first-of-type { border-top: 0; }
+  .sub-opt { margin-left: 46px; }
+  .opt:has(input:disabled) { opacity: .5; cursor: default; }
+  .sw { appearance: none; flex-shrink: 0; inline-size: 36px; block-size: 20px; margin: 0; border-radius: 999px; background: var(--line); position: relative; cursor: inherit; transition: background .15s; }
+  .sw::before { content: ""; position: absolute; inset: 2px auto 2px 2px; aspect-ratio: 1; border-radius: 50%; background: #fff; transition: translate .15s; }
+  .sw:checked { background: var(--grad); } .sw:checked::before { translate: 16px 0; }
+  @media (max-width: 640px) {
+    .prefs { flex-direction: column; }
+    .prefs-nav { width: auto; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 12px; border-right: 0; border-bottom: 1px solid var(--line-soft); }
+    .prefs-nav h2 { flex-basis: 100%; margin: 0 4px 4px; }
+  }
+
   #toast { position: fixed; left: 50%; bottom: 96px; transform: translate(-50%, 10px); opacity: 0; pointer-events: none;
     background: var(--surface-2); border: 1px solid var(--line); color: var(--text); padding: 8px 16px; border-radius: 999px;
     font-size: 13.5px; box-shadow: var(--shadow); transition: opacity .2s, transform .2s; }
@@ -251,13 +290,14 @@
   /* Rendered replies (Markdown) */
   .bubble.md { white-space: normal; }
   .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
-  .md p { margin: 0 0 .75em; }
-  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1em 0 .4em; line-height: 1.3; font-weight: 650; }
+  .md p, .md li { text-wrap: pretty; } .md p { margin: 0 0 .75em; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1em 0 .4em; line-height: 1.3; font-weight: 650; text-wrap: balance; }
   .md h1 { font-size: 1.5em; } .md h2 { font-size: 1.3em; } .md h3 { font-size: 1.15em; } .md h4, .md h5, .md h6 { font-size: 1em; }
   .md ul, .md ol { margin: 0 0 .75em; padding-left: 1.5em; } .md li { margin: .2em 0; } .md li > p { margin: 0 0 .3em; }
   .md blockquote { margin: 0 0 .75em; padding: 2px 0 2px 12px; border-left: 3px solid var(--a1); color: var(--muted); }
   .md hr { border: 0; border-top: 1px solid var(--line); margin: 1em 0; }
-  .md a { color: var(--a1); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .md a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .md .plain { white-space: pre-wrap; margin: 0 0 .75em; }
   .md .tablewrap { overflow-x: auto; margin: 0 0 .75em; }
   .md table { border-collapse: collapse; font-size: 14px; }
   .md th, .md td { border: 1px solid var(--line); padding: 6px 10px; } .md th { background: var(--surface-2); font-weight: 600; }
@@ -275,7 +315,7 @@
   .richview-bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
   .richview iframe { flex: 1; width: 100%; border: 0; }
   .opt { display: flex; gap: 10px; align-items: flex-start; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line-soft); font-size: 13.5px; cursor: pointer; }
-  .opt input { margin-top: 3px; accent-color: var(--a1); }
+  .opt input { margin-top: 3px; }
   .opt small { display: block; margin-top: 2px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 
   /* Touch screens: nothing may hide behind hover, and Enter makes a new line (the send button sends) */
@@ -290,13 +330,11 @@
   @media (max-width: 600px) {
     header { flex-wrap: wrap; gap: 6px; padding: 6px 10px 8px; }
     header::after { content: ''; order: 5; flex-basis: 100%; }
-    .brand-name { display: none; }
     #profilepill { order: 6; flex: 1 1 0; min-width: 0; }
     #profilepill select { flex: 1; min-width: 0; max-width: none; }
-    #newprofile { order: 7; }
-    #modelpill { order: 8; flex: 1.6 1 0; min-width: 0; }
+    #modelpill { order: 7; flex: 1.6 1 0; min-width: 0; }
     .modelbtn { flex: 1; min-width: 0; max-width: none; }
-    #fetch { order: 9; }
+    #fetch { order: 8; }
     #modelpop { position: fixed; top: var(--pop-top, 100px); left: 10px; right: 10px; width: auto; }
     #modellist { max-height: max(120px, min(320px, calc(100vh - var(--pop-top, 100px) - 110px))); }
     #log { padding: 16px 12px 8px; gap: 14px; }
@@ -336,7 +374,6 @@
     <select id="profile" aria-label="Profile"></select>
     <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
   </label>
-  <button class="icon-btn" id="newprofile" title="New profile" aria-label="New profile"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></svg></button>
   <div class="pill" id="modelpill" title="Model">
     <button type="button" class="modelbtn" id="modelbtn" aria-haspopup="listbox" aria-expanded="false"><span id="modellabel">No model selected</span></button>
     <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
@@ -403,6 +440,44 @@
   </form>
 </dialog>
 
+<dialog id="prefs" aria-labelledby="prefstitle">
+  <div class="prefs">
+    <div class="prefs-nav" role="tablist" aria-label="Settings categories" aria-orientation="vertical">
+      <h2 id="prefstitle">Settings</h2>
+      <button type="button" role="tab" id="tab-appearance" data-pane="appearance" aria-controls="pane-appearance">Appearance</button>
+      <button type="button" role="tab" id="tab-profiles" data-pane="profiles" aria-controls="pane-profiles">Profiles</button>
+      <button type="button" role="tab" id="tab-replies" data-pane="replies" aria-controls="pane-replies">Replies</button>
+    </div>
+    <div class="prefs-body">
+      <button type="button" class="icon-btn prefs-close" id="prefsclose" title="Close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+      <section role="tabpanel" id="pane-appearance" aria-labelledby="tab-appearance" tabindex="0">
+        <h3>Theme</h3>
+        <p class="sub">Accent colors for buttons, bubbles and highlights. Light or dark follows your system.</p>
+        <div id="themegrid" class="themegrid" role="radiogroup" aria-label="Theme"></div>
+        <h3>Custom colors</h3>
+        <div class="customrow">
+          <label>From <input type="color" id="c1" aria-label="Gradient start color"></label>
+          <label>To <input type="color" id="c2" aria-label="Gradient end color"></label>
+        </div>
+        <p class="sub">Very light colors can make white text hard to read.</p>
+      </section>
+      <section role="tabpanel" id="pane-profiles" aria-labelledby="tab-profiles" tabindex="0" hidden>
+        <h3>Connection profiles</h3>
+        <p class="sub">Each profile is an endpoint, an API key and a model. Switch the active one from the header.</p>
+        <div id="proflist" class="proflist"></div>
+        <button type="button" class="btn primary" id="addprofile">Add profile</button>
+      </section>
+      <section role="tabpanel" id="pane-replies" aria-labelledby="tab-replies" tabindex="0" hidden>
+        <h3>How replies are shown</h3>
+        <p class="sub">Turning a format off also stops telling the model it can use it.</p>
+        <label class="opt"><input type="checkbox" class="sw" data-render="markdown"><span>Markdown<small>Headings, lists, tables, task lists and code blocks. Off shows replies as plain text.</small></span></label>
+        <label class="opt"><input type="checkbox" class="sw" data-render="html"><span>HTML<small>Raw HTML written in a reply runs live in a sandbox with internet access. Off shows it as code.</small></span></label>
+        <label class="opt sub-opt"><input type="checkbox" class="sw" data-render="css"><span>CSS<small>Style tags, stylesheets and inline styles inside HTML.</small></span></label>
+        <label class="opt sub-opt"><input type="checkbox" class="sw" data-render="js"><span>JavaScript<small>Scripts inside HTML, such as charts and interactive demos.</small></span></label>
+      </section>
+    </div>
+  </div>
+</dialog>
 <dialog id="personadlg">
   <form id="psform" method="dialog">
     <h2 id="pstitle">New persona</h2>
@@ -445,14 +520,13 @@
 </dialog>
 
 <div id="scrim"></div>
-<aside id="side" inert aria-label="Chat options">
+<aside id="side" inert aria-label="Reasoning">
   <div class="side-head">
-    <div><h2>Options</h2><p class="sub" id="sidemodel"></p></div>
+    <div><h2>Reasoning</h2><p class="sub" id="sidemodel"></p></div>
     <button class="icon-btn" id="sideclose" title="Close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
   </div>
   <div id="levels" role="radiogroup" aria-label="Reasoning level"></div>
   <p id="sidenote"></p>
-  <label class="opt"><input type="checkbox" id="richopt"><span>Rich replies<small>Tells the model it can reply with HTML, CSS and JavaScript. They run in a sandbox with internet access, and Markdown always works.</small></span></label>
 </aside>
 <div id="drop">Drop files to attach</div>
 <div id="errtoast" role="alert"></div>

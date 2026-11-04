@@ -30,9 +30,10 @@
 - **Personas.** Give the assistant a name, a personality and a system prompt. Each persona keeps its own chat history.
 - **Chat history.** Every conversation is saved locally and grouped by persona. You can duplicate a chat to another persona.
 - **Attachments.** Drop in text files, PDFs (text is extracted on your machine) or images for vision models.
-- **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view.
+- **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view. Markdown, HTML, CSS and JavaScript can each be switched off.
 - **Model picker.** Fetch your provider's model list and search it as you type.
-- **Dark and light themes.** These follow your system setting.
+- **Themes.** Six accent gradients (Aurora purple-to-blue is the default) or your own two colors, in dark or light mode following your system setting.
+- **One settings panel.** Appearance, connection profiles and reply formats in one place, opened from the gear.
 - **Phone-ready.** The Android app is the same app, with a layout that fits a phone screen and the back button closing whatever is open.
 
 ## Download
@@ -46,13 +47,13 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 | Fedora / RHEL | `javc-chatbot-<version>.x86_64.rpm` | `sudo dnf install ./javc-chatbot-*.x86_64.rpm` |
 | Linux, portable | `javc-chatbot-<version>.tar.gz` | Extract and run `./javc-chatbot` |
 | Windows 10 / 11 | `JAVC-Chatbot-Setup-<version>.exe` | Run the installer (per-user, no admin needed) |
-| Android 7.0 or later | `JAVC-Chatbot-<version>.apk` | Open the file on your phone and allow your browser or file manager to install apps |
+| Android 8.0 or later | `JAVC-Chatbot-<version>.apk` | Open the file on your phone and allow your browser or file manager to install apps |
 
 > [!NOTE]
 > The Windows installer isn't code-signed yet, so SmartScreen may show "Windows protected your PC". Choose **More info → Run anyway**.
 > On distros that restrict unprivileged user namespaces (for example Ubuntu 24.04), the AppImage and tar.gz builds may need `--no-sandbox`. The `.deb` and `.rpm` packages don't.
 >
-> The Android app isn't on the Play Store, so Android asks you to allow installs from the app you open the APK with. It needs an up-to-date **Android System WebView** (version 111 or later), which the Play Store keeps updated on most phones; if yours is too old, the app tells you and links to the update.
+> The Android app isn't on the Play Store, so Android asks you to allow installs from the app you open the APK with. It needs an up-to-date **Android System WebView** (version 123 or later), which the Play Store keeps updated on most phones; if yours is too old, the app tells you and links to the update.
 
 ## Getting started
 
@@ -61,7 +62,7 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 3. **Chat.** Press <kbd>Enter</kbd> to send and <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line. Drag files onto the window to attach them.
    On Android, <kbd>Enter</kbd> starts a new line and the send button sends; attach files with the paperclip. A local server on your computer is reached by its network address (for example `http://192.168.1.20:11434/v1` for Ollama started with `OLLAMA_HOST=0.0.0.0`), not `localhost`.
 
-Click the assistant's avatar on any reply to open its reasoning. The sliders button opens chat options, including the reasoning level and the **Rich replies** switch.
+Click the assistant's avatar on any reply to open its reasoning. The sliders button sets the reasoning level. The gear opens **Settings**: pick a theme, manage connection profiles, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
 
 ## Privacy & security
 
@@ -72,7 +73,7 @@ Click the assistant's avatar on any reply to open its reasoning. The sliders but
   - Windows: `%APPDATA%\javc-chatbot\`
   - Android: the app's private storage, which other apps can't read. It's left out of cloud backups, and uninstalling the app deletes it.
   - Settings and chats from an older `chatbot` folder are moved here automatically on first launch.
-- **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn rich replies off in chat options.
+- **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn HTML, or just its CSS and JavaScript, off in Settings → Replies.
 - **No tracking pixels.** Remote images in Markdown are never loaded automatically. They show as links instead.
 
 ## Build from source

@@ -63,6 +63,17 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   const reach = await page.evaluate(() => { try { return String(document.querySelector('.rich iframe').contentWindow.document); } catch { return 'blocked'; } });
   check(reach === 'blocked', 'the app cannot reach into the frame, so the frame cannot reach the app');
 
+  log('With JavaScript off, a frame blocks the model\'s scripts but still sizes itself');
+  const jsOff = await page.evaluate(async () => {
+    const src = await window.api.createSandbox('<p>x</p><script>parent.postMessage({ ran: 1 }, "*")</script>', '#888', 'dark', { css: true, js: false });
+    const f = document.createElement('iframe'), got = { ran: false, sized: false };
+    const on = (e) => { if (e.source !== f.contentWindow) return; if (e.data?.ran) got.ran = true; if (typeof e.data?.richHeight === 'number') got.sized = true; };
+    f.setAttribute('sandbox', 'allow-scripts'); addEventListener('message', on); f.src = src; document.body.append(f);
+    await new Promise((r) => setTimeout(r, 2500));
+    removeEventListener('message', on); f.remove(); return got;
+  });
+  check(jsOff.sized && !jsOff.ran, `the frame's own resize script ran and the model's did not (${JSON.stringify(jsOff)})`);
+
   log('Chat is saved');
   await page.waitForFunction(() => document.querySelectorAll('.chat-item').length === 1, null, { timeout: 10_000 });
 

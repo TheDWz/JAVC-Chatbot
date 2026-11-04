@@ -30,9 +30,10 @@ window.api = {
   deleteProfile: (id) => store.deleteProfile(id),
   activateProfile: (id) => store.activate(id),
   getProfileKey: (id) => store.key(id),
-  async createSandbox(html, color, scheme) {
+  async createSandbox(html, color, scheme, flags) {
     if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
-    return (await Javc.sandboxCreate({ html: Lib.richDoc(html, color, scheme) })).url;
+    const { doc, csp } = await Lib.richDoc(html, color, scheme, flags); // csp switches CSS/JavaScript off, as on the desktop
+    return (await Javc.sandboxCreate({ html: doc, csp })).url;
   },
   listModels: async () => { const s = await store.load(); return api.listModelsDetailed(s.endpoint, s.key, nativeFetch); },
   // Streams: onDelta gets {reasoning, content} pieces as they arrive; resolves to the full reply.

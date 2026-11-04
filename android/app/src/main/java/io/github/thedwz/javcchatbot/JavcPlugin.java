@@ -310,10 +310,11 @@ public class JavcPlugin extends Plugin {
 
     static final String SANDBOX_HOST = "javc-sandbox.invalid"; // must match SANDBOX in mobile/build.mjs
     private static final int SANDBOX_MAX = 2_100_000; // the page limits the model's HTML to 2,000,000 characters
-    private static final Map<String, String> docs = Collections.synchronizedMap(
-        new LinkedHashMap<String, String>(16, 0.75f, false) {
+    private static final String SANDBOX_CSP = "sandbox allow-scripts"; // every page gets at least this; Lib.richDoc adds the CSS/JS-off rules
+    private static final Map<String, String[]> docs = Collections.synchronizedMap( // id -> {html, csp}
+        new LinkedHashMap<String, String[]>(16, 0.75f, false) {
             @Override
-            protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            protected boolean removeEldestEntry(Map.Entry<String, String[]> eldest) {
                 return size() > 300;
             }
         }
@@ -322,12 +323,18 @@ public class JavcPlugin extends Plugin {
     @PluginMethod
     public void sandboxCreate(PluginCall call) {
         String html = call.getString("html");
+        String csp = call.getString("csp", SANDBOX_CSP);
         if (html == null || html.length() > SANDBOX_MAX) {
             call.reject("This content is too large to display");
             return;
         }
+        boolean sandboxed = csp.equals(SANDBOX_CSP) || csp.startsWith(SANDBOX_CSP + "; ");
+        if (!sandboxed || csp.indexOf('\r') >= 0 || csp.indexOf('\n') >= 0) {
+            call.reject("Invalid sandbox policy");
+            return;
+        }
         String id = UUID.randomUUID().toString();
-        docs.put(id, html);
+        docs.put(id, new String[] { html, csp });
         JSObject r = new JSObject();
         r.put("url", "https://" + SANDBOX_HOST + "/doc/" + id);
         call.resolve(r);
@@ -335,12 +342,12 @@ public class JavcPlugin extends Plugin {
 
     static WebResourceResponse serveSandbox(Uri url) {
         String path = url.getPath();
-        String doc = path != null && path.startsWith("/doc/") ? docs.get(path.substring(5)) : null;
+        String[] doc = path != null && path.startsWith("/doc/") ? docs.get(path.substring(5)) : null;
         Map<String, String> headers = new HashMap<>();
-        headers.put("Content-Security-Policy", "sandbox allow-scripts");
+        headers.put("Content-Security-Policy", doc != null ? doc[1] : SANDBOX_CSP);
         headers.put("Cache-Control", "no-store");
         if (doc == null) return new WebResourceResponse("text/plain", "utf-8", 404, "Not Found", headers, new ByteArrayInputStream(new byte[0]));
-        return new WebResourceResponse("text/html", "utf-8", 200, "OK", headers, new ByteArrayInputStream(doc.getBytes(StandardCharsets.UTF_8)));
+        return new WebResourceResponse("text/html", "utf-8", 200, "OK", headers, new ByteArrayInputStream(doc[0].getBytes(StandardCharsets.UTF_8)));
     }
 
     // ---- Clipboard ----

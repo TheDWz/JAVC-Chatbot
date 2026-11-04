@@ -10,11 +10,11 @@ const { makeDisk, migrateLegacy } = require('./disk');
 // Rich replies (HTML/CSS/JS from the model) run in sandboxed iframes loaded from this scheme. Being a non-local scheme,
 // the documents don't inherit the app's CSP; the `sandbox` header and attribute keep them in an opaque origin with no access to the app.
 protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
-const richDocs = new Map();
-ipcMain.handle('sandbox:create', (_e, html, color, scheme) => {
+const richDocs = new Map(); // id -> {doc, csp}; the page and its CSP come from Lib.richDoc, shared with the Android app
+ipcMain.handle('sandbox:create', async (_e, html, color, scheme, flags) => {
   if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
   const id = randomUUID();
-  richDocs.set(id, Lib.richDoc(html, color, scheme));
+  richDocs.set(id, await Lib.richDoc(html, color, scheme, flags));
   if (richDocs.size > 300) richDocs.delete(richDocs.keys().next().value);
   return 'chatbot-sandbox://doc/' + id;
 });
@@ -77,9 +77,9 @@ app.whenReady().then(() => {
   });
   win.setMenu(null);
   protocol.handle('chatbot-sandbox', (req) => {
-    const doc = richDocs.get(new URL(req.url).pathname.slice(1));
-    return doc
-      ? new Response(doc, { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': 'sandbox allow-scripts' } })
+    const rec = richDocs.get(new URL(req.url).pathname.slice(1));
+    return rec
+      ? new Response(rec.doc, { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': rec.csp } })
       : new Response('Not found', { status: 404 });
   });
   // Rich content gets no camera, microphone, location, notifications, etc.

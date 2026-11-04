@@ -115,7 +115,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 36 # its WebView is new enough for the page (123+); the API 34 image's is 113
           arch: x86_64
           target: google_apis
           profile: pixel_6

@@ -19,8 +19,8 @@ import com.getcapacitor.BridgeWebViewClient;
 
 public class MainActivity extends BridgeActivity {
 
-    // The page needs a WebView from 2023 or later (Chrome 111: CSS color-mix and friends).
-    private static final int MIN_WEBVIEW = 111;
+    // The page needs a WebView from March 2024 or later (Chrome 123: CSS light-dark() for every colour, field-sizing for the message box).
+    private static final int MIN_WEBVIEW = 123;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
