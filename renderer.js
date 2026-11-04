@@ -13,6 +13,10 @@ const ICON = {
   expand: ['M15 3h6v6', 'M9 21H3v-6', 'M21 3l-7 7', 'M3 21l7-7'],
   alert: ['M12 8v5', 'M12 16.5v.01', 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'],
 };
+// Touch screens: Enter makes a new line (the send button sends), and the keyboard only opens when the user taps the box,
+// so it never pops up over a reply.
+const touch = matchMedia('(pointer: coarse)');
+const focusInput = () => { if (!touch.matches) $('input').focus(); };
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
 let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', rich: true }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
 
@@ -395,7 +399,7 @@ async function send() {
     $('input').value = [text, $('input').value].filter(Boolean).join('\n'); grow();
     pending = [...atts, ...pending].slice(0, MAX_FILES); renderChips();
     if (cleanErr(e) === 'Stopped') toast('Stopped'); else showError(cleanErr(e));
-  } finally { setBusy(false); $('input').focus(); }
+  } finally { setBusy(false); focusInput(); }
 }
 
 // ---- Chat history ----
@@ -422,13 +426,13 @@ function renderChat() {
 }
 function startNew() {
   if (busy) return;
-  chat = newChat(); showEmpty(); refreshPersonaUi(); renderList(); $('input').focus();
+  chat = newChat(); showEmpty(); refreshPersonaUi(); renderList(); focusInput();
   if (narrow()) applyHist(false);
 }
 async function openChat(id) {
   if (busy || id === chat.id) return;
   try { chat = await window.api.loadChat(id); } catch (e) { return showError('Could not open chat: ' + cleanErr(e)); }
-  renderChat(); refreshPersonaUi(); renderList(); $('input').focus();
+  renderChat(); refreshPersonaUi(); renderList(); focusInput();
   if (narrow()) applyHist(false);
 }
 
@@ -616,7 +620,6 @@ addEventListener('dragleave', (e) => { if (hasFiles(e) && --dragDepth <= 0) { dr
 addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); attach([...e.dataTransfer.files]); });
 $('input').oninput = grow;
-const touch = matchMedia('(pointer: coarse)'); // on a phone keyboard Enter makes a new line; the send button sends
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
 (async () => {
@@ -627,5 +630,5 @@ $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.m
   applyHist(narrow() ? false : savedHist());
   refreshList().catch((e) => showError('Could not load chats: ' + cleanErr(e)));
   if (!state.activeId) { openProfileDialog(true); if (first.notice) { $('perr').textContent = first.notice; $('perr').hidden = false; } } // toasts sit under the modal dialog
-  else { $('input').focus(); if (first.notice) showError(first.notice); }
+  else { focusInput(); if (first.notice) showError(first.notice); }
 })();

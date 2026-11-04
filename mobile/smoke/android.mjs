@@ -50,6 +50,8 @@ try {
   await device.screenshot({ path: path.join(OUT, 'android-smoke.png') });
 
   log('Back with nothing open sends the app to the background');
+  await page.evaluate(() => document.activeElement?.blur()); // a focused text box would keep the keyboard up, and Back closes that first
+  await new Promise((r) => setTimeout(r, 500));
   await back();
   await new Promise((r) => setTimeout(r, 1500));
   const top = await sh('dumpsys activity activities');
