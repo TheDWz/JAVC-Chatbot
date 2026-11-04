@@ -12,6 +12,7 @@ const PKG = 'io.github.thedwz.javcchatbot';
 const OUT = 'dist';
 const apk = process.argv[2];
 if (!apk || !fs.existsSync(apk)) { console.error('Usage: node mobile/smoke/android.mjs <debug.apk>'); process.exit(2); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 const requests = [];
@@ -37,7 +38,18 @@ try {
   page.on('console', (m) => { if (!['startGroupCollapsed', 'startGroup', 'endGroup', 'dir'].includes(m.type())) log(`[page ${m.type()}]`, m.text()); });
   page.on('pageerror', (e) => log('[page error]', e.message));
 
-  const back = () => sh('input keyevent KEYCODE_BACK'); // a real key event, through Capacitor's App plugin
+  // A real Back key event, which reaches the page through Capacitor's App plugin. While the on-screen keyboard is up,
+  // Android gives Back to the keyboard first (that's normal), so let it close before pressing.
+  const keyboardUp = async () => /mInputShown=true|InputViewShown=true/.test(await sh('dumpsys input_method'));
+  const back = async () => {
+    await page.evaluate(() => { const a = document.activeElement; if (a?.matches?.('input, textarea')) a.blur(); });
+    log('Keyboard state:', ((await sh('dumpsys input_method')).match(/\w*Shown\w*=\w+/g) || ['unknown']).join(' '));
+    let waited = 0;
+    while (waited < 5000 && (await keyboardUp())) { await sleep(250); waited += 250; }
+    if (waited) log(`(waited ${waited} ms for the keyboard to close)`);
+    await sleep(300);
+    await sh('input keyevent KEYCODE_BACK');
+  };
   await runFlow(page, { endpoint: 'http://10.0.2.2:8787/v1', key: 'sk-smoke', back, log });
 
   log('The key went to the server and is stored encrypted');
@@ -50,8 +62,6 @@ try {
   await device.screenshot({ path: path.join(OUT, 'android-smoke.png') });
 
   log('Back with nothing open sends the app to the background');
-  await page.evaluate(() => document.activeElement?.blur()); // a focused text box would keep the keyboard up, and Back closes that first
-  await new Promise((r) => setTimeout(r, 500));
   await back();
   await new Promise((r) => setTimeout(r, 1500));
   const top = await sh('dumpsys activity activities');
