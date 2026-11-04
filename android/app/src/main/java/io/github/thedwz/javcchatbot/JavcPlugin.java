@@ -213,7 +213,7 @@ public class JavcPlugin extends Plugin {
         try {
             String[] names = fileAt(call.getString("path", "")).list();
             JSObject r = new JSObject();
-            r.put("names", new JSArray(names == null ? Collections.emptyList() : Arrays.asList(names)));
+            r.put("names", new JSArray(Arrays.asList(names == null ? new String[0] : names)));
             call.resolve(r);
         } catch (Exception e) {
             call.reject(message(e));
