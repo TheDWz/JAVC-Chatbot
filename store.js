@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const profiles = require('./profiles');
 const { THINKING_SWITCH } = require('./api');
+const Lib = require('./lib');
 
 // crypto: { available(): boolean, enc(text): base64, dec(base64): text (throws when it can't)}
 module.exports = ({ file, crypto }) => {
@@ -58,11 +59,12 @@ module.exports = ({ file, crypto }) => {
       return { endpoint: p.endpoint, model: p.model || '', effort: st.effort || '', format: p.format || 'auto', meta: !!p.meta, key: keyOf(p) };
     },
     key(id) { const p = read().profiles.find((x) => x.id === id); return p ? keyOf(p) : ''; },
-    patch(patch) { // {effort, personaId, rich} are global; {model, meta} belong to the active profile
+    patch(patch) { // {effort, personaId, render, theme} are global; {model, meta} belong to the active profile
       let st = read();
       if (st.personas.some((p) => p.id === patch.personaId)) st.personaId = patch.personaId;
       if (patch.effort !== undefined) st.effort = patch.effort || '';
-      if (typeof patch.rich === 'boolean') st.rich = patch.rich;
+      if (patch.render && typeof patch.render === 'object') for (const k of Lib.RENDER_KEYS) if (typeof patch.render[k] === 'boolean') st.render = { ...st.render, [k]: patch.render[k] };
+      const theme = Lib.cleanTheme(patch.theme); if (theme) st.theme = theme;
       const own = {}; for (const k of ['model', 'meta']) if (patch[k] !== undefined) own[k] = patch[k];
       if (Object.keys(own).length && st.activeId) st = profiles.upsert(st, { id: st.activeId, ...own }); // never create a profile from a patch
       return commit(st);

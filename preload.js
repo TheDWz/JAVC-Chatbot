@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteProfile: (id) => ipcRenderer.invoke('profiles:delete', id),
   activateProfile: (id) => ipcRenderer.invoke('profiles:activate', id),
   getProfileKey: (id) => ipcRenderer.invoke('profiles:key', id),
-  createSandbox: (html, color, scheme) => ipcRenderer.invoke('sandbox:create', html, color, scheme),
+  createSandbox: (html, color, scheme, flags) => ipcRenderer.invoke('sandbox:create', html, color, scheme, flags),
   listModels: () => ipcRenderer.invoke('models:list'),
   // Streams: onDelta gets {reasoning, content} pieces tagged with this request's id; resolves to the full reply.
   chat: async (messages, onDelta) => {

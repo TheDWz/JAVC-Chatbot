@@ -71,11 +71,42 @@
     return parts.filter((p) => (p.type === 'html' ? p.html : p.text.trim()));
   }
 
-  const RICH_HINT = 'Display: your replies are rendered as Markdown. You may also write raw HTML, CSS and JavaScript directly in a reply, starting each HTML block at the beginning of a line and not inside a code fence. It renders live in a sandboxed frame with internet access, so CDN libraries work. Use it when visuals help, such as charts, diagrams, interactive demos or styled layouts, and keep ordinary answers in plain Markdown. Show code the user should read rather than run in a fenced code block.';
+  // Reply display toggles (all on by default). The system hint tells the model only what the user has switched on.
+  const RENDER_KEYS = ['markdown', 'html', 'css', 'js'];
+  const renderHint = ({ markdown = true, html = true, css = true, js = true } = {}) => {
+    if (!markdown && !html) return 'Display: your replies are shown as plain text. Do not use Markdown or HTML formatting.';
+    const out = ['Display: your replies are ' + (markdown ? 'rendered as Markdown.' : 'shown as plain text, so do not use Markdown formatting.')];
+    if (html) {
+      const extra = [css && 'CSS', js && 'JavaScript'].filter(Boolean);
+      out.push('You may also write raw HTML' + (extra.length ? ' with ' + extra.join(' and ') : ' only (CSS and JavaScript are switched off)')
+        + ' directly in a reply, starting each HTML block at the beginning of a line and not inside a code fence. It renders live in a sandboxed frame with internet access'
+        + (js ? ', so CDN libraries work' : '') + '. Use it when visuals help, such as charts, diagrams, interactive demos or styled layouts, and keep ordinary answers in plain '
+        + (markdown ? 'Markdown' : 'text') + '.' + (markdown ? ' Show code the user should read rather than run in a fenced code block.' : ''));
+    }
+    return out.join(' ');
+  };
+
+  // Accent gradients. 'aurora' is the default; a custom theme is {id: 'custom', a1, a2} with two #rrggbb colors.
+  const THEMES = [
+    { id: 'aurora', name: 'Aurora', a1: '#8b5cf6', a2: '#3b82f6' },
+    { id: 'ocean', name: 'Ocean', a1: '#0891b2', a2: '#2563eb' },
+    { id: 'emerald', name: 'Emerald', a1: '#059669', a2: '#0891b2' },
+    { id: 'sunset', name: 'Sunset', a1: '#e0510a', a2: '#db2777' },
+    { id: 'rose', name: 'Rose', a1: '#db2777', a2: '#7c3aed' },
+    { id: 'graphite', name: 'Graphite', a1: '#64748b', a2: '#334155' },
+  ];
+  const HEX = /^#[0-9a-f]{6}$/i;
+  // Returns the normalized theme for a patch, or null when it isn't valid (callers ignore invalid input).
+  function cleanTheme(t) {
+    if (t && THEMES.some((x) => x.id === t.id)) return { id: t.id };
+    if (t && t.id === 'custom' && HEX.test(t.a1) && HEX.test(t.a2)) return { id: 'custom', a1: t.a1.toLowerCase(), a2: t.a2.toLowerCase() };
+    return null;
+  }
+  const themeColors = (t) => THEMES.find((x) => x.id === t?.id) || (t?.id === 'custom' && cleanTheme(t)) || THEMES[0];
 
   // Chat isolation: only this chat's messages go out, stripped of display-only fields (text, files, reasoning).
-  function requestMessages(chat, persona, { rich = false } = {}) {
-    const msgs = chat.messages.map(({ role, content }) => ({ role, content })), sys = [systemPrompt(persona), rich && RICH_HINT].filter(Boolean).join('\n\n');
+  function requestMessages(chat, persona, { render } = {}) {
+    const msgs = chat.messages.map(({ role, content }) => ({ role, content })), sys = [systemPrompt(persona), render && renderHint(render)].filter(Boolean).join('\n\n');
     return sys ? [{ role: 'system', content: sys }, ...msgs] : msgs;
   }
 
@@ -94,5 +125,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, RICH_HINT };
+  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors };
 });

@@ -157,6 +157,14 @@ test('profiles: upsert creates, updates, sets/keeps/clears keys, and activates',
   assert.strictEqual(profiles.publicView(st).profiles[0].hasKey, false);
 });
 
+test('profiles: editing a profile that is not active keeps the active one', () => {
+  let st = profiles.upsert(profiles.upsert(profiles.migrate(null), { name: 'A', endpoint: 'http://a' }), { name: 'B', endpoint: 'http://b' });
+  const [a, b] = st.profiles.map((p) => p.id);
+  assert.strictEqual(st.activeId, b);                                      // creating B made it active
+  st = profiles.upsert(st, { id: a, name: 'A2' });
+  assert.deepStrictEqual([st.activeId, st.profiles[0].name], [b, 'A2']);   // editing A did not switch
+});
+
 test('profiles: remove falls back to another profile and may delete the last one', () => {
   let st = profiles.upsert(profiles.upsert(profiles.migrate(null), { name: 'A', endpoint: 'http://a' }), { name: 'B', endpoint: 'http://b' });
   const [a, b] = st.profiles.map((p) => p.id);
@@ -377,23 +385,56 @@ test('Lib.splitRich: raw HTML blocks go to the sandbox, inline tags and fenced c
   assert.deepStrictEqual(Lib.splitRich(''), []);
 });
 
-test('Lib.requestMessages adds the rich-reply hint only when asked, after the persona prompt', () => {
-  const chat = { messages: [{ role: 'user', content: 'hi' }] };
-  assert.deepStrictEqual(Lib.requestMessages(chat, undefined, { rich: false }), [{ role: 'user', content: 'hi' }]);
-  assert.deepStrictEqual(Lib.requestMessages(chat, undefined, { rich: true })[0], { role: 'system', content: Lib.RICH_HINT });
-  const sys = Lib.requestMessages(chat, { user: '', bot: 'B', prompt: 'p' }, { rich: true })[0].content;
-  assert.ok(sys.startsWith('You are B.') && sys.endsWith(Lib.RICH_HINT));
+test('Lib.requestMessages adds the display hint only when given render settings, after the persona prompt', () => {
+  const chat = { messages: [{ role: 'user', content: 'hi', text: 'x' }] }, all = { markdown: true, html: true, css: true, js: true };
+  assert.deepStrictEqual(Lib.requestMessages(chat, undefined, {}), [{ role: 'user', content: 'hi' }]);
+  assert.deepStrictEqual(Lib.requestMessages(chat, undefined, { render: all })[0], { role: 'system', content: Lib.renderHint(all) });
+  const sys = Lib.requestMessages(chat, { user: '', bot: 'B', prompt: 'p' }, { render: all })[0].content;
+  assert.ok(sys.startsWith('You are B.') && sys.endsWith(Lib.renderHint(all)));
 });
 
-test('rich setting: on by default, kept when saved off, only booleans accepted', () => {
-  assert.strictEqual(profiles.migrate({}).rich, true);
-  assert.strictEqual(profiles.migrate({ version: 2, profiles: [], rich: false }).rich, false);
+test('Lib.renderHint only mentions what is switched on', () => {
+  const h = (o) => Lib.renderHint({ markdown: true, html: true, css: true, js: true, ...o });
+  assert.match(h({}), /Markdown/); assert.match(h({}), /HTML with CSS and JavaScript/); assert.match(h({}), /CDN/);
+  assert.match(h({ js: false }), /HTML with CSS directly/); assert.doesNotMatch(h({ js: false }), /JavaScript|CDN/);
+  assert.match(h({ css: false, js: false }), /HTML only \(CSS and JavaScript are switched off\)/);
+  assert.doesNotMatch(h({ html: false }), /HTML/); assert.match(h({ html: false }), /Markdown/);
+  assert.match(h({ markdown: false }), /plain text, so do not use Markdown/);
+  assert.match(h({}), /fenced code block/); assert.doesNotMatch(h({ markdown: false }), /fenced|code block/); // fences would show as literal backticks
+  assert.match(h({ markdown: false, html: false }), /plain text\. Do not use Markdown or HTML/);
+});
+
+test('render setting: all on by default, old rich:false migrates, only booleans accepted', () => {
+  assert.deepStrictEqual(profiles.migrate({}).render, { markdown: true, html: true, css: true, js: true });
+  assert.deepStrictEqual(profiles.migrate({ version: 2, profiles: [], rich: false }).render, { markdown: true, html: false, css: false, js: false });
+  assert.deepStrictEqual(profiles.migrate({ version: 2, profiles: [], rich: false, render: { html: true } }).render, { markdown: true, html: true, css: false, js: false });
   const { dir, store } = tmpStore();
-  assert.strictEqual(store.get().rich, true);
-  assert.strictEqual(store.patch({ rich: false }).rich, false);
-  assert.strictEqual(store.patch({ rich: 'no' }).rich, false); // ignored, not coerced
-  assert.strictEqual(store.patch({ rich: true }).rich, true);
+  assert.strictEqual(store.get().render.html, true);
+  assert.strictEqual(store.patch({ render: { html: false } }).render.html, false);
+  assert.strictEqual(store.patch({ render: { css: 'no', bogus: true } }).render.css, true); // ignored, not coerced
+  assert.strictEqual('bogus' in store.get().render, false);
+  assert.deepStrictEqual(store.patch({ render: { markdown: false, html: true } }).render, { markdown: false, html: true, css: true, js: true });
   fs.rmSync(dir, { recursive: true });
+});
+
+test('theme setting: Aurora by default; presets and valid custom colors accepted, anything else ignored', () => {
+  assert.deepStrictEqual(profiles.migrate({}).theme, { id: 'aurora' });
+  const { dir, file, store } = tmpStore();
+  assert.strictEqual(store.patch({ theme: { id: 'sunset' } }).theme.id, 'sunset');
+  assert.strictEqual(store.patch({ theme: { id: 'nope' } }).theme.id, 'sunset');
+  assert.strictEqual(store.patch({ theme: { id: 'custom', a1: 'red', a2: '#123456' } }).theme.id, 'sunset');
+  assert.strictEqual(store.patch({ theme: { id: 'custom', a1: '#ABCDEF', a2: '#123456', evil: '<x>' } }).theme.id, 'custom');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).theme, { id: 'custom', a1: '#abcdef', a2: '#123456' });
+  fs.writeFileSync(file, JSON.stringify({ version: 2, profiles: [], theme: { id: 'custom', a1: 'url(javascript:1)', a2: '#fff' } }));
+  assert.deepStrictEqual(store.get().theme, { id: 'aurora' }); // a damaged theme falls back instead of reaching the CSS
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('every preset theme keeps white text at least as readable as the weakest end of Aurora (3.68:1)', () => {
+  const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
+  const contrastWhite = (h) => 1.05 / (lum(h) + .05);
+  const floor = Math.min(...[Lib.THEMES[0].a1, Lib.THEMES[0].a2].map(contrastWhite));
+  for (const t of Lib.THEMES) for (const c of [t.a1, t.a2]) assert.ok(contrastWhite(c) >= floor, `${t.name} ${c} contrast ${contrastWhite(c).toFixed(2)} < ${floor.toFixed(2)}`);
 });
 
 test('migrateLegacy: moves settings and chats once, never overwrites the new folder', () => {

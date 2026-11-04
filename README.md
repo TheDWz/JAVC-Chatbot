@@ -30,9 +30,10 @@
 - **Personas.** Give the assistant a name, a personality and a system prompt. Each persona keeps its own chat history.
 - **Chat history.** Every conversation is saved locally and grouped by persona. You can duplicate a chat to another persona.
 - **Attachments.** Drop in text files, PDFs (text is extracted on your machine) or images for vision models.
-- **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view.
+- **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view. Markdown, HTML, CSS and JavaScript can each be switched off.
 - **Model picker.** Fetch your provider's model list and search it as you type.
-- **Dark and light themes.** These follow your system setting.
+- **Themes.** Six accent gradients (Aurora purple-to-blue is the default) or your own two colors, in dark or light mode following your system setting.
+- **One settings panel.** Appearance, connection profiles and reply formats in one place, opened from the gear.
 
 ## Download
 
@@ -56,7 +57,7 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 2. **Pick a model.** Click the refresh button to fetch the model list, then search and select one.
 3. **Chat.** Press <kbd>Enter</kbd> to send and <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line. Drag files onto the window to attach them.
 
-Click the assistant's avatar on any reply to open its reasoning. The sliders button opens chat options, including the reasoning level and the **Rich replies** switch.
+Click the assistant's avatar on any reply to open its reasoning. The sliders button sets the reasoning level. The gear opens **Settings**: pick a theme, manage connection profiles, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
 
 ## Privacy & security
 
@@ -66,7 +67,7 @@ Click the assistant's avatar on any reply to open its reasoning. The sliders but
   - Linux: `~/.config/javc-chatbot/`
   - Windows: `%APPDATA%\javc-chatbot\`
   - Settings and chats from an older `chatbot` folder are moved here automatically on first launch.
-- **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn rich replies off in chat options.
+- **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn HTML, or just its CSS and JavaScript, off in Settings → Replies.
 - **No tracking pixels.** Remote images in Markdown are never loaded automatically. They show as links instead.
 
 ## Build from source

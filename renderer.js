@@ -13,8 +13,16 @@ const ICON = {
   expand: ['M15 3h6v6', 'M9 21H3v-6', 'M21 3l-7 7', 'M3 21l7-7'],
   alert: ['M12 8v5', 'M12 16.5v.01', 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'],
 };
+// Accent colors are two CSS variables on <html>; every gradient, ring and tint in index.html derives from them.
+function applyTheme(t) {
+  const c = Lib.themeColors(t), r = document.documentElement.style;
+  r.setProperty('--a1', c.a1); r.setProperty('--a2', c.a2);
+  try { localStorage.setItem('theme', JSON.stringify(t)); } catch {} // only a start-up cache; settings.json is the source of truth
+}
+try { const t = JSON.parse(localStorage.getItem('theme')); if (Lib.cleanTheme(t)) applyTheme(t); } catch {}
+
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
-let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', rich: true }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
+let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
 
 // Red pop-up for failures; long server messages stay a little longer so they can be read.
 function showError(text) {
@@ -27,7 +35,7 @@ function applyState(st) {
   settings = { ...(st.profiles.find((p) => p.id === st.activeId) || {}), effort: st.effort };
   $('profile').replaceChildren(...(st.profiles.length ? st.profiles.map((p) => new Option(p.name, p.id)) : [new Option('No profiles yet', '')]));
   $('profile').value = st.activeId; $('profile').disabled = busy || !st.profiles.length;
-  $('richopt').checked = st.rich !== false;
+  applyTheme(st.theme);
   $('persona').replaceChildren(...st.personas.map((p) => new Option(p.name, p.id))); $('persona').value = st.personaId;
 }
 // A chat whose persona is missing or was deleted counts as Default.
@@ -63,6 +71,7 @@ const SAFE_HREF = /^(https?:|mailto:)/i;
 
 // Harmless inline tags such as <kbd> and <br> survive inside prose; any other tag is dropped and its text kept.
 function htmlish(parent, src, open = []) {
+  if (!state.render.html) { (open.at(-1) ?? parent).append(src); return; } // HTML off: show the raw markup as text
   for (const piece of src.replace(/<!--[\s\S]*?-->/g, '').split(/(<\/?[a-zA-Z][^>]*>)/)) {
     const m = /^<(\/?)([a-zA-Z][\w-]*)[^>]*>$/.exec(piece), at = open.at(-1) ?? parent;
     if (!m) { if (piece) at.append(decode(piece)); continue; }
@@ -127,7 +136,7 @@ function codeBox(lang, code) {
   const box = el('div', 'code'), head = el('div', 'code-head', lang || 'code'), actions = el('span', 'code-actions');
   const pre = el('pre'); pre.append(el('code', null, code));
   box.append(head, pre); head.append(actions);
-  if (/^(html?|svg)$/i.test(lang || '')) {
+  if (state.render.html && /^(html?|svg)$/i.test(lang || '')) {
     const b = el('button', 'mini', 'Preview'); b.type = 'button'; let shown = null;
     b.onclick = () => { if (shown) { shown.remove(); shown = null; b.textContent = 'Preview'; } else { shown = richFrame(code); box.append(shown); b.textContent = 'Hide preview'; } };
     actions.append(b);
@@ -137,7 +146,7 @@ function codeBox(lang, code) {
 }
 
 const loadFrame = async (f, html) => {
-  try { f.src = await window.api.createSandbox(html, getComputedStyle(document.body).color, getComputedStyle(document.documentElement).colorScheme); }
+  try { f.src = await window.api.createSandbox(html, getComputedStyle(document.body).color, getComputedStyle(document.documentElement).colorScheme, { css: state.render.css, js: state.render.js }); }
   catch (e) { f.replaceWith(el('div', 'mnote', 'Could not display this content: ' + cleanErr(e))); }
 };
 function richFrame(html) {
@@ -162,10 +171,15 @@ addEventListener('message', (e) => {
 });
 
 function render(bubble, text) {
-  bubble.replaceChildren(); bubble.classList.add('md');
+  const r = state.render;
+  bubble.replaceChildren(); bubble.classList.remove('md');
+  if (!r.markdown && !r.html) { bubble.textContent = text; return; } // the bubble keeps the model's line breaks
+  bubble.classList.add('md');
   try {
     for (const part of Lib.splitRich(text)) {
-      if (part.type === 'html') bubble.append(richFrame(part.html)); else mdBlocks(bubble, marked.lexer(part.text, { gfm: true, breaks: true }));
+      if (part.type === 'html') bubble.append(r.html ? richFrame(part.html) : codeBox('html', part.html)); // html off: show it as code to read
+      else if (r.markdown) mdBlocks(bubble, marked.lexer(part.text, { gfm: true, breaks: true }));
+      else bubble.append(el('div', 'plain', part.text));
     }
   } catch { bubble.classList.remove('md'); bubble.replaceChildren(text); } // a renderer bug must never lose the reply
 }
@@ -273,7 +287,7 @@ function showEmpty() {
   else { const a = el('button', 'linkish', 'Open settings'); a.onclick = openSettings; p.append(a, ' and fetch models to get started.'); }
   const chips = el('div', 'chips');
   for (const s of ['Explain a concept simply', 'Write a bash one-liner', 'Brainstorm project ideas']) {
-    const c = el('button', 'chip', s); c.onclick = () => { $('input').value = s + ': '; grow(); $('input').focus(); }; chips.append(c);
+    const c = el('button', 'chip', s); c.onclick = () => { $('input').value = s + ': '; $('input').focus(); }; chips.append(c);
   }
   box.append(p, chips); $('log').replaceChildren(box);
 }
@@ -375,13 +389,13 @@ async function send() {
   if (!state.activeId) return openProfileDialog(true);
   if (!settings.model) return showError('Pick a model first: open the model picker (fetch models if the list is empty).');
   const atts = pending; pending = []; renderChips();
-  $('input').value = ''; grow();
+  $('input').value = '';
   const userRow = addUser(text, atts);
   chat.messages.push({ role: 'user', content: Lib.buildContent(text, atts), text, files: atts.map(({ name, size, kind }) => ({ name, size, kind })) });
   const reply = addAssistant();
   setBusy(true);
   try {
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { rich: state.rich }), (d) => reply.delta(d));
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d));
     chat.messages.push({ role: 'assistant', content: out.content, reasoning: out.reasoning }); // reasoning is display-only, never sent back
     reply.done(out.content, out.reasoning);
     chat.updated = Date.now();
@@ -391,7 +405,7 @@ async function send() {
   } catch (e) {
     // drop the failed turn and put the draft back in front of whatever was typed meanwhile
     chat.messages.pop(); userRow.remove(); reply.row.remove();
-    $('input').value = [text, $('input').value].filter(Boolean).join('\n'); grow();
+    $('input').value = [text, $('input').value].filter(Boolean).join('\n');
     pending = [...atts, ...pending].slice(0, MAX_FILES); renderChips();
     if (cleanErr(e) === 'Stopped') toast('Stopped'); else showError(cleanErr(e));
   } finally { setBusy(false); $('input').focus(); }
@@ -400,7 +414,7 @@ async function send() {
 // ---- Chat history ----
 // While a reply is pending, switching/creating/deleting chats is locked so a late reply can't land in the wrong chat.
 function setBusy(b) {
-  busy = b; $('profile').disabled = b || !state.profiles.length; $('newprofile').disabled = b; for (const id of ['persona', 'newpersona', 'editpersona']) $(id).disabled = b; $('histnew').disabled = b; $('newchat').disabled = b; $('chatlist').classList.toggle('locked', b);
+  busy = b; $('profile').disabled = b || !state.profiles.length; $('addprofile').disabled = b; for (const id of ['persona', 'newpersona', 'editpersona']) $(id).disabled = b; $('histnew').disabled = b; $('newchat').disabled = b; $('chatlist').classList.toggle('locked', b);
   const s = $('send'), label = b ? 'Stop' : 'Send'; // the send button doubles as Stop while a reply is running
   s.title = label; s.setAttribute('aria-label', label); s.querySelector('path').setAttribute('d', b ? 'M7 7h10v10H7z' : 'M12 19V5M5 12l7-7 7 7');
 }
@@ -472,7 +486,6 @@ $('histbtn').onclick = () => {
   try { localStorage.setItem('hist', open ? '1' : '0'); } catch {}
 };
 
-function grow() { const t = $('input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 200) + 'px'; }
 
 // ---- Personas ----
 // The persona is fixed per chat; switching the dropdown filters the list and opens a fresh chat if the open one belongs elsewhere.
@@ -494,7 +507,6 @@ function openPersonaDialog(isNew) {
   $('psdelete').hidden = isNew || p.id === 'default'; clearTimeout(psDelTimer); $('psdelete').textContent = 'Delete persona'; $('pserr').hidden = true;
   $('personadlg').showModal(); $('psname').focus();
 }
-$('richopt').onchange = () => window.api.patchSettings({ rich: $('richopt').checked }).then(applyState).catch((e) => showError(cleanErr(e)));
 $('persona').onchange = () => selectPersona($('persona').value);
 $('newpersona').onclick = () => openPersonaDialog(true);
 $('editpersona').onclick = () => openPersonaDialog(false);
@@ -535,12 +547,12 @@ $('dupform').onsubmit = async (e) => {
 };
 
 let editingId = null, delTimer, keyDirty = false; // editingId null = creating a new profile
-async function openProfileDialog(isNew) {
-  editingId = isNew ? null : state.activeId;
+async function openProfileDialog(isNew, id = state.activeId) {
+  editingId = isNew ? null : id;
   $('ptitle').textContent = isNew ? 'New profile' : 'Profile settings';
   $('templates').hidden = !isNew; $('pdelete').hidden = isNew;
   clearTimeout(delTimer); $('pdelete').textContent = 'Delete profile'; $('perr').hidden = true;
-  const p = isNew ? { name: '', endpoint: '', format: 'auto' } : settings;
+  const p = isNew ? { name: '', endpoint: '', format: 'auto' } : state.profiles.find((x) => x.id === editingId);
   $('pname').value = p.name; $('endpoint').value = p.endpoint; $('format').value = p.format || 'auto'; $('key').type = 'password';
   keyDirty = false;
   try { $('key').value = isNew ? '' : await window.api.getProfileKey(editingId); }
@@ -559,6 +571,12 @@ function onProfileChanged(st) {
   if (settings.hasKey || isLocal(settings.endpoint)) fetchModels(); else toast(`${settings.name}: add your API key in settings`);
 }
 
+// A new profile, or an edit to the active one, reloads models etc. Touching another profile only refreshes the lists.
+function profileSaved(st, switched) {
+  if (switched) onProfileChanged(st); else applyState(st);
+  if ($('prefs').open) renderProfiles();
+}
+
 function renderTemplates() {
   const fill = (name, endpoint) => { $('pname').value = name; $('endpoint').value = endpoint; (endpoint ? $('key') : $('endpoint')).focus(); };
   const chips = state.templates.map((t) => { const c = el('button', 'chip', t.name); c.type = 'button'; c.onclick = () => fill(t.name, t.endpoint); return c; });
@@ -572,7 +590,7 @@ $('pform').onsubmit = async (e) => {
     const p = { id: editingId || undefined, name: $('pname').value, endpoint: $('endpoint').value, format: $('format').value };
     if (keyDirty) p.key = $('key').value; // an untouched key field must never overwrite the stored key
     const st = await window.api.saveProfile(p);
-    $('settings').close(); onProfileChanged(st); toast('Saved');
+    $('settings').close(); profileSaved(st, !p.id || p.id === state.activeId); toast('Saved');
   } catch (err) { $('perr').textContent = cleanErr(err); $('perr').hidden = false; } // inline: toasts sit under the modal dialog
 };
 $('pcancel').onclick = () => $('settings').close();
@@ -580,17 +598,16 @@ $('pdelete').onclick = async () => {
   if ($('pdelete').textContent !== 'Confirm delete') { // first click arms, second click within 3s deletes
     $('pdelete').textContent = 'Confirm delete'; clearTimeout(delTimer); delTimer = setTimeout(() => { $('pdelete').textContent = 'Delete profile'; }, 3000); return;
   }
-  try { const st = await window.api.deleteProfile(editingId); $('settings').close(); onProfileChanged(st); toast('Profile deleted'); }
+  try { const st = await window.api.deleteProfile(editingId); $('settings').close(); profileSaved(st, st.activeId !== state.activeId); toast('Profile deleted'); }
   catch (err) { $('perr').textContent = cleanErr(err); $('perr').hidden = false; }
 };
 $('profile').onchange = async () => {
   try { onProfileChanged(await window.api.activateProfile($('profile').value)); }
   catch (err) { showError(cleanErr(err)); applyState(state); }
 };
-$('newprofile').onclick = () => openProfileDialog(true);
 $('key').oninput = () => { keyDirty = true; };
 $('reveal').onclick = () => { const k = $('key'); k.type = k.type === 'password' ? 'text' : 'password'; };
-$('gear').onclick = openSettings;
+$('gear').onclick = () => openPrefs(state.activeId ? 'appearance' : 'profiles');
 $('fetch').onclick = fetchModels;
 $('model').onchange = () => { settings.model = $('model').value; window.api.patchSettings({ model: settings.model }); renderLevels(); if (!chat.messages.length) showEmpty(); };
 $('newchat').onclick = $('histnew').onclick = startNew;
@@ -603,8 +620,72 @@ addEventListener('dragenter', (e) => { if (hasFiles(e)) { dragDepth++; $('drop')
 addEventListener('dragleave', (e) => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; $('drop').classList.remove('on'); } });
 addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); attach([...e.dataTransfer.files]); });
-$('input').oninput = grow;
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+
+// ---- Settings dialog: Appearance / Profiles / Replies ----
+const PANES = ['appearance', 'profiles', 'replies'];
+let prefsDirty = false; // a Replies switch changed: redraw the open chat when the dialog closes
+function showPane(name, focus) {
+  for (const n of PANES) {
+    const tab = $('tab-' + n), on = n === name;
+    tab.setAttribute('aria-selected', String(on)); tab.tabIndex = on ? 0 : -1; $('pane-' + n).hidden = !on;
+    if (on && focus) tab.focus();
+  }
+}
+function openPrefs(pane) {
+  const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
+  renderThemes(); renderProfiles(); syncReplies(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
+}
+for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
+$('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
+  const d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key]; if (!d) return;
+  e.preventDefault(); showPane(PANES[(PANES.indexOf(document.activeElement.dataset.pane) + d + PANES.length) % PANES.length], true);
+};
+$('prefsclose').onclick = () => $('prefs').close();
+$('prefs').onclose = () => {
+  if (prefsDirty && !busy && chat.messages.length) { const top = $('scroll').scrollTop; renderChat(); $('scroll').scrollTop = top; }
+  prefsDirty = false; // shortcut: a reply that is still streaming keeps its old look until the chat is reopened
+};
+
+async function saveTheme(theme) {
+  applyTheme(theme); // show it at once; the saved (validated) copy replaces it below
+  try { applyState(await window.api.patchSettings({ theme })); } catch (e) { showError(cleanErr(e)); applyState(state); }
+  renderThemes();
+}
+function renderThemes() {
+  const tiles = [...Lib.THEMES, { id: 'custom', name: 'Custom', a1: $('c1').value, a2: $('c2').value }];
+  $('themegrid').replaceChildren(...tiles.map((t) => {
+    const b = el('button', 'theme'), sw = el('i'); b.type = 'button'; b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(t.id === state.theme.id));
+    sw.style.background = `linear-gradient(135deg, ${t.a1}, ${t.a2})`; b.append(sw, t.name);
+    b.onclick = () => saveTheme(t.id === 'custom' ? { id: 'custom', a1: $('c1').value, a2: $('c2').value } : { id: t.id }); return b;
+  }));
+}
+for (const c of [$('c1'), $('c2')]) { // live preview while dragging; saved when the picker commits
+  c.oninput = () => applyTheme({ id: 'custom', a1: $('c1').value, a2: $('c2').value });
+  c.onchange = () => saveTheme({ id: 'custom', a1: $('c1').value, a2: $('c2').value });
+}
+
+function renderProfiles() {
+  const host = (u) => { try { return new URL(u).host; } catch { return u; } };
+  $('proflist').replaceChildren(...(state.profiles.length ? state.profiles.map((p) => {
+    const active = p.id === state.activeId, row = el('div', 'prow' + (active ? ' active' : '')), info = el('div'), nm = el('strong', null, p.name);
+    if (active) nm.append(el('span', 'tag', 'Active'));
+    info.append(nm, el('small', null, host(p.endpoint) + (p.hasKey ? '' : ' · no API key')));
+    const ed = el('button', 'btn', 'Edit'); ed.type = 'button'; ed.setAttribute('aria-label', `Edit ${p.name}`); ed.onclick = () => openProfileDialog(false, p.id);
+    row.append(info, ed); return row;
+  }) : [el('p', 'sub', 'No profiles yet.')]));
+}
+$('addprofile').onclick = () => openProfileDialog(true);
+
+function syncReplies() {
+  for (const c of document.querySelectorAll('[data-render]')) c.checked = !!state.render[c.dataset.render];
+  for (const k of ['css', 'js']) document.querySelector(`[data-render=${k}]`).disabled = !state.render.html; // they only apply inside HTML
+}
+for (const c of document.querySelectorAll('[data-render]')) c.onchange = async () => {
+  try { applyState(await window.api.patchSettings({ render: { [c.dataset.render]: c.checked } })); prefsDirty = true; }
+  catch (e) { showError(cleanErr(e)); applyState(state); }
+  syncReplies();
+};
 
 (async () => {
   const first = await window.api.getSettings(); applyState(first); renderTemplates(); chat = newChat(); refreshPersonaUi();
