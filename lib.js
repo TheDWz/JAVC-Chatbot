@@ -71,6 +71,38 @@
     return parts.filter((p) => (p.type === 'html' ? p.html : p.text.trim()));
   }
 
+  /** A CSS color from the page, or a neutral grey when it isn't a plain color value (so it can't break out of the style tag). */
+  const safeColor = (c) => (typeof c === 'string' && /^[\w#(),.\s%/-]{1,60}$/.test(c) ? c : '#888');
+  const RESIZE = '(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()';
+  /** A CSP hash source for `s`. WebCrypto: Node, Electron and the Android WebView all have it. */
+  const sha = async (s) => `'sha256-${btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))))}'`;
+  /**
+   * The page a rich block runs in: the model's HTML plus a script that reports the content height to the reply.
+   * The desktop (main.js) and Android (JavcPlugin.java) serve `doc` with `csp` as its Content-Security-Policy.
+   * css/js off => the CSP only allows our own <style> and resize <script> (by hash, which a script can't read back like a nonce).
+   * js off also blocks child frames/objects/embeds: a remote child document isn't covered by our script-src and would run its own scripts.
+   * shortcut: with CSS off but JS on, scripts can still set element.style from JS (CSSOM isn't covered by CSP); fine for a display preference.
+   * @param {string} html The model's HTML.
+   * @param {string} color The reply's text color.
+   * @param {string} scheme 'light' or 'dark'; must match the app's, or the frame gets an opaque white background.
+   * @param {{css?: boolean, js?: boolean}} [flags] The Replies switches; both default to on.
+   * @returns {Promise<{doc: string, csp: string}>}
+   */
+  async function richDoc(html, color, scheme, flags) {
+    const s = scheme === 'light' ? 'light' : 'dark', css = flags?.css !== false, js = flags?.js !== false;
+    const style = `:root{color-scheme:${s}}html,body{margin:0;background:transparent}body{color:${safeColor(color)};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}`;
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${s}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${style}</style></head><body>${html}<script>${RESIZE}</script></body></html>`;
+    const csp = ['sandbox allow-scripts', !css && `style-src ${await sha(style)}`, !js && `script-src ${await sha(RESIZE)}; frame-src 'none'; object-src 'none'`].filter(Boolean).join('; ');
+    return { doc, csp };
+  }
+  const RICH_MAX = 2_000_000;
+
+  /** The size of a w×h image scaled to fit in max×max, keeping its shape; never enlarged. `scaled` says whether it shrank. */
+  function fitSize(w, h, max) {
+    const s = Math.min(1, max / Math.max(w, h));
+    return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)), scaled: s < 1 };
+  }
+
   // Reply display toggles (all on by default). The system hint tells the model only what the user has switched on.
   const RENDER_KEYS = ['markdown', 'html', 'css', 'js'];
   const renderHint = ({ markdown = true, html = true, css = true, js = true } = {}) => {
@@ -125,5 +157,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors };
+  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
 });

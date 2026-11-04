@@ -1,48 +1,80 @@
-// One JSON file per chat, plus _index.json (id, title, updated, personaId) so listing never opens the chats themselves.
+// One JSON file per chat, plus _index.json (id, title, updated, personaId) so listing doesn't open every chat.
 // Each chat holds only its own messages, which is what keeps chats isolated.
-const fs = require('node:fs');
-const path = require('node:path');
+// `io` is the chats folder (see disk.js); the same code runs on the desktop and on Android.
 
-module.exports = (dir) => {
+/**
+ * The chat history store.
+ * @param {object} io The chats folder: { read, write, remove, list } as in disk.js.
+ */
+module.exports = (io) => {
+  /** The file name of chat `id`; rejects anything that isn't a plain id, so a name can never point outside the folder. */
   const file = (id) => {
     if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) throw new Error('Invalid chat id');
-    return path.join(dir, id + '.json');
+    return id + '.json';
   };
-  const indexFile = path.join(dir, '_index.json'); // '_' can't appear in an id, so it never collides with a chat
-  const atomicWrite = (f, text) => {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(f + '.tmp', text, { mode: 0o600 });
-    fs.renameSync(f + '.tmp', f); // a crash mid-write can't corrupt the saved file
+  const INDEX = '_index.json'; // '_' can't appear in an id, so it never collides with a chat
+  let queue = Promise.resolve(); // one operation at a time, so the index is never rewritten from a stale copy
+  const serial = (fn) => (...args) => { const run = queue.then(() => fn(...args)); queue = run.catch(() => {}); return run; };
+
+  /** The chat file names in the folder, or null when the folder can't be listed. */
+  const chatFiles = async () => {
+    try { return (await io.list()).filter((n) => n.endsWith('.json') && n !== INDEX); } catch { return null; }
   };
-  const scan = () => {
-    let names = [];
-    try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json') && n !== '_index.json'); } catch { return []; }
+  /**
+   * Index entries read from the given chat files. A corrupt file, or one whose id doesn't match its name, is skipped
+   * instead of losing the whole list (an entry under the wrong id could never be opened, and would be re-added forever).
+   */
+  const entries = async (names) => {
     const out = [];
     for (const n of names) {
-      try { const c = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); out.push({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId }); }
-      catch {} // skip a corrupt file instead of losing the whole list
+      try {
+        const c = JSON.parse(await io.read(n));
+        if (c && c.id + '.json' === n) out.push({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId });
+      } catch {}
     }
     return out;
   };
-  const readIndex = () => { try { const ix = JSON.parse(fs.readFileSync(indexFile, 'utf8')); return Array.isArray(ix) ? ix : null; } catch { return null; } };
-  const index = () => readIndex() ?? scan(); // missing or damaged index: rebuild from the chats
-  const sorted = (ix) => ix.toSorted((a, b) => b.updated - a.updated);
+  /** The saved index, or null when it's missing or damaged. */
+  const readIndex = async () => { try { const ix = JSON.parse(await io.read(INDEX)); return Array.isArray(ix) ? ix : null; } catch { return null; } };
+  /** The index, rebuilt from the chat files when it's missing or damaged. */
+  const index = async () => (await readIndex()) ?? entries((await chatFiles()) ?? []);
+  const sorted = (ix) => [...ix].sort((a, b) => b.updated - a.updated);
 
   return {
-    list() {
-      let ix = readIndex();
-      if (!ix) { ix = scan(); if (ix.length) atomicWrite(indexFile, JSON.stringify(ix)); }
+    /**
+     * All chats, newest first. The index is checked against the chat files, so an interrupted save or delete can't hide a
+     * chat or list a deleted one: entries without a file are dropped and files missing from the index are added.
+     */
+    list: serial(async () => {
+      const names = await chatFiles(), saved = await readIndex();
+      if (!names) return sorted(saved ?? []); // can't see the folder: show what the index says
+      let ix = saved;
+      if (!ix) ix = await entries(names);
+      else {
+        const onDisk = new Set(names.map((n) => n.slice(0, -5)));
+        const kept = ix.filter((c) => onDisk.has(c.id)), known = new Set(kept.map((c) => c.id));
+        const added = await entries(names.filter((n) => !known.has(n.slice(0, -5))));
+        ix = kept.length === saved.length && !added.length ? saved : [...kept, ...added];
+      }
+      if (ix !== saved && (ix.length || saved)) await io.write(INDEX, JSON.stringify(ix));
       return sorted(ix);
-    },
-    load: (id) => JSON.parse(fs.readFileSync(file(id), 'utf8')),
-    save(chat) {
+    }),
+    /** The full chat `id`; an error if it no longer exists. */
+    load: serial(async (id) => {
+      const text = await io.read(file(id));
+      if (text === null) throw new Error('This chat no longer exists');
+      return JSON.parse(text);
+    }),
+    /** Writes the chat, then its index entry. */
+    save: serial(async (chat) => {
       const f = file(chat.id);
-      atomicWrite(f, JSON.stringify(chat));
-      atomicWrite(indexFile, JSON.stringify([...index().filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title, updated: chat.updated, personaId: chat.personaId }]));
-    },
-    remove(id) {
-      fs.rmSync(file(id), { force: true });
-      atomicWrite(indexFile, JSON.stringify(index().filter((c) => c.id !== id)));
-    },
+      await io.write(f, JSON.stringify(chat));
+      await io.write(INDEX, JSON.stringify([...(await index()).filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title, updated: chat.updated, personaId: chat.personaId }]));
+    }),
+    /** Deletes the chat, then its index entry. */
+    remove: serial(async (id) => {
+      await io.remove(file(id));
+      await io.write(INDEX, JSON.stringify((await index()).filter((c) => c.id !== id)));
+    }),
   };
 };

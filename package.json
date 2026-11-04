@@ -9,11 +9,20 @@
     "test": "node --test test.js",
     "dist:linux": "electron-builder --linux",
     "dist:win": "npm install --no-save --force @napi-rs/canvas-win32-x64-msvc@$(node -p \"require('@napi-rs/canvas/package.json').version\") && electron-builder --win",
-    "dist": "npm run dist:linux && npm run dist:win"
+    "dist": "npm run dist:linux && npm run dist:win",
+    "build:mobile": "node mobile/build.mjs",
+    "android:sync": "npm run build:mobile && cap sync android",
+    "dist:android": "npm run android:sync && node mobile/gradle.mjs assembleRelease",
+    "dist:android:debug": "npm run android:sync && node mobile/gradle.mjs assembleDebug"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/cli": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
     "electron": "^45.2.1",
-    "electron-builder": "^26.18.0"
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2"
   },
   "dependencies": {
     "marked": "^18.1.2",
@@ -44,6 +53,7 @@
         "chats.js",
         "profiles.js",
         "store.js",
+        "disk.js",
         "lib.js",
         "renderer.js",
         "index.html",
@@ -63,6 +73,7 @@
         "chats.js",
         "profiles.js",
         "store.js",
+        "disk.js",
         "lib.js",
         "renderer.js",
         "index.html",

@@ -59,18 +59,20 @@ test('custom gateway: metadata or manual format selects the request shape', () =
 
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const makeChats = require('./chats');
+const { makeDisk, migrateLegacy } = require('./disk');
+const tmpChats = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chats-')); return { dir, store: makeChats(makeDisk(dir)) }; };
 
-test('chat store keeps chats separate, sorted, deletable, and rejects bad ids', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chats-'));
-  const store = makeChats(dir);
-  store.save({ id: 'a1', title: 'A', updated: 1, messages: [{ role: 'user', content: 'alpha' }] });
-  store.save({ id: 'b2', title: 'B', updated: 2, messages: [{ role: 'user', content: 'beta' }] });
-  assert.deepStrictEqual(store.list().map((c) => c.id), ['b2', 'a1']);
-  assert.deepStrictEqual(store.load('a1').messages, [{ role: 'user', content: 'alpha' }]);
-  store.remove('a1');
-  assert.deepStrictEqual(store.list().map((c) => c.id), ['b2']);
-  assert.throws(() => store.load('../x'), /Invalid chat id/);
-  assert.throws(() => store.save({ id: '../../evil' }), /Invalid chat id/);
+test('chat store keeps chats separate, sorted, deletable, and rejects bad ids', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [{ role: 'user', content: 'alpha' }] });
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [{ role: 'user', content: 'beta' }] });
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2', 'a1']);
+  assert.deepStrictEqual((await store.load('a1')).messages, [{ role: 'user', content: 'alpha' }]);
+  await store.remove('a1');
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2']);
+  await assert.rejects(store.load('a1'), /no longer exists/);
+  await assert.rejects(store.load('../x'), /Invalid chat id/);
+  await assert.rejects(store.save({ id: '../../evil' }), /Invalid chat id/);
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -181,20 +183,37 @@ test('profiles: publicView never exposes keys', () => {
 });
 
 // ---- chats index ----
-test('chat list reads only the index, rebuilds it when missing, and keeps it in step with save/remove', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chats-'));
-  const store = makeChats(dir);
-  store.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
-  store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+test('chat list reads only the index, rebuilds it when missing, and keeps it in step with save/remove', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
   fs.writeFileSync(path.join(dir, 'a1.json'), 'not json'); // list must not open chat files
-  assert.deepStrictEqual(store.list().map((c) => c.id), ['b2', 'a1']);
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2', 'a1']);
   fs.rmSync(path.join(dir, '_index.json'));
-  assert.deepStrictEqual(store.list().map((c) => c.id), ['b2']); // rebuilt by scanning; the corrupt chat is skipped
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2']); // rebuilt by scanning; the corrupt chat is skipped
   assert.ok(fs.existsSync(path.join(dir, '_index.json')));
-  store.remove('b2');
-  assert.deepStrictEqual(store.list(), []);
-  assert.throws(() => store.load('_index'), /Invalid chat id/);
+  await store.remove('b2');
+  assert.deepStrictEqual(await store.list(), []);
+  await assert.rejects(store.load('_index'), /Invalid chat id/);
   assert.ok(!fs.readdirSync(dir).some((n) => n.endsWith('.tmp')));
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('chat saves fired together all land in the index', async () => {
+  const { dir, store } = tmpChats();
+  await Promise.all(['a1', 'b2', 'c3', 'd4'].map((id, i) => store.save({ id, title: id, updated: i, messages: [] })));
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['d4', 'c3', 'b2', 'a1']);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('disk: missing files read as null, names cannot leave the folder, writes leave no temp files', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-')), d = makeDisk(path.join(dir, 'sub'));
+  assert.strictEqual(await d.read('nope.json'), null);
+  assert.deepStrictEqual(await d.list(), []); // folder not created yet
+  await d.write('a.json', 'x'); assert.strictEqual(await d.read('a.json'), 'x');
+  await d.rename('a.json', 'b.json'); assert.deepStrictEqual(await d.list(), ['b.json']);
+  await d.remove('b.json'); await d.remove('b.json'); // removing twice is fine
+  for (const bad of ['../x', 'a/b', 'a\\b', '..', '']) await assert.rejects(d.read(bad), /Invalid file name/);
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -227,59 +246,81 @@ test('a non-JSON reply gets a friendly error', async () => {
 // ---- settings store ----
 const makeStore = require('./store');
 const rot = { available: () => true, enc: (t) => Buffer.from(t).toString('base64'), dec: (b) => Buffer.from(b, 'base64').toString() };
-const tmpStore = (crypto = rot) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'set-')); const file = path.join(dir, 'settings.json'); return { dir, file, store: makeStore({ file, crypto }) }; };
+const tmpStore = (crypto = rot) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'set-')); const file = path.join(dir, 'settings.json'); return { dir, file, store: makeStore({ io: makeDisk(dir), crypto }) }; };
 
-test('store: a damaged settings file is quarantined, not overwritten', () => {
+test('store: a damaged settings file is quarantined, not overwritten', async () => {
   const { dir, file, store } = tmpStore();
   fs.writeFileSync(file, '{"version":2,"profiles":[{"id":"p1","keyEnc":"abc"');
-  assert.deepStrictEqual(store.get().profiles, []);
+  assert.deepStrictEqual((await store.get()).profiles, []);
   assert.match(store.takeNotice(), /damaged/); assert.strictEqual(store.takeNotice(), '');
   assert.strictEqual(fs.readFileSync(file + '.bad', 'utf8'), '{"version":2,"profiles":[{"id":"p1","keyEnc":"abc"');
-  fs.writeFileSync(file, 'null'); assert.deepStrictEqual(store.get().profiles, []); // valid JSON that is not an object
+  fs.writeFileSync(file, 'null'); assert.deepStrictEqual((await store.get()).profiles, []); // valid JSON that is not an object
   assert.ok(!fs.readdirSync(dir).some((n) => n.endsWith('.tmp')));
   fs.rmSync(dir, { recursive: true });
 });
 
-test('store: saving a profile without `key` keeps the stored key; `key: ""` clears it; errors never wipe it', () => {
+test('store: saving a profile without `key` keeps the stored key; `key: ""` clears it; errors never wipe it', async () => {
   const { dir, store } = tmpStore();
-  const st = store.saveProfile({ name: 'P', endpoint: 'http://x/v1/', key: 'sk-1' });
+  const st = await store.saveProfile({ name: 'P', endpoint: 'http://x/v1/', key: 'sk-1' });
   const id = st.activeId;
-  assert.strictEqual(store.key(id), 'sk-1'); assert.strictEqual(st.profiles[0].hasKey, true);
-  store.saveProfile({ id, name: 'Renamed', endpoint: 'http://x/v1' });
-  assert.strictEqual(store.key(id), 'sk-1');
-  assert.throws(() => store.saveProfile({ id, endpoint: 'ftp://x' }), /http/);
-  assert.strictEqual(store.key(id), 'sk-1');
-  store.saveProfile({ id, name: 'Renamed', endpoint: 'http://x/v1', key: '' });
-  assert.strictEqual(store.key(id), '');
+  assert.strictEqual(await store.key(id), 'sk-1'); assert.strictEqual(st.profiles[0].hasKey, true);
+  await store.saveProfile({ id, name: 'Renamed', endpoint: 'http://x/v1' });
+  assert.strictEqual(await store.key(id), 'sk-1');
+  await assert.rejects(store.saveProfile({ id, endpoint: 'ftp://x' }), /http/);
+  assert.strictEqual(await store.key(id), 'sk-1');
+  await store.saveProfile({ id, name: 'Renamed', endpoint: 'http://x/v1', key: '' });
+  assert.strictEqual(await store.key(id), '');
   fs.rmSync(dir, { recursive: true });
 });
 
-test('store: undecryptable key is a clear error, plaintext keys upgrade, patch never creates a profile', () => {
+test('store: undecryptable key is a clear error, plaintext keys upgrade, patch never creates a profile', async () => {
   const { dir, file, store } = tmpStore();
-  assert.throws(() => store.load(), /No profile yet/);
-  store.patch({ model: 'm' }); assert.deepStrictEqual(store.get().profiles, []);
-  const id = store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' }).activeId;
-  assert.strictEqual(store.load().key, 'sk-1');
-  const broken = makeStore({ file, crypto: { ...rot, dec: () => { throw new Error('locked'); } } });
-  assert.throws(() => broken.load(), /Couldn't read the saved API key/);
+  await assert.rejects(store.load(), /No profile yet/);
+  await store.patch({ model: 'm' }); assert.deepStrictEqual((await store.get()).profiles, []);
+  const id = (await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' })).activeId;
+  assert.strictEqual((await store.load()).key, 'sk-1');
+  const broken = makeStore({ io: makeDisk(dir), crypto: { ...rot, dec: () => { throw new Error('locked'); } } });
+  await assert.rejects(broken.load(), /Couldn't read the saved API key/);
   assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).profiles[0].keyEnc !== undefined, true); // still on disk
   const raw = JSON.parse(fs.readFileSync(file, 'utf8')); raw.profiles[0] = { ...raw.profiles[0], keyEnc: undefined, keyPlain: 'sk-9' };
   fs.writeFileSync(file, JSON.stringify(raw));
-  assert.strictEqual(store.key(id), 'sk-9');
+  assert.strictEqual(await store.key(id), 'sk-9');
   assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).profiles[0].keyEnc); // upgraded on read
   assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).profiles[0].keyPlain, undefined);
-  store.patch({ effort: 'high', model: 'gpt' }); const v = store.get();
+  await store.patch({ effort: 'high', model: 'gpt' }); const v = await store.get();
   assert.strictEqual(v.effort, 'high'); assert.strictEqual(v.profiles[0].model, 'gpt');
   if (process.platform !== 'win32') assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600); // Windows has no POSIX modes; %APPDATA% is per-user
   fs.rmSync(dir, { recursive: true });
 });
 
-test('store: thinkingSwitch flag comes from the one regex in api.js', () => {
+test('store: no keyring stores the key in the private file; async crypto works too', async () => {
+  const { dir, file, store } = tmpStore({ available: () => false });
+  await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).profiles[0].keyPlain, 'sk-1');
+  const later = makeStore({ io: makeDisk(dir), crypto: { available: async () => true, enc: async (t) => rot.enc(t), dec: async (b) => rot.dec(b) } });
+  assert.strictEqual((await later.load()).key, 'sk-1'); // and the key is upgraded once a keyring shows up
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).profiles[0].keyEnc, rot.enc('sk-1'));
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: changes fired together are applied one after another, none is lost', async () => {
   const { dir, store } = tmpStore();
-  store.saveProfile({ name: 'D', endpoint: 'https://api.deepseek.com/v1' });
-  assert.strictEqual(store.get().profiles[0].thinkingSwitch, true);
-  store.saveProfile({ name: 'O', endpoint: 'https://api.openai.com/v1' });
-  assert.strictEqual(store.get().profiles[1].thinkingSwitch, false);
+  await store.saveProfile({ name: 'P', endpoint: 'http://x' });
+  const slow = makeStore({ io: { ...makeDisk(dir), read: async (n) => { await new Promise((r) => setTimeout(r, 5)); return makeDisk(dir).read(n); } }, crypto: rot });
+  await Promise.all([slow.patch({ model: 'm1' }), slow.patch({ effort: 'high' }), slow.patch({ render: { html: false } }), slow.patch({ theme: { id: 'ocean' } }), slow.patch({ meta: true })]);
+  const v = await store.get();
+  assert.deepStrictEqual([v.profiles[0].model, v.effort, v.render.html, v.theme.id, v.profiles[0].meta], ['m1', 'high', false, 'ocean', true]);
+  await assert.rejects(slow.activate('nope'), /Unknown profile/); // a failed call doesn't block the next one
+  assert.strictEqual((await slow.get()).effort, 'high');
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: thinkingSwitch flag comes from the one regex in api.js', async () => {
+  const { dir, store } = tmpStore();
+  await store.saveProfile({ name: 'D', endpoint: 'https://api.deepseek.com/v1' });
+  assert.strictEqual((await store.get()).profiles[0].thinkingSwitch, true);
+  await store.saveProfile({ name: 'O', endpoint: 'https://api.openai.com/v1' });
+  assert.strictEqual((await store.get()).profiles[1].thinkingSwitch, false);
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -325,13 +366,12 @@ test('Lib.requestMessages puts the persona first and still never mixes chats', (
   assert.deepStrictEqual(Lib.requestMessages(b, { user: '', bot: '', prompt: '' }), [{ role: 'user', content: 'beta' }]);
 });
 
-test('chats index keeps personaId', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chats-'));
-  const store = makeChats(dir);
-  store.save({ id: 'a1', title: 'A', updated: 1, personaId: 'ps-1', messages: [] });
-  assert.strictEqual(store.list()[0].personaId, 'ps-1');
+test('chats index keeps personaId', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, personaId: 'ps-1', messages: [] });
+  assert.strictEqual((await store.list())[0].personaId, 'ps-1');
   fs.rmSync(path.join(dir, '_index.json'));
-  assert.strictEqual(store.list()[0].personaId, 'ps-1'); // survives an index rebuild
+  assert.strictEqual((await store.list())[0].personaId, 'ps-1'); // survives an index rebuild
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -347,19 +387,19 @@ test('profiles: personas are seeded, kept, and a bad personaId falls back to def
   assert.strictEqual(profiles.publicView(st).personas.length, 2);
 });
 
-test('store: save/select/delete personas; Default cannot be deleted; unknown personaId is ignored', () => {
+test('store: save/select/delete personas; Default cannot be deleted; unknown personaId is ignored', async () => {
   const { dir, store } = tmpStore();
-  let v = store.savePersona({ name: '', bot: ' Captain ', user: 'Dalton', prompt: 'Arr' });
+  let v = await store.savePersona({ name: '', bot: ' Captain ', user: 'Dalton', prompt: 'Arr' });
   const id = v.personaId;
   assert.notStrictEqual(id, 'default');
   assert.deepStrictEqual(v.personas.find((p) => p.id === id), { id, name: 'Captain', user: 'Dalton', bot: 'Captain', prompt: 'Arr' });
-  v = store.savePersona({ id, name: 'Pirate', bot: 'Captain', user: 'Dalton', prompt: 'Arr!' });
+  v = await store.savePersona({ id, name: 'Pirate', bot: 'Captain', user: 'Dalton', prompt: 'Arr!' });
   assert.strictEqual(v.personas.length, 2); assert.strictEqual(v.personas.find((p) => p.id === id).name, 'Pirate');
-  assert.strictEqual(store.patch({ personaId: 'default' }).personaId, 'default');
-  assert.strictEqual(store.patch({ personaId: 'nope' }).personaId, 'default');
-  assert.throws(() => store.deletePersona('default'), /can't be deleted/);
-  store.patch({ personaId: id });
-  v = store.deletePersona(id);
+  assert.strictEqual((await store.patch({ personaId: 'default' })).personaId, 'default');
+  assert.strictEqual((await store.patch({ personaId: 'nope' })).personaId, 'default');
+  await assert.rejects(store.deletePersona('default'), /can't be deleted/);
+  await store.patch({ personaId: id });
+  v = await store.deletePersona(id);
   assert.deepStrictEqual(v.personas.map((p) => p.id), ['default']); assert.strictEqual(v.personaId, 'default');
   fs.rmSync(dir, { recursive: true });
 });
@@ -404,29 +444,29 @@ test('Lib.renderHint only mentions what is switched on', () => {
   assert.match(h({ markdown: false, html: false }), /plain text\. Do not use Markdown or HTML/);
 });
 
-test('render setting: all on by default, old rich:false migrates, only booleans accepted', () => {
+test('render setting: all on by default, old rich:false migrates, only booleans accepted', async () => {
   assert.deepStrictEqual(profiles.migrate({}).render, { markdown: true, html: true, css: true, js: true });
   assert.deepStrictEqual(profiles.migrate({ version: 2, profiles: [], rich: false }).render, { markdown: true, html: false, css: false, js: false });
   assert.deepStrictEqual(profiles.migrate({ version: 2, profiles: [], rich: false, render: { html: true } }).render, { markdown: true, html: true, css: false, js: false });
   const { dir, store } = tmpStore();
-  assert.strictEqual(store.get().render.html, true);
-  assert.strictEqual(store.patch({ render: { html: false } }).render.html, false);
-  assert.strictEqual(store.patch({ render: { css: 'no', bogus: true } }).render.css, true); // ignored, not coerced
-  assert.strictEqual('bogus' in store.get().render, false);
-  assert.deepStrictEqual(store.patch({ render: { markdown: false, html: true } }).render, { markdown: false, html: true, css: true, js: true });
+  assert.strictEqual((await store.get()).render.html, true);
+  assert.strictEqual((await store.patch({ render: { html: false } })).render.html, false);
+  assert.strictEqual((await store.patch({ render: { css: 'no', bogus: true } })).render.css, true); // ignored, not coerced
+  assert.strictEqual('bogus' in (await store.get()).render, false);
+  assert.deepStrictEqual((await store.patch({ render: { markdown: false, html: true } })).render, { markdown: false, html: true, css: true, js: true });
   fs.rmSync(dir, { recursive: true });
 });
 
-test('theme setting: Aurora by default; presets and valid custom colors accepted, anything else ignored', () => {
+test('theme setting: Aurora by default; presets and valid custom colors accepted, anything else ignored', async () => {
   assert.deepStrictEqual(profiles.migrate({}).theme, { id: 'aurora' });
   const { dir, file, store } = tmpStore();
-  assert.strictEqual(store.patch({ theme: { id: 'sunset' } }).theme.id, 'sunset');
-  assert.strictEqual(store.patch({ theme: { id: 'nope' } }).theme.id, 'sunset');
-  assert.strictEqual(store.patch({ theme: { id: 'custom', a1: 'red', a2: '#123456' } }).theme.id, 'sunset');
-  assert.strictEqual(store.patch({ theme: { id: 'custom', a1: '#ABCDEF', a2: '#123456', evil: '<x>' } }).theme.id, 'custom');
+  assert.strictEqual((await store.patch({ theme: { id: 'sunset' } })).theme.id, 'sunset');
+  assert.strictEqual((await store.patch({ theme: { id: 'nope' } })).theme.id, 'sunset');
+  assert.strictEqual((await store.patch({ theme: { id: 'custom', a1: 'red', a2: '#123456' } })).theme.id, 'sunset');
+  assert.strictEqual((await store.patch({ theme: { id: 'custom', a1: '#ABCDEF', a2: '#123456', evil: '<x>' } })).theme.id, 'custom');
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).theme, { id: 'custom', a1: '#abcdef', a2: '#123456' });
   fs.writeFileSync(file, JSON.stringify({ version: 2, profiles: [], theme: { id: 'custom', a1: 'url(javascript:1)', a2: '#fff' } }));
-  assert.deepStrictEqual(store.get().theme, { id: 'aurora' }); // a damaged theme falls back instead of reaching the CSS
+  assert.deepStrictEqual((await store.get()).theme, { id: 'aurora' }); // a damaged theme falls back instead of reaching the CSS
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -437,19 +477,246 @@ test('every preset theme keeps white text at least as readable as the weakest en
   for (const t of Lib.THEMES) for (const c of [t.a1, t.a2]) assert.ok(contrastWhite(c) >= floor, `${t.name} ${c} contrast ${contrastWhite(c).toFixed(2)} < ${floor.toFixed(2)}`);
 });
 
+test('Lib.richDoc: the color and scheme can never break out of the page head', async () => {
+  const { doc, csp } = await Lib.richDoc('<b>hi</b>', 'red;}</style><script>alert(1)</script>', 'evil');
+  assert.match(doc, /color:#888/); assert.match(doc, /color-scheme:dark/); assert.ok(!doc.includes('alert(1)'));
+  assert.strictEqual(csp, 'sandbox allow-scripts'); // everything on: only the sandbox
+  assert.match((await Lib.richDoc('x', 'rgb(1, 2, 3)', 'light')).doc, /color:rgb\(1, 2, 3\).*<body>x<script>/s);
+  assert.match((await Lib.richDoc('x', '#fff', 'light')).doc, /content="light"/);
+});
+
+test('Lib.richDoc: with CSS or JavaScript off, the CSP allows only the page\'s own style and resize script, by hash', async () => {
+  const hash = (s) => `'sha256-${require('node:crypto').createHash('sha256').update(s).digest('base64')}'`;
+  const { doc, csp } = await Lib.richDoc('<p>x</p>', '#fff', 'dark', { css: false, js: false });
+  const style = /<style>(.*?)<\/style>/.exec(doc)[1], script = /<script>(.*?)<\/script>/s.exec(doc)[1];
+  assert.strictEqual(csp, `sandbox allow-scripts; style-src ${hash(style)}; script-src ${hash(script)}; frame-src 'none'; object-src 'none'`);
+  assert.strictEqual((await Lib.richDoc('x', '#fff', 'dark', { css: false })).csp, `sandbox allow-scripts; style-src ${hash(style)}`);
+  assert.ok(!(await Lib.richDoc('x', '#fff', 'dark', { js: false })).csp.includes('style-src'));
+});
+
 test('migrateLegacy: moves settings and chats once, never overwrites the new folder', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-')), from = path.join(root, 'chatbot'), to = path.join(root, 'javc-chatbot');
-  assert.deepStrictEqual(makeStore.migrateLegacy(from, to), []); // no legacy folder: nothing happens
+  assert.deepStrictEqual(migrateLegacy(from, to), []); // no legacy folder: nothing happens
   assert.ok(!fs.existsSync(to));
   fs.mkdirSync(path.join(from, 'chats'), { recursive: true });
   fs.writeFileSync(path.join(from, 'settings.json'), '{"old":1}'); fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{}');
   fs.mkdirSync(path.join(to, 'Crashpad'), { recursive: true }); // Electron may create the new folder first
-  assert.deepStrictEqual(makeStore.migrateLegacy(from, to), ['settings.json', 'chats']);
+  assert.deepStrictEqual(migrateLegacy(from, to), ['settings.json', 'chats']);
   assert.strictEqual(fs.readFileSync(path.join(to, 'settings.json'), 'utf8'), '{"old":1}');
   assert.ok(fs.existsSync(path.join(to, 'chats', 'a.json')) && !fs.existsSync(path.join(from, 'settings.json')));
   fs.writeFileSync(path.join(from, 'settings.json'), '{"stale":1}'); // target already set up: leave both sides alone
-  assert.deepStrictEqual(makeStore.migrateLegacy(from, to), []);
+  assert.deepStrictEqual(migrateLegacy(from, to), []);
   assert.strictEqual(fs.readFileSync(path.join(to, 'settings.json'), 'utf8'), '{"old":1}');
   assert.ok(fs.existsSync(path.join(from, 'settings.json')));
+  fs.rmSync(root, { recursive: true });
+});
+
+// ---- Android: the native plugin adapters (mobile/native.js), driven by a fake plugin ----
+const { makeNativeFetch, makeNativeDisk, makeNativeCrypto } = require('./mobile/native');
+
+// respond(req, send) returns the head ({status, headers}) or throws; send(ev) emits an "http" event for this request.
+function fakeHttp(respond) {
+  const listeners = [], aborted = [], seen = [];
+  const plugin = {
+    addListener: async (name, fn) => { assert.strictEqual(name, 'http'); listeners.push(fn); return { remove() {} }; },
+    httpStart: async (req) => { seen.push(req); return respond(req, (ev) => setTimeout(() => listeners.forEach((l) => l({ id: req.id, ...ev })), 0)); },
+    httpAbort: async ({ id }) => { aborted.push(id); },
+  };
+  return { fetch: makeNativeFetch(plugin), aborted, seen };
+}
+const b64 = (s) => Buffer.from(s).toString('base64');
+const sendInPieces = (send, text, size = 5) => { const b = Buffer.from(text); for (let i = 0; i < b.length; i += size) send({ type: 'data', data: b.subarray(i, i + size).toString('base64') }); send({ type: 'end' }); };
+
+test('native fetch: chatStream streams through the plugin, even with characters split across chunks', async () => {
+  const { fetch, seen } = fakeHttp((req, send) => {
+    sendInPieces(send, frames([{ reasoning_content: 'hmm… ' }, { content: 'Grüße ' }, { content: '🙂' }]));
+    return { status: 200, headers: { 'content-type': 'text/event-stream' } };
+  });
+  const deltas = [];
+  const out = await chatStream('https://x/v1/', 'k', 'm', [{ role: 'user', content: 'hi' }], {}, (d) => deltas.push(d), fetch);
+  assert.deepStrictEqual([out.reasoning, out.content], ['hmm… ', 'Grüße 🙂']);
+  assert.ok(deltas.length >= 3);
+  assert.strictEqual(seen[0].url, 'https://x/v1/chat/completions'); assert.strictEqual(seen[0].method, 'POST');
+  assert.strictEqual(seen[0].headers.Authorization, 'Bearer k'); assert.strictEqual(JSON.parse(seen[0].body).stream, true);
+});
+
+test('native fetch: error bodies, network failures and empty responses behave like fetch', async () => {
+  const bad = fakeHttp((req, send) => { send({ type: 'data', data: b64('{"error":"bad key"}') }); send({ type: 'end' }); return { status: 401, headers: {} }; });
+  await assert.rejects(listModelsDetailed('http://x', 'k', bad.fetch), /HTTP 401: \{"error":"bad key"\}/);
+  assert.strictEqual(bad.seen[0].body, null); assert.strictEqual(bad.seen[0].method, 'GET');
+  const down = fakeHttp(() => { throw new Error('Unable to resolve host "x"'); });
+  await assert.rejects(down.fetch('http://x'), (e) => e instanceof TypeError && /resolve host/.test(e.message));
+  const empty = fakeHttp(() => ({ status: 204, headers: { 'x-a': '1' } }));
+  const res = await empty.fetch('http://x'); assert.strictEqual(res.status, 204); assert.strictEqual(res.body, null); assert.strictEqual(res.headers.get('x-a'), '1');
+  const broken = fakeHttp((req, send) => { send({ type: 'data', data: b64('data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n') }); send({ type: 'error', message: 'connection reset' }); return { status: 200, headers: { 'content-type': 'text/event-stream' } }; });
+  const out = await chatStream('http://x', '', 'm', [], {}, () => {}, broken.fetch);
+  assert.strictEqual(out.content, 'Hel'); assert.match(out.error, /connection reset/);
+});
+
+test('native fetch: Stop works before the server answers and while the reply streams', async () => {
+  const early = fakeHttp(() => new Promise(() => {})); // the server never answers
+  const ctl = new AbortController();
+  const p = chatStream('http://x', '', 'm', [], {}, () => {}, early.fetch, ctl.signal);
+  setTimeout(() => ctl.abort(), 10);
+  await assert.rejects(p, /Stopped/);
+  assert.strictEqual(early.aborted.length, 1);
+
+  let sendLater;
+  const late = fakeHttp((req, send) => { send({ type: 'data', data: b64(frames([{ content: 'Partial' }]).replace('data: [DONE]\n\n', '')) }); sendLater = send; return { status: 200, headers: { 'content-type': 'text/event-stream' } }; });
+  const ctl2 = new AbortController(), got = [];
+  const p2 = chatStream('http://x', '', 'm', [], {}, (d) => { got.push(d); ctl2.abort(); }, late.fetch, ctl2.signal);
+  const out = await p2;
+  assert.strictEqual(out.content, 'Partial'); assert.strictEqual(out.stopped, true);
+  assert.strictEqual(late.aborted.length, 1);
+  sendLater({ type: 'data', data: b64('ignored') }); sendLater({ type: 'end' }); // late events for a stopped request are dropped
+  await new Promise((r) => setTimeout(r, 5));
+  const pre = new AbortController(); pre.abort();
+  await assert.rejects(late.fetch('http://x', { signal: pre.signal }), { name: 'AbortError' });
+});
+
+// An in-memory stand-in for the plugin's private files and Keystore.
+function fakeFiles() {
+  const files = new Map(), dirOf = (p) => p.split('/').slice(0, -1).join('/');
+  return {
+    files,
+    fsRead: async ({ path: p }) => (files.has(p) ? { exists: true, text: files.get(p) } : { exists: false }),
+    fsWrite: async ({ path: p, text }) => { files.set(p, text); },
+    fsRemove: async ({ path: p }) => { files.delete(p); },
+    fsList: async ({ path: d }) => ({ names: [...files.keys()].filter((p) => dirOf(p) === d).map((p) => p.split('/').pop()) }),
+    fsRename: async ({ from, to }) => { if (!files.has(from)) throw new Error('missing'); files.set(to, files.get(from)); files.delete(from); },
+    cryptoAvailable: async () => ({ available: true }),
+    encrypt: async ({ text }) => ({ data: 'enc:' + b64(text) }),
+    decrypt: async ({ data }) => { if (!data.startsWith('enc:')) throw new Error('bad tag'); return { text: Buffer.from(data.slice(4), 'base64').toString() }; },
+  };
+}
+
+test('native disk + crypto: settings and chats work the same as on the desktop', async () => {
+  const fake = fakeFiles();
+  const store = makeStore({ io: makeNativeDisk(fake), crypto: makeNativeCrypto(fake) });
+  const id = (await store.saveProfile({ name: 'P', endpoint: 'http://192.168.1.5:11434/v1', key: 'sk-1' })).activeId;
+  assert.strictEqual((await store.load()).key, 'sk-1');
+  assert.match(JSON.parse(fake.files.get('settings.json')).profiles[0].keyEnc, /^enc:/);
+  fake.files.set('settings.json', '{broken'); assert.deepStrictEqual((await store.get()).profiles, []);
+  assert.ok(fake.files.has('settings.json.bad')); assert.match(store.takeNotice(), /damaged/);
+  assert.notStrictEqual(id, undefined);
+
+  const chats = makeChats(makeNativeDisk(fake, 'chats'));
+  await chats.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  await chats.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  assert.deepStrictEqual((await chats.list()).map((c) => c.id), ['b2', 'a1']);
+  assert.ok(fake.files.has('chats/a1.json') && fake.files.has('chats/_index.json'));
+  fake.files.delete('chats/_index.json');
+  assert.deepStrictEqual((await chats.list()).map((c) => c.id), ['b2', 'a1']); // rebuilt from the chat files
+  await assert.rejects(makeNativeDisk(fake, 'chats').read('../settings.json'), /Invalid file name/);
+});
+
+test('native crypto: a failing Keystore self-test means keys stay in private storage, and is only tried once', async () => {
+  const fake = fakeFiles(); let tries = 0;
+  fake.cryptoAvailable = async () => { tries++; throw new Error('KeyStoreException'); };
+  const store = makeStore({ io: makeNativeDisk(fake), crypto: makeNativeCrypto(fake) });
+  await store.saveProfile({ name: 'P', endpoint: 'https://x', key: 'sk-2' });
+  await store.get(); await store.load();
+  assert.strictEqual(JSON.parse(fake.files.get('settings.json')).profiles[0].keyPlain, 'sk-2');
+  assert.strictEqual(tries, 1);
+});
+
+// ---- Review fixes: storage that survives interruptions and read errors ----
+test('chat list follows the files: a chat missing from the index appears, a deleted file disappears', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  fs.rmSync(path.join(dir, 'b2.json')); // as if the app stopped between deleting the file and updating the index
+  fs.writeFileSync(path.join(dir, 'c3.json'), JSON.stringify({ id: 'c3', title: 'C', updated: 3, messages: [] })); // saved, index not yet updated
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['c3', 'a1']);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, '_index.json'), 'utf8')).map((c) => c.id).sort(), ['a1', 'c3']); // repaired on disk
+  const before = fs.statSync(path.join(dir, '_index.json')).mtimeMs;
+  await store.list(); assert.strictEqual(fs.statSync(path.join(dir, '_index.json')).mtimeMs, before); // nothing changed: not rewritten
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: a read error leaves settings.json alone instead of treating it as damaged', async () => {
+  const { dir, file, store } = tmpStore();
+  await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' });
+  const flaky = makeStore({ io: { ...makeDisk(dir), read: async () => { throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' }); } }, crypto: rot });
+  await assert.rejects(flaky.get(), /EBUSY/);
+  assert.ok(!fs.existsSync(file + '.bad')); assert.strictEqual(flaky.takeNotice(), '');
+  assert.strictEqual((await store.load()).key, 'sk-1'); // still there once reading works again
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: a second damaged settings file never overwrites the first backup', async () => {
+  const { dir, file, store } = tmpStore();
+  fs.writeFileSync(file, '{first'); await store.get();
+  fs.writeFileSync(file, '{second'); await store.get();
+  assert.strictEqual(fs.readFileSync(file + '.bad', 'utf8'), '{first');
+  assert.strictEqual(fs.readFileSync(file + '.bad-2', 'utf8'), '{second');
+  assert.match(store.takeNotice(), /settings\.json\.bad-2/);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('store: reading without a settings file writes nothing until something is saved', async () => {
+  const { dir, file, store } = tmpStore();
+  assert.deepStrictEqual((await store.get()).profiles, []);
+  assert.ok(!fs.existsSync(file));
+  await store.patch({ effort: 'low' });
+  assert.ok(fs.existsSync(file));
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('migrateLegacy: an interrupted move is finished on a later launch, merging chats without overwriting', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-')), from = path.join(root, 'chatbot'), to = path.join(root, 'javc-chatbot');
+  fs.mkdirSync(path.join(from, 'chats'), { recursive: true }); fs.mkdirSync(to, { recursive: true });
+  fs.writeFileSync(path.join(to, 'settings.json'), '{"new":1}'); // settings already moved, then the app stopped
+  fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{"a":1}');
+  assert.deepStrictEqual(migrateLegacy(from, to), ['chats']); // the chats left behind still move
+  assert.strictEqual(fs.readFileSync(path.join(to, 'chats', 'a.json'), 'utf8'), '{"a":1}');
+  fs.mkdirSync(path.join(from, 'chats')); // an older copy that shows up again, next to chats the new folder already has
+  fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{"old":1}'); fs.writeFileSync(path.join(from, 'chats', 'b.json'), '{"b":1}');
+  fs.writeFileSync(path.join(from, 'chats', '_index.json'), '[]');
+  assert.deepStrictEqual(migrateLegacy(from, to), [path.join('chats', 'b.json')]);
+  assert.strictEqual(fs.readFileSync(path.join(to, 'chats', 'a.json'), 'utf8'), '{"a":1}'); // never overwritten
+  assert.ok(!fs.existsSync(path.join(to, 'chats', '_index.json'))); // the old index stays behind; chats.js rebuilds its own
+  fs.rmSync(root, { recursive: true });
+});
+
+test('native fetch: a 204 response leaves nothing behind and asks the plugin to abort nothing', async () => {
+  for (const status of [204, 205, 304]) {
+    const h = fakeHttp((req, send) => { send({ type: 'end' }); return { status, headers: {} }; });
+    const res = await h.fetch('http://x');
+    assert.strictEqual(res.status, status); assert.strictEqual(res.body, null);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.deepStrictEqual(h.aborted, []);
+  }
+});
+
+test('Lib.fitSize scales the long side down to the limit, keeps the shape, and never enlarges', () => {
+  assert.deepStrictEqual(Lib.fitSize(4000, 3000, 2048), { w: 2048, h: 1536, scaled: true });
+  assert.deepStrictEqual(Lib.fitSize(3000, 4000, 2048), { w: 1536, h: 2048, scaled: true });
+  assert.deepStrictEqual(Lib.fitSize(800, 600, 2048), { w: 800, h: 600, scaled: false });
+  assert.deepStrictEqual(Lib.fitSize(2048, 2048, 2048), { w: 2048, h: 2048, scaled: false });
+  assert.deepStrictEqual(Lib.fitSize(100000, 10, 2048), { w: 2048, h: 1, scaled: true }); // never 0 px
+});
+
+test('chat list skips a chat file whose id does not match its name, and leaves the index alone after that', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  fs.writeFileSync(path.join(dir, 'b2.json'), JSON.stringify({ title: 'no id', updated: 2, messages: [] }));
+  fs.writeFileSync(path.join(dir, 'c3.json'), JSON.stringify({ id: 'zz', title: 'wrong id', updated: 3, messages: [] }));
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['a1']);
+  const before = fs.readFileSync(path.join(dir, '_index.json'), 'utf8');
+  await store.list(); assert.strictEqual(fs.readFileSync(path.join(dir, '_index.json'), 'utf8'), before);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('migrateLegacy: an item that cannot move does not hold back the others, and is retried', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-')), from = path.join(root, 'chatbot'), to = path.join(root, 'javc-chatbot');
+  fs.mkdirSync(path.join(from, 'chats'), { recursive: true });
+  fs.writeFileSync(path.join(from, 'settings.json'), '{"old":1}'); fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{}');
+  const rename = fs.renameSync; // settings.json is locked this time
+  fs.renameSync = (a, b) => { if (a.endsWith('settings.json')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return rename(a, b); };
+  try { assert.throws(() => migrateLegacy(from, to), (e) => e instanceof AggregateError && /Moved chats/.test(e.message)); }
+  finally { fs.renameSync = rename; }
+  assert.ok(fs.existsSync(path.join(to, 'chats', 'a.json'))); // the chats still moved
+  assert.deepStrictEqual(migrateLegacy(from, to), ['settings.json']); // and settings follow on the next launch
   fs.rmSync(root, { recursive: true });
 });

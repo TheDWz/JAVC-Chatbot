@@ -21,6 +21,12 @@ function applyTheme(t) {
 }
 try { const t = JSON.parse(localStorage.getItem('theme')); if (Lib.cleanTheme(t)) applyTheme(t); } catch {}
 
+// Touch screens: Enter makes a new line (the send button sends), and the keyboard only opens when the user taps the box,
+// so it never pops up over a reply.
+const touch = matchMedia('(pointer: coarse)');
+/** Puts the cursor in the message box, except on touch screens, where that would open the keyboard over the chat. */
+const focusInput = () => { if (!touch.matches) $('input').focus(); };
+
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
 let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
 
@@ -48,8 +54,9 @@ function toast(text) {
   $('toast').textContent = text; $('toast').classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 1800);
 }
+/** Copies text and says so. Android copies through the app, since a WebView's clipboard access isn't guaranteed. */
 async function copy(text) {
-  try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Copy failed'); }
+  try { await (window.api.copyText ? window.api.copyText(text) : navigator.clipboard.writeText(text)); toast('Copied'); } catch { toast('Copy failed'); }
 }
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
 function push(node) { $('log').querySelector('.empty')?.remove(); $('log').append(node); scrollDown(); return node; }
@@ -185,11 +192,33 @@ function render(bubble, text) {
 }
 
 // ---- Attachments: text/PDF text is inlined into the message, images go as image_url parts ----
-const MAX_FILES = 5, MAX_IMG = 8 * 1024 * 1024, MAX_PDF = 25 * 1024 * 1024, MAX_TEXT = 200000;
+const MAX_FILES = 5, MAX_IMG = 25 * 1024 * 1024, MAX_PDF = 25 * 1024 * 1024, MAX_TEXT = 200000;
+const IMG_SIDE = 2048, KEEP_IMG = 2 * 1024 * 1024; // images are stored at most 2048 px on the long side; a small one that fits is kept as is
 let pending = [];
 const fmtSize = (n) => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 const cleanErr = (e) => e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 const readDataUrl = (f) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(r.error); r.readAsDataURL(f); });
+
+/**
+ * An attached image as a data URL, sized for chat. The longest side becomes at most 2048 px, which is what the big
+ * vision APIs scale down to anyway, so a phone photo goes from megabytes to a few hundred KB. That keeps chats light
+ * enough to open and send on a phone (every message re-sends the chat's earlier images). An image that already fits
+ * and is at most 2 MB is kept byte for byte, so screenshots stay sharp and small GIFs keep their animation.
+ */
+async function imageUrl(f) {
+  const bmp = await createImageBitmap(f); // applies the photo's EXIF rotation
+  try {
+    const { w, h, scaled } = Lib.fitSize(bmp.width, bmp.height, IMG_SIDE);
+    if (!scaled && f.size <= KEEP_IMG) return await readDataUrl(f);
+    const c = el('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(bmp, 0, 0, w, h);
+    let alpha = false; // JPEG can't keep transparency, so only images that have none become JPEG
+    if (f.type !== 'image/jpeg') { const px = g.getImageData(0, 0, w, h).data; for (let i = 3; i < px.length && !alpha; i += 4) alpha = px[i] < 255; }
+    return alpha ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9);
+  } finally { bmp.close(); }
+}
+/** How many bytes a base64 data URL holds. */
+const dataUrlBytes = (u) => Math.round((u.length - u.indexOf(',') - 1) * 3 / 4);
 
 async function attach(files) {
   for (const f of files) {
@@ -197,8 +226,9 @@ async function attach(files) {
     try {
       let a = { name: f.name, size: f.size };
       if (/^image\/(png|jpe?g|webp|gif)$/.test(f.type)) {
-        if (f.size > MAX_IMG) { toast(`${f.name}: image is over 8 MB`); continue; }
-        a = { ...a, kind: 'image', url: await readDataUrl(f) };
+        if (f.size > MAX_IMG) { toast(`${f.name}: image is over 25 MB`); continue; }
+        const url = await imageUrl(f);
+        a = { ...a, kind: 'image', url, size: dataUrlBytes(url) }; // the chip shows what is actually stored and sent
       } else {
         const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
         if (isPdf && f.size > MAX_PDF) { toast(`${f.name}: PDF is over 25 MB`); continue; }
@@ -327,8 +357,10 @@ let modelHi = 0, modelShown = [];
 const MODEL_CAP = 200; // rendering hundreds of rows on every keystroke is slow; the count line tells the user to keep typing
 function renderModelBtn() { $('modellabel').textContent = $('model').selectedOptions[0]?.text || 'No model selected'; }
 function closeModelPop() { $('modelpop').hidden = true; $('modelbtn').setAttribute('aria-expanded', 'false'); $('modelq').setAttribute('aria-expanded', 'false'); $('modelq').removeAttribute('aria-activedescendant'); }
+/** Opens the model picker (or the new-profile dialog when there is no profile yet); on phones it spans the screen under the pill. */
 function openModelPop() {
   if (!state.activeId) return openProfileDialog(true);
+  if (narrow()) $('modelpop').style.setProperty('--pop-top', $('modelpill').getBoundingClientRect().bottom + 8 + 'px'); // phones: full-width, under the pill
   $('modelpop').hidden = false; $('modelbtn').setAttribute('aria-expanded', 'true'); $('modelq').setAttribute('aria-expanded', 'true'); $('modelq').value = ''; filterModels(); $('modelq').focus();
 }
 function setHi(i) {
@@ -408,7 +440,7 @@ async function send() {
     $('input').value = [text, $('input').value].filter(Boolean).join('\n');
     pending = [...atts, ...pending].slice(0, MAX_FILES); renderChips();
     if (cleanErr(e) === 'Stopped') toast('Stopped'); else showError(cleanErr(e));
-  } finally { setBusy(false); $('input').focus(); }
+  } finally { setBusy(false); focusInput(); }
 }
 
 // ---- Chat history ----
@@ -435,13 +467,13 @@ function renderChat() {
 }
 function startNew() {
   if (busy) return;
-  chat = newChat(); showEmpty(); refreshPersonaUi(); renderList(); $('input').focus();
+  chat = newChat(); showEmpty(); refreshPersonaUi(); renderList(); focusInput();
   if (narrow()) applyHist(false);
 }
 async function openChat(id) {
   if (busy || id === chat.id) return;
   try { chat = await window.api.loadChat(id); } catch (e) { return showError('Could not open chat: ' + cleanErr(e)); }
-  renderChat(); refreshPersonaUi(); renderList(); $('input').focus();
+  renderChat(); refreshPersonaUi(); renderList(); focusInput();
   if (narrow()) applyHist(false);
 }
 
@@ -485,6 +517,19 @@ $('histbtn').onclick = () => {
   const open = document.querySelector('.app').classList.contains('nohist'); applyHist(open);
   try { localStorage.setItem('hist', open ? '1' : '0'); } catch {}
 };
+$('histscrim').onclick = () => applyHist(false); // narrow screens: tapping beside the history closes it
+
+/** The Android back button: closes whatever is on top. Returns false when nothing was open. */
+function closeTopLayer() {
+  const rich = document.querySelector('.richview'); if (rich) { rich.querySelector('.richview-bar .btn').click(); return true; }
+  // Settings is the only dialog that opens another (the profile editor) on top of itself, so close any other one first.
+  const open = [...document.querySelectorAll('dialog[open]')], dlg = open.find((d) => d.id !== 'prefs') || open[0];
+  if (dlg) { dlg.close(); return true; }
+  if ($('side').classList.contains('open')) { toggleSide(false); return true; }
+  if (!$('modelpop').hidden) { closeModelPop(); return true; }
+  if (narrow() && !document.querySelector('.app').classList.contains('nohist')) { applyHist(false); return true; }
+  return false;
+}
 
 
 // ---- Personas ----
@@ -620,7 +665,7 @@ addEventListener('dragenter', (e) => { if (hasFiles(e)) { dragDepth++; $('drop')
 addEventListener('dragleave', (e) => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; $('drop').classList.remove('on'); } });
 addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); attach([...e.dataTransfer.files]); });
-$('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+$('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
 // ---- Settings dialog: Appearance / Profiles / Replies ----
 const PANES = ['appearance', 'profiles', 'replies'];
@@ -688,12 +733,15 @@ for (const c of document.querySelectorAll('[data-render]')) c.onchange = async (
 };
 
 (async () => {
-  const first = await window.api.getSettings(); applyState(first); renderTemplates(); chat = newChat(); refreshPersonaUi();
+  let first;
+  try { first = await window.api.getSettings(); } // a read error leaves the settings file alone; say so rather than start empty
+  catch (e) { return showError('Could not read your settings: ' + cleanErr(e) + '. Close the app and open it again.'); }
+  applyState(first); renderTemplates(); chat = newChat(); refreshPersonaUi();
   if (settings.model) $('model').replaceChildren(new Option(settings.model, settings.model));
   renderModelBtn();
   showEmpty(); renderLevels();
   applyHist(narrow() ? false : savedHist());
   refreshList().catch((e) => showError('Could not load chats: ' + cleanErr(e)));
   if (!state.activeId) { openProfileDialog(true); if (first.notice) { $('perr').textContent = first.notice; $('perr').hidden = false; } } // toasts sit under the modal dialog
-  else { $('input').focus(); if (first.notice) showError(first.notice); }
+  else { focusInput(); if (first.notice) showError(first.notice); }
 })();
