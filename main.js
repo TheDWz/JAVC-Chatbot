@@ -1,32 +1,31 @@
 const { app, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
 const { randomUUID } = require('node:crypto');
-const fs = require('node:fs');
 const path = require('node:path');
 const api = require('./api');
+const Lib = require('./lib');
 const makeChats = require('./chats');
 const makeStore = require('./store');
+const { makeDisk, migrateLegacy } = require('./disk');
 
 // Rich replies (HTML/CSS/JS from the model) run in sandboxed iframes loaded from this scheme. Being a non-local scheme,
 // the documents don't inherit the app's CSP; the `sandbox` header and attribute keep them in an opaque origin with no access to the app.
 protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const richDocs = new Map();
-const safeColor = (c) => (typeof c === 'string' && /^[\w#(),.\s%/-]{1,60}$/.test(c) ? c : '#888');
-const richDoc = (html, color, scheme) => `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${scheme}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:${scheme}}html,body{margin:0;background:transparent}body{color:${color};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}</style></head><body>${html}<script>(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()</script></body></html>`;
 ipcMain.handle('sandbox:create', (_e, html, color, scheme) => {
-  if (typeof html !== 'string' || html.length > 2_000_000) throw new Error('This content is too large to display');
+  if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
   const id = randomUUID();
-  richDocs.set(id, richDoc(html, safeColor(color), scheme === 'light' ? 'light' : 'dark')); // must match the app's scheme or the frame gets an opaque white background
+  richDocs.set(id, Lib.richDoc(html, color, scheme));
   if (richDocs.size > 300) richDocs.delete(richDocs.keys().next().value);
   return 'chatbot-sandbox://doc/' + id;
 });
 
 try { // the app was called "chatbot" before the JAVC rename; bring its settings and chats along
-  const moved = makeStore.migrateLegacy(path.join(app.getPath('appData'), 'chatbot'), app.getPath('userData'));
+  const moved = migrateLegacy(path.join(app.getPath('appData'), 'chatbot'), app.getPath('userData'));
   if (moved.length) console.log('Moved from the old chatbot folder:', moved.join(', '));
 } catch (e) { console.error('Could not move data from the old chatbot folder:', e); }
 
 const store = makeStore({
-  file: path.join(app.getPath('userData'), 'settings.json'),
+  io: makeDisk(app.getPath('userData')),
   crypto: {
     available: () => safeStorage.isEncryptionAvailable(),
     enc: (t) => safeStorage.encryptString(t).toString('base64'),
@@ -34,7 +33,7 @@ const store = makeStore({
   },
 });
 
-ipcMain.handle('settings:get', () => ({ ...store.get(), notice: store.takeNotice() }));
+ipcMain.handle('settings:get', async () => { const st = await store.get(); return { ...st, notice: store.takeNotice() }; });
 ipcMain.handle('settings:patch', (_e, patch) => store.patch(patch));
 ipcMain.handle('profiles:save', (_e, p) => store.saveProfile(p));
 ipcMain.handle('personas:save', (_e, p) => store.savePersona(p));
@@ -42,23 +41,25 @@ ipcMain.handle('personas:delete', (_e, id) => store.deletePersona(id));
 ipcMain.handle('profiles:delete', (_e, id) => store.deleteProfile(id));
 ipcMain.handle('profiles:activate', (_e, id) => store.activate(id));
 ipcMain.handle('profiles:key', (_e, id) => store.key(id));
-ipcMain.handle('models:list', () => { const s = store.load(); return api.listModelsDetailed(s.endpoint, s.key); });
+ipcMain.handle('models:list', async () => { const s = await store.load(); return api.listModelsDetailed(s.endpoint, s.key); });
 
 const running = new Map(); // request id -> AbortController, so the Stop button can cancel a reply
 ipcMain.handle('chat:abort', (_e, id) => running.get(id)?.abort());
 ipcMain.handle('chat:send', async (e, id, messages) => {
-  const s = store.load(), ctl = new AbortController();
-  running.set(id, ctl);
+  const ctl = new AbortController();
+  running.set(id, ctl); // before any await, so Stop works from the first moment
   const onDelta = (d) => { if (!e.sender.isDestroyed()) e.sender.send('chat:delta', id, d); };
-  try { return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), onDelta, undefined, ctl.signal); }
-  finally { running.delete(id); }
+  try {
+    const s = await store.load();
+    return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), onDelta, undefined, ctl.signal);
+  } finally { running.delete(id); }
 });
 
-const chats = () => makeChats(path.join(app.getPath('userData'), 'chats'));
-ipcMain.handle('chats:list', () => chats().list());
-ipcMain.handle('chats:load', (_e, id) => chats().load(id));
-ipcMain.handle('chats:save', (_e, chat) => chats().save(chat));
-ipcMain.handle('chats:delete', (_e, id) => chats().remove(id));
+const chats = makeChats(makeDisk(path.join(app.getPath('userData'), 'chats')));
+ipcMain.handle('chats:list', () => chats.list());
+ipcMain.handle('chats:load', (_e, id) => chats.load(id));
+ipcMain.handle('chats:save', (_e, chat) => chats.save(chat));
+ipcMain.handle('chats:delete', (_e, id) => chats.remove(id));
 
 ipcMain.handle('pdf:extract', async (_e, buf) => {
   const { PDFParse } = require('pdf-parse');

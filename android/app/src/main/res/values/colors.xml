@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same as --bg and --a1 in index.html (light theme) -->
+    <color name="app_bg">#F6F6F9</color>
+    <color name="accent">#8B5CF6</color>
+</resources>

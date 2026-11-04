@@ -40,8 +40,8 @@ function toast(text) {
   $('toast').textContent = text; $('toast').classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 1800);
 }
-async function copy(text) {
-  try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Copy failed'); }
+async function copy(text) { // Android copies through the app, since a WebView's clipboard access isn't guaranteed
+  try { await (window.api.copyText ? window.api.copyText(text) : navigator.clipboard.writeText(text)); toast('Copied'); } catch { toast('Copy failed'); }
 }
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
 function push(node) { $('log').querySelector('.empty')?.remove(); $('log').append(node); scrollDown(); return node; }
@@ -315,6 +315,7 @@ function renderModelBtn() { $('modellabel').textContent = $('model').selectedOpt
 function closeModelPop() { $('modelpop').hidden = true; $('modelbtn').setAttribute('aria-expanded', 'false'); $('modelq').setAttribute('aria-expanded', 'false'); $('modelq').removeAttribute('aria-activedescendant'); }
 function openModelPop() {
   if (!state.activeId) return openProfileDialog(true);
+  if (narrow()) $('modelpop').style.setProperty('--pop-top', $('modelpill').getBoundingClientRect().bottom + 8 + 'px'); // phones: full-width, under the pill
   $('modelpop').hidden = false; $('modelbtn').setAttribute('aria-expanded', 'true'); $('modelq').setAttribute('aria-expanded', 'true'); $('modelq').value = ''; filterModels(); $('modelq').focus();
 }
 function setHi(i) {
@@ -471,6 +472,17 @@ $('histbtn').onclick = () => {
   const open = document.querySelector('.app').classList.contains('nohist'); applyHist(open);
   try { localStorage.setItem('hist', open ? '1' : '0'); } catch {}
 };
+$('histscrim').onclick = () => applyHist(false); // narrow screens: tapping beside the history closes it
+
+// The Android back button: close whatever is on top. Returns false when nothing was open.
+function closeTopLayer() {
+  const rich = document.querySelector('.richview'); if (rich) { rich.querySelector('.richview-bar .btn').click(); return true; }
+  const dlg = document.querySelector('dialog[open]'); if (dlg) { dlg.close(); return true; }
+  if ($('side').classList.contains('open')) { toggleSide(false); return true; }
+  if (!$('modelpop').hidden) { closeModelPop(); return true; }
+  if (narrow() && !document.querySelector('.app').classList.contains('nohist')) { applyHist(false); return true; }
+  return false;
+}
 
 function grow() { const t = $('input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 200) + 'px'; }
 
@@ -604,7 +616,8 @@ addEventListener('dragleave', (e) => { if (hasFiles(e) && --dragDepth <= 0) { dr
 addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); attach([...e.dataTransfer.files]); });
 $('input').oninput = grow;
-$('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+const touch = matchMedia('(pointer: coarse)'); // on a phone keyboard Enter makes a new line; the send button sends
+$('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
 (async () => {
   const first = await window.api.getSettings(); applyState(first); renderTemplates(); chat = newChat(); refreshPersonaUi();

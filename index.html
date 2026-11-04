@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; frame-src chatbot-sandbox:">
 <title>JAVC Chatbot</title>
 <style>
@@ -56,8 +57,10 @@
   .del svg { width: 15px; height: 15px; }
   .chat-item:hover .del, .del:focus-visible, .del.armed { opacity: 1; }
   .del.armed { width: auto; padding: 0 8px; font-size: 12px; color: var(--err); border-color: var(--err-line); }
+  #histscrim { display: none; }
   @media (max-width: 720px) {
     #history { position: fixed; inset: 0 auto 0 0; z-index: 25; box-shadow: var(--shadow); }
+    .app:not(.nohist) #histscrim { display: block; position: fixed; inset: 0; z-index: 24; background: rgba(5,6,10,.4); }
   }
 
   /* Error pop-up */
@@ -228,7 +231,7 @@
   .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); font-weight: 500; }
   .input { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 11px; transition: border-color .15s, box-shadow .15s; }
   .input:focus-within { border-color: var(--a1); box-shadow: 0 0 0 3px rgba(139,92,246,.15); }
-  .input select { flex: 1; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
+  .input select { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
   .input option { background: var(--surface); }
   .input input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
   .input textarea { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); resize: vertical; min-height: 120px; }
@@ -274,6 +277,39 @@
   .opt { display: flex; gap: 10px; align-items: flex-start; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line-soft); font-size: 13.5px; cursor: pointer; }
   .opt input { margin-top: 3px; accent-color: var(--a1); }
   .opt small { display: block; margin-top: 2px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+
+  /* Touch screens: nothing may hide behind hover, and Enter makes a new line (the send button sends) */
+  button { -webkit-tap-highlight-color: transparent; }
+  @media (hover: none) {
+    .actions, .del, .rich-exp { opacity: 1; }
+    .chip:hover { transform: none; }
+  }
+  @media (pointer: coarse) { .hint { display: none; } }
+
+  /* Phones: the header wraps into two rows, with profile and model on the second */
+  @media (max-width: 600px) {
+    header { flex-wrap: wrap; gap: 6px; padding: 6px 10px 8px; }
+    header::after { content: ''; order: 5; flex-basis: 100%; }
+    .brand-name { display: none; }
+    #profilepill { order: 6; flex: 1 1 0; min-width: 0; }
+    #profilepill select { flex: 1; min-width: 0; max-width: none; }
+    #newprofile { order: 7; }
+    #modelpill { order: 8; flex: 1.6 1 0; min-width: 0; }
+    .modelbtn { flex: 1; min-width: 0; max-width: none; }
+    #fetch { order: 9; }
+    #modelpop { position: fixed; top: var(--pop-top, 100px); left: 10px; right: 10px; width: auto; }
+    #modellist { max-height: max(120px, min(320px, calc(100vh - var(--pop-top, 100px) - 110px))); }
+    #log { padding: 16px 12px 8px; gap: 14px; }
+    .row { gap: 8px; }
+    .assistant .body { max-width: calc(100% - 38px); }
+    .bubble, .ubody { max-width: 90%; }
+    .think { min-width: 0; }
+    .empty { padding: 24px 0; }
+    .empty h1 { font-size: 22px; }
+    footer { padding: 6px 10px 10px; }
+    .composer { padding: 6px 6px 6px 12px; border-radius: 18px; }
+    #errtoast { top: 104px; }
+  }
 </style>
 </head>
 <body>
@@ -291,11 +327,12 @@
   </div>
   <nav id="chatlist"></nav>
 </aside>
+<div id="histscrim"></div>
 <div class="main">
 <header>
   <button class="icon-btn" id="histbtn" title="Chat history" aria-label="Toggle chat history"><svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M9 5v14"/></svg></button>
-  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24"><path d="M15.08 12.87C13.77 15.67 10.44 16.88 7.63 15.58C4.83 14.27 3.62 10.94 4.92 8.13C6.23 5.33 9.56 4.12 12.37 5.42"/><path d="M8.92 11.13C10.23 8.33 13.56 7.12 16.37 8.42C19.17 9.73 20.38 13.06 19.08 15.87C17.77 18.67 14.44 19.88 11.63 18.58"/></svg></span>JAVC Chatbot</div>
-  <label class="pill" title="Profile">
+  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24"><path d="M15.08 12.87C13.77 15.67 10.44 16.88 7.63 15.58C4.83 14.27 3.62 10.94 4.92 8.13C6.23 5.33 9.56 4.12 12.37 5.42"/><path d="M8.92 11.13C10.23 8.33 13.56 7.12 16.37 8.42C19.17 9.73 20.38 13.06 19.08 15.87C17.77 18.67 14.44 19.88 11.63 18.58"/></svg></span><span class="brand-name">JAVC Chatbot</span></div>
+  <label class="pill" id="profilepill" title="Profile">
     <select id="profile" aria-label="Profile"></select>
     <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
   </label>

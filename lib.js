@@ -71,6 +71,15 @@
     return parts.filter((p) => (p.type === 'html' ? p.html : p.text.trim()));
   }
 
+  // The page a rich block runs in: the model's HTML plus a script that reports the content height to the reply.
+  // `scheme` must match the app's or the frame gets an opaque white background.
+  const safeColor = (c) => (typeof c === 'string' && /^[\w#(),.\s%/-]{1,60}$/.test(c) ? c : '#888');
+  const richDoc = (html, color, scheme) => {
+    const s = scheme === 'light' ? 'light' : 'dark', c = safeColor(color);
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${s}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:${s}}html,body{margin:0;background:transparent}body{color:${c};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}</style></head><body>${html}<script>(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()</script></body></html>`;
+  };
+  const RICH_MAX = 2_000_000;
+
   const RICH_HINT = 'Display: your replies are rendered as Markdown. You may also write raw HTML, CSS and JavaScript directly in a reply, starting each HTML block at the beginning of a line and not inside a code fence. It renders live in a sandboxed frame with internet access, so CDN libraries work. Use it when visuals help, such as charts, diagrams, interactive demos or styled layouts, and keep ordinary answers in plain Markdown. Show code the user should read rather than run in a fenced code block.';
 
   // Chat isolation: only this chat's messages go out, stripped of display-only fields (text, files, reasoning).
@@ -94,5 +103,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, RICH_HINT };
+  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, richDoc, safeColor, RICH_HINT, RICH_MAX };
 });

@@ -39,3 +39,90 @@ jobs:
           name: javc-chatbot-${{ runner.os }}
           path: ${{ matrix.artifacts }}
           if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: 1 # the Android build doesn't need Electron itself
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npm test
+      - name: Release signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=APK signed with a temporary key::The ANDROID_KEYSTORE_BASE64 secret isn't set, so this APK is signed with a throwaway debug key. It installs, but an APK from a later run can't be installed over it. See 'Release signing' in the README."
+          fi
+      - name: Build the release APK
+        run: npm run dist:android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: Build the debug APK (for the smoke test)
+        run: node mobile/gradle.mjs assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: javc-chatbot-Android
+          path: |
+            dist/*.apk
+            !dist/*-debug.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: javc-chatbot-Android-debug
+          path: dist/*-debug.apk
+          retention-days: 7
+          if-no-files-found: error
+
+  # Installs the debug APK on an emulator and drives the real app: profile, models, a streamed reply,
+  # a sandboxed rich block, PDF text, the back button, and the Keystore-encrypted key on disk.
+  android-smoke:
+    needs: android
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci && npm install --no-save playwright@1.64.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: javc-chatbot-Android-debug
+          path: apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: node mobile/smoke/android.mjs apk/*.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-smoke
+          path: dist/android-smoke*
+          if-no-files-found: ignore
