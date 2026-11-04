@@ -33,10 +33,12 @@ try {
   await sh(`am start -W -n ${PKG}/.MainActivity`);
   const webview = await device.webView({ pkg: PKG }, { timeout: 120_000 });
   const page = await webview.page();
-  page.on('console', (m) => log(`[page ${m.type()}]`, m.text()));
+  // Debug builds log every plugin call as a console group; keep only real messages.
+  page.on('console', (m) => { if (!['startGroupCollapsed', 'startGroup', 'endGroup', 'dir'].includes(m.type())) log(`[page ${m.type()}]`, m.text()); });
   page.on('pageerror', (e) => log('[page error]', e.message));
 
-  await runFlow(page, { endpoint: 'http://10.0.2.2:8787/v1', key: 'sk-smoke', back: () => device.input.press('Back'), log });
+  const back = () => sh('input keyevent KEYCODE_BACK'); // a real key event, through Capacitor's App plugin
+  await runFlow(page, { endpoint: 'http://10.0.2.2:8787/v1', key: 'sk-smoke', back, log });
 
   log('The key went to the server and is stored encrypted');
   if (!requests.some((r) => r.path === '/v1/chat/completions' && r.auth === 'Bearer sk-smoke')) throw new Error('Smoke check failed: the chat request carried the API key');
@@ -48,11 +50,11 @@ try {
   await device.screenshot({ path: path.join(OUT, 'android-smoke.png') });
 
   log('Back with nothing open sends the app to the background');
-  await device.input.press('Back');
+  await back();
   await new Promise((r) => setTimeout(r, 1500));
   const top = await sh('dumpsys activity activities');
   const resumed = top.split('\n').filter((l) => /ResumedActivity/.test(l)).join(' | ');
-  if (resumed.includes(PKG)) throw new Error('Smoke check failed: the app left the foreground on Back (' + resumed.trim() + ')');
+  if (resumed.includes(PKG)) throw new Error('Smoke check failed: Back with nothing open should send the app to the background (' + resumed.trim() + ')');
 } catch (e) {
   failed = e;
   await device.screenshot({ path: path.join(OUT, 'android-smoke-failure.png') }).catch(() => {});
