@@ -40,14 +40,13 @@ try {
 
   // A real Back key event, which reaches the page through Capacitor's App plugin. While the on-screen keyboard is up,
   // Android gives Back to the keyboard first (that's normal), so let it close before pressing.
-  const keyboardUp = async () => /mInputShown=true|InputViewShown=true/.test(await sh('dumpsys input_method'));
+  const keyboardUp = async () => /\bmInputShown=true\b/.test(await sh('dumpsys input_method')); // (mIsInputViewShown stays true after it closes)
   const back = async () => {
     await page.evaluate(() => { const a = document.activeElement; if (a?.matches?.('input, textarea')) a.blur(); });
-    log('Keyboard state:', ((await sh('dumpsys input_method')).match(/\w*Shown\w*=\w+/g) || ['unknown']).join(' '));
     let waited = 0;
     while (waited < 5000 && (await keyboardUp())) { await sleep(250); waited += 250; }
     if (waited) log(`(waited ${waited} ms for the keyboard to close)`);
-    await sleep(300);
+    await sleep(500);
     await sh('input keyevent KEYCODE_BACK');
   };
   await runFlow(page, { endpoint: 'http://10.0.2.2:8787/v1', key: 'sk-smoke', back, log });
