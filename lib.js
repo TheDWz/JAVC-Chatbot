@@ -164,19 +164,22 @@
   }
 
   // Message versions: each edit or regenerate adds one. The message's own fields always hold the version shown, so
-  // requests and rendering never look at `versions`.
-  const VKEYS = ['content', 'text', 'reasoning'];
-  const pickVersion = (m) => Object.fromEntries(VKEYS.filter((k) => m[k] !== undefined).map((k) => [k, m[k]]));
+  // requests and rendering never look at `versions`. A user version is only its typed text: the attachments (possibly
+  // megabytes of image data) are stored once, on the message, and editUser puts them back around the text.
+  const VKEYS = ['content', 'reasoning'];
+  const pickVersion = (m) => (m.role === 'user' ? { text: m.text || '' } : Object.fromEntries(VKEYS.filter((k) => m[k] !== undefined).map((k) => [k, m[k]])));
   /** A copy of message `m` showing version `v` (clamped to the versions it has). */
   function showVersion(m, v) {
     v = Math.max(0, Math.min(v, m.versions.length - 1));
-    const ver = m.versions[v], out = { ...m, v };
+    const ver = m.versions[v];
+    if (m.role === 'user') return { ...editUser(m, ver.text), v };
+    const out = { ...m, v };
     for (const k of VKEYS) if (k in ver) out[k] = ver[k]; else delete out[k];
     return out;
   }
-  /** A copy of message `m` with `fields` (content, text, reasoning) added as its newest version, and showing it. */
+  /** A copy of message `m` with `fields` (a reply's content and reasoning, or a user message's text) added as its newest version, and showing it. */
   function addVersion(m, fields) {
-    const versions = [...(m.versions || [pickVersion(m)]), pickVersion(fields)];
+    const versions = [...(m.versions || [pickVersion(m)]), pickVersion({ role: m.role, ...fields })];
     return showVersion({ ...m, versions }, versions.length - 1);
   }
 

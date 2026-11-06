@@ -284,7 +284,7 @@ function versionNav(m) {
   nav.append(arrow(ICON.left, 'Previous version', -1), el('span', 'vcount', `${v + 1}/${n}`), arrow(ICON.right, 'Next version', 1));
   return nav;
 }
-const rerender = () => { const top = $('scroll').scrollTop; renderChat(); $('scroll').scrollTop = top; };
+const rerender = (top = $('scroll').scrollTop) => { renderChat(); $('scroll').scrollTop = top; };
 /** Puts `next` in place of message `m`, saves and redraws. The title follows the first message unless it was changed. */
 function setMsg(m, next) {
   if (busy) return toast('Wait for the reply to finish');
@@ -302,14 +302,14 @@ function editMsg(m, body, bubble, actions) {
   cancel.type = save.type = 'button'; ta.value = user ? m.text || '' : m.content; ta.setAttribute('aria-label', 'Edit message');
   bar.append(cancel, save); box.append(ta, bar);
   const hide = [bubble, actions].filter(Boolean);
-  const close = () => { box.remove(); for (const n of hide) n.style.display = ''; actions.querySelector('button:last-child').focus(); };
+  const close = () => { box.remove(); for (const n of hide) n.style.display = ''; actions.lastElementChild.focus(); }; // Edit is always the last button
   cancel.onclick = close;
   ta.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   save.onclick = () => {
     if (busy) return toast('Wait for the reply to finish'); // the box can stay open while a new message is sent
     const text = ta.value.trim();
     if (!text && !(user && m.files?.length)) return toast("A message can't be empty");
-    if (text === (user ? m.text || '' : m.content)) return close();
+    if (text === (user ? m.text || '' : m.content).trim()) return close();
     chat.updated = Date.now(); setMsg(m, Lib.addVersion(m, user ? Lib.editUser(m, text) : { content: text, reasoning: m.reasoning }));
   };
   for (const n of hide) n.style.display = 'none';
@@ -490,7 +490,6 @@ async function generate(base) {
     const fields = { content: out.content, reasoning: out.reasoning }; // reasoning is display-only, never sent back
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
-    chat.updated = Date.now();
     return out;
   } catch (e) {
     reply.row.remove();
@@ -511,7 +510,7 @@ async function send() {
     const out = await generate();
     if (out.error) showError('Reply was cut off: ' + out.error); else if (out.stopped) toast('Stopped');
     if (!chat.title) chat.title = titleOf(text, atts);
-    persist();
+    chat.updated = Date.now(); persist();
   } catch {
     // drop the failed turn and put the draft back in front of whatever was typed meanwhile
     chat.messages.pop(); userRow.remove();
@@ -526,14 +525,14 @@ async function regenerate(m) {
   if (busy) return toast('Wait for the reply to finish');
   const i = chat.messages.indexOf(m);
   if (i < 0 || !ready()) return;
-  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; renderChat(); $('scroll').scrollTop = top; };
+  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; rerender(top); };
   const t = m.role === 'user' ? i + 1 : i, base = prev[t]?.role === 'assistant' ? prev[t] : undefined;
   chat.messages = prev.slice(0, t); renderChat();
   let out;
   try { out = await generate(base); } catch { return restore(); }
   if (out.error) { restore(); showError('Regenerate was cut off, so the previous reply was kept: ' + out.error); }
   else if (out.stopped) { restore(); toast('Stopped: kept the previous reply'); }
-  else persist();
+  else { chat.updated = Date.now(); persist(); }
 }
 
 // ---- Chat history ----
