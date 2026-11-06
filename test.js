@@ -352,6 +352,21 @@ test('Lib.editUser swaps the typed text and keeps inlined files and images', () 
   }
 });
 
+test('Lib.addVersion keeps every version and Lib.showVersion switches between them', () => {
+  const a = { role: 'assistant', content: 'one', reasoning: 'r1' };
+  const b = Lib.addVersion(a, { content: 'two', reasoning: undefined });
+  assert.deepStrictEqual(b, { role: 'assistant', content: 'two', v: 1, versions: [{ content: 'one', reasoning: 'r1' }, { content: 'two' }] });
+  assert.deepStrictEqual(a, { role: 'assistant', content: 'one', reasoning: 'r1' }); // the original is untouched, so a failed regenerate can restore it
+  const back = Lib.showVersion(b, 0);
+  assert.deepStrictEqual({ content: back.content, reasoning: back.reasoning, v: back.v }, { content: 'one', reasoning: 'r1', v: 0 });
+  assert.strictEqual(Lib.showVersion(b, 9).v, 1);
+  const c = Lib.addVersion(back, { content: 'three' });
+  assert.deepStrictEqual([c.versions.length, c.v, c.content], [3, 2, 'three']);
+  const u = Lib.addVersion({ role: 'user', text: 'hi', content: 'hi', files: [] }, { text: 'yo', content: 'yo', files: [] });
+  assert.deepStrictEqual(u.versions, [{ text: 'hi', content: 'hi' }, { text: 'yo', content: 'yo' }]);
+  assert.deepStrictEqual(Lib.requestMessages({ messages: [u, c] }, null), [{ role: 'user', content: 'yo' }, { role: 'assistant', content: 'three' }]);
+});
+
 test('Lib.matchModels needs every word, in any order, ignoring case', () => {
   const ids = ['openai/gpt-4o', 'anthropic/claude-3', 'meta/llama-3'];
   assert.deepStrictEqual(Lib.matchModels(ids, 'GPT 4o'), ['openai/gpt-4o']);

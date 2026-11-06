@@ -163,11 +163,28 @@
     return { ...m, text, content: arr ? [{ type: 'text', text: next || IMG_ONLY }, ...m.content.slice(1)] : next };
   }
 
+  // Message versions: each edit or regenerate adds one. The message's own fields always hold the version shown, so
+  // requests and rendering never look at `versions`.
+  const VKEYS = ['content', 'text', 'reasoning'];
+  const pickVersion = (m) => Object.fromEntries(VKEYS.filter((k) => m[k] !== undefined).map((k) => [k, m[k]]));
+  /** A copy of message `m` showing version `v` (clamped to the versions it has). */
+  function showVersion(m, v) {
+    v = Math.max(0, Math.min(v, m.versions.length - 1));
+    const ver = m.versions[v], out = { ...m, v };
+    for (const k of VKEYS) if (k in ver) out[k] = ver[k]; else delete out[k];
+    return out;
+  }
+  /** A copy of message `m` with `fields` (content, text, reasoning) added as its newest version, and showing it. */
+  function addVersion(m, fields) {
+    const versions = [...(m.versions || [pickVersion(m)]), pickVersion(fields)];
+    return showVersion({ ...m, versions }, versions.length - 1);
+  }
+
   // Every word must appear in the id, in any order, ignoring case.
   function matchModels(ids, query) {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, editUser, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
+  return { systemPrompt, requestMessages, buildContent, editUser, addVersion, showVersion, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
 });

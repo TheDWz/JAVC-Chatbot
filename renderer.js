@@ -13,6 +13,8 @@ const ICON = {
   expand: ['M15 3h6v6', 'M9 21H3v-6', 'M21 3l-7 7', 'M3 21l7-7'],
   regen: ['M21 12a9 9 0 1 1-2.6-6.4L21 8', 'M21 3v5h-5'],
   edit: ['M4 20h4L19 9l-4-4L4 16z', 'M13.5 6.5l4 4'],
+  left: ['M15 18l-6-6 6-6'],
+  right: ['M9 18l6-6-6-6'],
   alert: ['M12 8v5', 'M12 16.5v.01', 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'],
 };
 // Accent colors are two CSS variables on <html>; every gradient, ring and tint in index.html derives from them.
@@ -268,15 +270,31 @@ function addUser(text, atts, m) {
   if (text) { b = el('div', 'bubble'); inline(b, text); body.append(b); }
   body.append(msgActions(m, body, b)); row.append(body); return push(row);
 }
-// Regenerate and Edit act on the message object, since a message's index changes when the chat is cut short.
-function msgActions(m, body, bubble) {
+// The buttons act on the message object, since a message's index changes when the chat is cut short.
+function msgActions(m, body, bubble, ...lead) {
   const a = el('div', 'actions');
-  a.append(miniBtn(ICON.regen, 'Regenerate', () => regenerate(m)), miniBtn(ICON.edit, 'Edit', () => editMsg(m, body, bubble, a)));
+  if (m.versions?.length > 1) a.append(versionNav(m));
+  a.append(...lead, miniBtn(ICON.regen, 'Regenerate', () => regenerate(m)), miniBtn(ICON.edit, 'Edit', () => editMsg(m, body, bubble, a)));
   return a;
 }
+// ‹ 2/3 › switches only this message; the messages after it stay as they are.
+function versionNav(m) {
+  const n = m.versions.length, v = m.v ?? n - 1, nav = el('span', 'versions');
+  const arrow = (icon, label, d) => { const b = miniBtn(icon, '', () => setMsg(m, Lib.showVersion(m, v + d))); b.title = b.ariaLabel = label; b.disabled = v + d < 0 || v + d >= n; return b; };
+  nav.append(arrow(ICON.left, 'Previous version', -1), el('span', 'vcount', `${v + 1}/${n}`), arrow(ICON.right, 'Next version', 1));
+  return nav;
+}
 const rerender = () => { const top = $('scroll').scrollTop; renderChat(); $('scroll').scrollTop = top; };
+/** Puts `next` in place of message `m`, saves and redraws. The title follows the first message unless it was changed. */
+function setMsg(m, next) {
+  if (busy) return toast('Wait for the reply to finish');
+  const i = chat.messages.indexOf(m);
+  if (i < 0) return;
+  if (i === 0 && m.role === 'user' && chat.title === titleOf(m.text, m.files)) chat.title = titleOf(next.text, next.files);
+  chat.messages[i] = next; persist(); rerender();
+}
 
-// Edit changes the message in place; later messages stay, and a later Regenerate uses the edited text.
+// Edit adds a version of the message; later messages stay, and a later Regenerate uses the edited text.
 function editMsg(m, body, bubble, actions) {
   if (busy) return toast('Wait for the reply to finish');
   const user = m.role === 'user', box = el('div', 'edit'), ta = el('textarea'), bar = el('div', 'edit-bar');
@@ -291,9 +309,8 @@ function editMsg(m, body, bubble, actions) {
     if (busy) return toast('Wait for the reply to finish'); // the box can stay open while a new message is sent
     const text = ta.value.trim();
     if (!text && !(user && m.files?.length)) return toast("A message can't be empty");
-    if (user && m === chat.messages[0] && chat.title === titleOf(m.text, m.files)) chat.title = titleOf(text, m.files);
-    if (user) Object.assign(m, Lib.editUser(m, text)); else m.content = text;
-    chat.updated = Date.now(); persist(); rerender();
+    if (text === (user ? m.text || '' : m.content)) return close();
+    chat.updated = Date.now(); setMsg(m, Lib.addVersion(m, user ? Lib.editUser(m, text) : { content: text, reasoning: m.reasoning }));
   };
   for (const n of hide) n.style.display = 'none';
   actions.before(box); ta.focus();
@@ -336,7 +353,7 @@ function addAssistant() {
       cancelAnimationFrame(raf); raf = 0; row.classList.remove('thinking');
       render(b, text || '(The model returned no text.)');
       tb.classList.toggle('placeholder', !finalReasoning); tb.textContent = finalReasoning || NO_REASONING;
-      const actions = msgActions(m, body, b); actions.prepend(copyBtn(() => text)); body.append(actions); scrollDown();
+      body.append(msgActions(m, body, b, copyBtn(() => text))); scrollDown();
     },
   };
 }
@@ -462,14 +479,16 @@ function ready() {
 }
 /**
  * Streams a reply to the chat as it stands, adds it and returns it (with `error` or `stopped` set when cut short; the caller
- * says so). On failure the reply row is removed, the error shown, and it rethrows.
+ * says so). With `base`, the reply is added as a new version of that message (`base` itself is left as it was).
+ * On failure the reply row is removed, the error shown, and it rethrows.
  */
-async function generate() {
+async function generate(base) {
   const reply = addAssistant();
   setBusy(true);
   try {
     const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d), { search: toolsOk() });
-    const m = { role: 'assistant', content: out.content, reasoning: out.reasoning }; // reasoning is display-only, never sent back
+    const fields = { content: out.content, reasoning: out.reasoning }; // reasoning is display-only, never sent back
+    const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
     chat.updated = Date.now();
     return out;
@@ -501,16 +520,17 @@ async function send() {
   }
 }
 
-// A user message gets a new reply; a reply is replaced. Everything after is dropped, unless the new reply fails or is
-// cut short (by Stop or a broken connection): then the old messages come back, where the user was reading them.
+// A user message gets a new reply; a reply gets a new version. Everything after is dropped, unless the new reply fails or
+// is cut short (by Stop or a broken connection): then the old messages come back, where the user was reading them.
 async function regenerate(m) {
   if (busy) return toast('Wait for the reply to finish');
   const i = chat.messages.indexOf(m);
   if (i < 0 || !ready()) return;
   const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; renderChat(); $('scroll').scrollTop = top; };
-  chat.messages = prev.slice(0, m.role === 'user' ? i + 1 : i); renderChat();
+  const t = m.role === 'user' ? i + 1 : i, base = prev[t]?.role === 'assistant' ? prev[t] : undefined;
+  chat.messages = prev.slice(0, t); renderChat();
   let out;
-  try { out = await generate(); } catch { return restore(); }
+  try { out = await generate(base); } catch { return restore(); }
   if (out.error) { restore(); showError('Regenerate was cut off, so the previous reply was kept: ' + out.error); }
   else if (out.stopped) { restore(); toast('Stopped: kept the previous reply'); }
   else persist();
