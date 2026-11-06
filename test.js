@@ -340,6 +340,42 @@ test('Lib.buildContent inlines text files and turns images into parts', () => {
   assert.deepStrictEqual(parts, [{ type: 'text', text: 'See the attached image(s).' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }]);
 });
 
+test('Lib.editUser swaps the typed text and keeps inlined files and images', () => {
+  const file = { kind: 'text', name: 'a.txt', text: 'x' }, img = { kind: 'image', url: 'data:image/png;base64,AA' };
+  const sent = (text, atts) => ({ role: 'user', text, content: Lib.buildContent(text, atts), files: atts.map(({ name, kind }) => ({ name, kind })) });
+  for (const [from, atts] of [['hi', []], ['hi', [file]], ['', [file]], ['', [img]], ['hi', [img]], ['hi', [file, img]]]) {
+    for (const to of ['new text', '']) {
+      if (!to && !atts.length) continue;
+      const m = Lib.editUser(sent(from, atts), to);
+      assert.deepStrictEqual(m, sent(to, atts), `${JSON.stringify(from)} -> ${JSON.stringify(to)} with ${atts.map((a) => a.kind)}`);
+    }
+  }
+});
+
+test('Lib.addVersion keeps every version and Lib.showVersion switches between them', () => {
+  const a = { role: 'assistant', content: 'one', reasoning: 'r1' };
+  const b = Lib.addVersion(a, { content: 'two', reasoning: undefined });
+  assert.deepStrictEqual(b, { role: 'assistant', content: 'two', v: 1, versions: [{ content: 'one', reasoning: 'r1' }, { content: 'two' }] });
+  assert.deepStrictEqual(a, { role: 'assistant', content: 'one', reasoning: 'r1' }); // the original is untouched, so a failed regenerate can restore it
+  const back = Lib.showVersion(b, 0);
+  assert.deepStrictEqual({ content: back.content, reasoning: back.reasoning, v: back.v }, { content: 'one', reasoning: 'r1', v: 0 });
+  assert.strictEqual(Lib.showVersion(b, 9).v, 1);
+  const c = Lib.addVersion(back, { content: 'three' });
+  assert.deepStrictEqual([c.versions.length, c.v, c.content], [3, 2, 'three']);
+  const u = Lib.addVersion({ role: 'user', text: 'hi', content: 'hi', files: [] }, { text: 'yo' });
+  assert.deepStrictEqual(u.versions, [{ text: 'hi' }, { text: 'yo' }]);
+  assert.deepStrictEqual(Lib.requestMessages({ messages: [u, c] }, null), [{ role: 'user', content: 'yo' }, { role: 'assistant', content: 'three' }]);
+});
+
+test('Lib.addVersion stores a user message\'s attachments once, not in every version', () => {
+  const img = { kind: 'image', name: 'a.png', url: 'data:image/png;base64,AA' }, file = { kind: 'text', name: 'a.txt', text: 'x' };
+  const sent = (text) => ({ role: 'user', text, content: Lib.buildContent(text, [file, img]), files: [{ name: 'a.txt', kind: 'text' }, { name: 'a.png', kind: 'image' }] });
+  const edited = Lib.addVersion(sent('hi'), Lib.editUser(sent('hi'), 'yo'));
+  assert.deepStrictEqual(edited.versions, [{ text: 'hi' }, { text: 'yo' }]); // no image data or file text in the versions
+  assert.deepStrictEqual(Lib.showVersion(edited, 0), { ...sent('hi'), versions: edited.versions, v: 0 });
+  assert.deepStrictEqual(Lib.showVersion(Lib.showVersion(edited, 0), 1), { ...sent('yo'), versions: edited.versions, v: 1 });
+});
+
 test('Lib.matchModels needs every word, in any order, ignoring case', () => {
   const ids = ['openai/gpt-4o', 'anthropic/claude-3', 'meta/llama-3'];
   assert.deepStrictEqual(Lib.matchModels(ids, 'GPT 4o'), ['openai/gpt-4o']);

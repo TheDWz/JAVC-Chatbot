@@ -143,12 +143,44 @@
   }
 
   // Text files are inlined as fenced blocks; images become image_url parts.
+  const IMG_ONLY = 'See the attached image(s).';
   function buildContent(text, atts) {
     const body = [text, ...atts.filter((a) => a.kind === 'text').map((a) => `[File: ${a.name}]\n\`\`\`\n${a.text}\n\`\`\``)].filter(Boolean).join('\n\n');
     const imgs = atts.filter((a) => a.kind === 'image');
     return imgs.length
-      ? [{ type: 'text', text: body || 'See the attached image(s).' }, ...imgs.map((a) => ({ type: 'image_url', image_url: { url: a.url } }))]
+      ? [{ type: 'text', text: body || IMG_ONLY }, ...imgs.map((a) => ({ type: 'image_url', image_url: { url: a.url } }))]
       : body;
+  }
+
+  /**
+   * A sent user message with its typed text replaced. The inlined files and images stay: only their names are stored
+   * apart, so the content can't be rebuilt with buildContent. Relies on buildContent putting the typed text first.
+   */
+  function editUser(m, text) {
+    const arr = Array.isArray(m.content), body = arr ? m.content[0].text : m.content, old = m.text || '';
+    const files = old ? body.slice(old.length).replace(/^\n\n/, '') : arr && body === IMG_ONLY ? '' : body;
+    const next = [text, files].filter(Boolean).join('\n\n');
+    return { ...m, text, content: arr ? [{ type: 'text', text: next || IMG_ONLY }, ...m.content.slice(1)] : next };
+  }
+
+  // Message versions: each edit or regenerate adds one. The message's own fields always hold the version shown, so
+  // requests and rendering never look at `versions`. A user version is only its typed text: the attachments (possibly
+  // megabytes of image data) are stored once, on the message, and editUser puts them back around the text.
+  const VKEYS = ['content', 'reasoning'];
+  const pickVersion = (m) => (m.role === 'user' ? { text: m.text || '' } : Object.fromEntries(VKEYS.filter((k) => m[k] !== undefined).map((k) => [k, m[k]])));
+  /** A copy of message `m` showing version `v` (clamped to the versions it has). */
+  function showVersion(m, v) {
+    v = Math.max(0, Math.min(v, m.versions.length - 1));
+    const ver = m.versions[v];
+    if (m.role === 'user') return { ...editUser(m, ver.text), v };
+    const out = { ...m, v };
+    for (const k of VKEYS) if (k in ver) out[k] = ver[k]; else delete out[k];
+    return out;
+  }
+  /** A copy of message `m` with `fields` (a reply's content and reasoning, or a user message's text) added as its newest version, and showing it. */
+  function addVersion(m, fields) {
+    const versions = [...(m.versions || [pickVersion(m)]), pickVersion({ role: m.role, ...fields })];
+    return showVersion({ ...m, versions }, versions.length - 1);
   }
 
   // Every word must appear in the id, in any order, ignoring case.
@@ -157,5 +189,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
+  return { systemPrompt, requestMessages, buildContent, editUser, addVersion, showVersion, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
 });

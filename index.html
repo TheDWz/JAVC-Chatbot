@@ -143,6 +143,16 @@
     border: 1px solid transparent; border-radius: 7px; padding: 3px 8px; cursor: pointer; }
   .mini:hover { color: var(--text); background: var(--surface-2); border-color: var(--line-soft); }
   .mini svg { width: 13px; height: 13px; }
+  .mini:disabled { opacity: .35; pointer-events: none; }
+  .versions { display: inline-flex; align-items: center; }
+  .versions .mini { padding: 3px 5px; }
+  .vcount { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .body:has(> .edit), .ubody:has(> .edit) { flex: 1; }
+  .edit { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  .edit textarea { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text); padding: 10px 14px;
+    resize: vertical; field-sizing: content; min-height: 80px; max-height: 60vh; line-height: 1.5; outline: 0; }
+  .edit textarea:focus { border-color: var(--accent-text); }
+  .edit-bar { display: flex; justify-content: flex-end; gap: 6px; }
 
   .code { margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--code-bg); white-space: normal; }
   .code-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 4px 12px; font-size: 12px;
