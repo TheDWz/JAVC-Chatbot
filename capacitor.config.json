@@ -1,8 +1,0 @@
-{
-  "appId": "io.github.thedwz.javcchatbot",
-  "appName": "JAVC Chatbot",
-  "webDir": "www",
-  "android": {
-    "path": "android"
-  }
-}

@@ -868,11 +868,12 @@ export component AppWindow inherits Window {
 
         // ---- drop target, toasts ----
         if dropping: Rectangle {
-            background: Theme.a1.with-alpha(0.12);
+            x: 12px; y: 12px; width: parent.width - 24px; height: parent.height - 24px;
+            background: Theme.bg.with-alpha(0.82); // mostly hides the chat, so the label reads clearly
             border-width: 2px;
             border-color: Theme.a1;
-            border-radius: 16px;
-            Text { text: "Drop files to attach"; font-size: 20px; font-weight: 700; color: Theme.accent-text; }
+            border-radius: 22px;
+            Text { text: "Drop files to attach"; font-size: 18px; font-weight: 600; color: Theme.text; }
         }
         Rectangle {
             visible: err-shown;

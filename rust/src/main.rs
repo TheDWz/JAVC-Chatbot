@@ -8,10 +8,18 @@ fn main() -> anyhow::Result<()> {
     if args.len() == 3 && args[1] == "--preview" {
         return javc::preview::run(std::path::Path::new(&args[2]));
     }
+    // Linux: winit only receives dropped files on X11 (it has no Wayland drag-and-drop), so use XWayland when there is one.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        use slint::winit_030::winit::{event_loop::EventLoop, platform::x11::EventLoopBuilderExtX11};
+        let mut b = EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        b.with_x11();
+        slint::BackendSelector::new().with_winit_event_loop_builder(b).select()?;
+    }
     let dir = javc::platform::data_dir();
     javc::app::init_services(dir, javc::platform::legacy_dir());
     let ui = javc::app::build()?;
-    // Debug builds only: JAVC_SELFTEST=1 runs the smoke test against mobile/smoke/mock-api.mjs and exits; =hold keeps the
+    // Debug builds only: JAVC_SELFTEST=1 runs the smoke test against rust/selftest/mock-api.mjs and exits; =hold keeps the
     // window open and tours the panels afterwards; =tour only tours (safe with real data: it changes nothing).
     match std::env::var("JAVC_SELFTEST").ok().filter(|_| cfg!(debug_assertions)).as_deref() {
         Some("tour") => javc::app::tour(),
