@@ -427,7 +427,7 @@ async function send() {
   const reply = addAssistant();
   setBusy(true);
   try {
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d));
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d), { search: modelInfo[settings.model]?.tools !== false });
     chat.messages.push({ role: 'assistant', content: out.content, reasoning: out.reasoning }); // reasoning is display-only, never sent back
     reply.done(out.content, out.reasoning);
     chat.updated = Date.now();
@@ -668,7 +668,7 @@ addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); 
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
 // ---- Settings dialog: Appearance / Profiles / Replies ----
-const PANES = ['appearance', 'profiles', 'replies'];
+const PANES = ['appearance', 'profiles', 'search', 'replies'];
 let prefsDirty = false; // a Replies switch changed: redraw the open chat when the dialog closes
 function showPane(name, focus) {
   for (const n of PANES) {
@@ -679,7 +679,7 @@ function showPane(name, focus) {
 }
 function openPrefs(pane) {
   const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
-  renderThemes(); renderProfiles(); syncReplies(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
+  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
 }
 for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
 $('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
@@ -731,6 +731,30 @@ for (const c of document.querySelectorAll('[data-render]')) c.onchange = async (
   catch (e) { showError(cleanErr(e)); applyState(state); }
   syncReplies();
 };
+
+// ---- Search pane: the key is fetched only when the pane opens, and an untouched field never overwrites the stored one ----
+let searchKeyDirty = false;
+async function loadSearchPane() {
+  const s = state.search; searchKeyDirty = false; $('searchkey').type = 'password'; $('searcherr').hidden = true;
+  $('searchon').checked = s.enabled; $('searchkey').value = '';
+  const noTools = settings.model && modelInfo[settings.model]?.tools === false;
+  $('searchnote').textContent = noTools ? "The current model doesn't support tools, so it won't search." : ''; $('searchnote').hidden = !noTools;
+  if (!s.hasKey) return;
+  try { $('searchkey').value = await window.api.getSearchKey(); }
+  catch (e) { $('searcherr').textContent = cleanErr(e); $('searcherr').hidden = false; }
+}
+async function saveSearch(p) {
+  $('searcherr').hidden = true;
+  try { applyState(await window.api.saveSearch(p)); return true; }
+  catch (e) { $('searcherr').textContent = cleanErr(e); $('searcherr').hidden = false; applyState(state); return false; }
+}
+$('searchkey').oninput = () => { searchKeyDirty = true; };
+$('searchreveal').onclick = () => { const k = $('searchkey'); k.type = k.type === 'password' ? 'text' : 'password'; };
+$('searchon').onchange = async () => {
+  if (!(await saveSearch({ enabled: $('searchon').checked }))) $('searchon').checked = state.search.enabled;
+  else if ($('searchon').checked && !state.search.hasKey) { $('searcherr').textContent = 'Add your Linkup API key below, or searching will not start.'; $('searcherr').hidden = false; }
+};
+$('searchsave').onclick = async () => { if (searchKeyDirty && await saveSearch({ key: $('searchkey').value })) { searchKeyDirty = false; toast($('searchkey').value.trim() ? 'Key saved' : 'Key removed'); } };
 
 (async () => {
   let first;

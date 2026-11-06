@@ -31,6 +31,7 @@
 - **Chat history.** Every conversation is saved locally and grouped by persona. You can duplicate a chat to another persona.
 - **Attachments.** Drop in text files, PDFs (text is extracted on your machine) or images for vision models.
 - **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view. Markdown, HTML, CSS and JavaScript can each be switched off.
+- **Web search.** Let the model look things up with [Linkup](https://www.linkup.so). It decides when to search and answers from the results. Needs a Linkup API key (Settings → Search) and a model that supports tools.
 - **Model picker.** Fetch your provider's model list and search it as you type.
 - **Themes.** Six accent gradients (Aurora purple-to-blue is the default) or your own two colors, in dark or light mode following your system setting.
 - **One settings panel.** Appearance, connection profiles and reply formats in one place, opened from the gear.
@@ -62,12 +63,12 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 3. **Chat.** Press <kbd>Enter</kbd> to send and <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line. Drag files onto the window to attach them.
    On Android, <kbd>Enter</kbd> starts a new line and the send button sends; attach files with the paperclip. A local server on your computer is reached by its network address (for example `http://192.168.1.20:11434/v1` for Ollama started with `OLLAMA_HOST=0.0.0.0`), not `localhost`.
 
-Click the assistant's avatar on any reply to open its reasoning. The sliders button sets the reasoning level. The gear opens **Settings**: pick a theme, manage connection profiles, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
+Click the assistant's avatar on any reply to open its reasoning. The sliders button sets the reasoning level. The gear opens **Settings**: pick a theme, manage connection profiles, set up web search, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
 
 ## Privacy & security
 
-- **No telemetry.** The app only talks to the API endpoint you configure.
-- **Encrypted keys.** API keys are encrypted with your OS keychain through Electron's `safeStorage` and are only ever sent to your provider. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device.
+- **No telemetry.** The app only talks to the API endpoint you configure. The one exception is web search, which is off until you turn it on: then the queries the model writes are sent to Linkup (linkup.so) with your Linkup key.
+- **Encrypted keys.** API keys (including the Linkup key) are encrypted with your OS keychain through Electron's `safeStorage` and are only ever sent to the service they belong to: your provider, or Linkup for the search key. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device.
 - **Local data.** Settings and chats are stored in plain files on your machine:
   - Linux: `~/.config/javc-chatbot/`
   - Windows: `%APPDATA%\javc-chatbot\`

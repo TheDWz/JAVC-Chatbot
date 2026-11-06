@@ -31,6 +31,8 @@ window.api = {
   deleteProfile: (id) => store.deleteProfile(id),
   activateProfile: (id) => store.activate(id),
   getProfileKey: (id) => store.key(id),
+  saveSearch: (p) => store.saveSearch(p),
+  getSearchKey: () => store.searchKey(),
   /** Stores a rich block's page in the plugin and returns the sandbox-host URL it's served from. */
   async createSandbox(html, color, scheme, flags) {
     if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
@@ -39,11 +41,11 @@ window.api = {
   },
   listModels: async () => { const s = await store.load(); return api.listModelsDetailed(s.endpoint, s.key, nativeFetch); },
   /** Streams a reply: onDelta gets {reasoning, content} pieces as they arrive; resolves to the full reply. */
-  async chat(messages, onDelta) {
+  async chat(messages, onDelta, opts) {
     const ctl = (current = new AbortController());
     try {
       const s = await store.load();
-      return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), (d) => onDelta?.(d), nativeFetch, ctl.signal);
+      return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), (d) => onDelta?.(d), nativeFetch, ctl.signal, opts?.search ? s.search : null); // Linkup goes through nativeFetch too
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),

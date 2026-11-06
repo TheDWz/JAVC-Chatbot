@@ -720,3 +720,100 @@ test('migrateLegacy: an item that cannot move does not hold back the others, and
   assert.deepStrictEqual(migrateLegacy(from, to), ['settings.json']); // and settings follow on the next launch
   fs.rmSync(root, { recursive: true });
 });
+
+// ---- web search (Linkup) ----
+const toolFrames = (pieces) => frames(pieces.map((tool_calls) => ({ tool_calls })));
+// Routes by URL: Linkup calls are answered by `linkup`, chat calls pop the next reply from `replies` and are recorded in `chats`.
+const searchFetch = (replies, linkup, chats = [], hits = []) => async (url, opts) => {
+  if (url.startsWith('https://api.linkup.so')) { hits.push({ url, opts }); return linkup(); }
+  chats.push(JSON.parse(opts.body));
+  return sse(replies.shift())(url, opts);
+};
+const linkupOk = (results) => async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ results }) });
+
+test('web search: streamed tool call runs one Linkup search, then the model answers from it', async () => {
+  const chats = [], hits = [], deltas = [];
+  const replies = [
+    toolFrames([[{ index: 0, id: 'c1', function: { name: 'web_search', arguments: '' } }], [{ index: 0, function: { arguments: '{"query":"paris ' } }], [{ index: 0, function: { arguments: 'weather"}' } }]]),
+    frames([{ content: 'Sunny.' }]),
+  ];
+  const results = [{ type: 'text', name: 'Meteo', url: 'https://m.example', content: 'Sunny, 21C', favicon: '' }, { type: 'image', name: 'pic', url: 'https://i.example' }];
+  const out = await chatStream('http://x', 'k', 'm', [{ role: 'user', content: 'weather?' }], {}, (d) => deltas.push(d), searchFetch(replies, linkupOk(results), chats, hits), undefined, { key: 'lk-1' });
+  assert.deepStrictEqual(out, { content: 'Sunny.', reasoning: 'Searching the web: paris weather\n' });
+  assert.strictEqual(hits.length, 1);
+  assert.strictEqual(hits[0].url, 'https://api.linkup.so/v1/search');
+  assert.strictEqual(hits[0].opts.headers.Authorization, 'Bearer lk-1');
+  assert.deepStrictEqual(JSON.parse(hits[0].opts.body), { q: 'paris weather', depth: 'fast', outputType: 'searchResults', maxResults: 5 });
+  assert.strictEqual(chats[0].tools[0].function.name, 'web_search'); assert.strictEqual(chats[0].tool_choice, 'auto');
+  const [, asst, tool] = chats[1].messages;
+  assert.deepStrictEqual(asst.tool_calls[0], { id: 'c1', type: 'function', function: { name: 'web_search', arguments: '{"query":"paris weather"}' } });
+  assert.strictEqual(tool.role, 'tool'); assert.strictEqual(tool.tool_call_id, 'c1');
+  assert.match(tool.content, /Meteo\nhttps:\/\/m\.example\nSunny, 21C/); assert.ok(!tool.content.includes('pic')); // image results are left out
+  assert.ok(deltas.some((d) => d.reasoning.startsWith('Searching the web')));
+});
+
+test('web search: without a search key nothing changes (no tools in the request)', async () => {
+  const seen = {};
+  await chatStream('http://x', '', 'm', [], {}, () => {}, sse(frames([{ content: 'hi' }]), seen));
+  assert.strictEqual('tools' in JSON.parse(seen.opts.body), false);
+});
+
+test('web search: after the round cap the model must answer (tool_choice none), and a failed search becomes tool text', async () => {
+  const chats = [], call = toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]);
+  const replies = [call, call, call, call, call]; // keeps asking forever
+  const bad = async () => ({ ok: false, status: 500, text: async () => 'down' });
+  const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch(replies, bad, chats), undefined, { key: 'lk' });
+  assert.strictEqual(chats.length, 5); // 4 search rounds + the forced final one
+  assert.strictEqual(chats[3].tool_choice, 'auto'); assert.strictEqual(chats[4].tool_choice, 'none'); assert.ok(chats[4].tools);
+  assert.match(chats[1].messages.at(-1).content, /Search failed: Linkup HTTP 500/);
+  assert.strictEqual(out.content, '');
+});
+
+test('web search: bad tool arguments are reported to the model; Stop during a search stops the reply', async () => {
+  const chats = [];
+  const replies = [toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{oops' } }]]), frames([{ content: 'ok' }])];
+  const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch(replies, linkupOk([])), undefined, { key: 'lk' });
+  assert.strictEqual(out.content, 'ok');
+  const ctl = new AbortController();
+  const hang = (url, opts) => (url.startsWith('https://api.linkup.so') ? new Promise((_, no) => (opts.signal.aborted ? no(new Error('fetch failed')) : opts.signal.addEventListener('abort', () => no(new Error('fetch failed'))))) : sse(toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]))(url, opts));
+  const run = chatStream('http://x', 'k', 'm', [], {}, (d) => { if (d.reasoning.startsWith('Searching')) ctl.abort(); }, hang, ctl.signal, { key: 'lk' });
+  await assert.rejects(run, /Stopped/);
+});
+
+test('web search: a non-streaming reply with message.tool_calls works too', async () => {
+  const chats = [], first = JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }] } }] });
+  const second = JSON.stringify({ choices: [{ message: { content: 'done' } }] });
+  const replies = [first, second];
+  const f = async (url, opts) => (url.startsWith('https://api.linkup.so') ? linkupOk([])() : (chats.push(JSON.parse(opts.body)), sse(replies.shift(), {}, 'application/json')(url, opts)));
+  assert.strictEqual((await chatStream('http://x', 'k', 'm', [], {}, () => {}, f, undefined, { key: 'lk' })).content, 'done');
+  assert.strictEqual(chats[1].messages.at(-1).content, 'No results.');
+});
+
+test('web search: models whose list omits `tools` are flagged tools:false', async () => {
+  const data = [{ id: 'a', supported_parameters: ['temperature'] }, { id: 'b', supported_parameters: ['tools', 'temperature'] }, { id: 'c' }];
+  const [a, b, c] = await listModelsDetailed('http://x', '', fake(200, { data }));
+  assert.strictEqual(a.tools, false); assert.strictEqual('tools' in b, false); assert.strictEqual('tools' in c, false);
+});
+
+test('web search settings: off by default, key encrypted and never exposed, keep/clear rules, plaintext key upgrades', async () => {
+  const { dir, file, store } = tmpStore();
+  assert.deepStrictEqual((await store.get()).search, { enabled: false, hasKey: false });
+  await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' });
+  assert.strictEqual((await store.load()).search, null);
+  const v = await store.saveSearch({ enabled: true, key: 'lk-1' });
+  assert.deepStrictEqual(v.search, { enabled: true, hasKey: true });
+  assert.ok(!JSON.stringify(v).includes('lk-1') && !JSON.stringify(await store.get()).includes('lk-1'));
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('lk-1')); // stored encrypted
+  assert.strictEqual(await store.searchKey(), 'lk-1'); assert.strictEqual((await store.load()).search.key, 'lk-1');
+  await store.saveSearch({ enabled: false }); // no `key` field: the stored key stays
+  assert.strictEqual(await store.searchKey(), 'lk-1'); assert.strictEqual((await store.load()).search, null);
+  await store.patch({ effort: 'low', theme: { id: 'rose' } }); assert.strictEqual((await store.get()).search.hasKey, true); // other saves don't drop it
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8')); raw.search = { enabled: true, keyPlain: 'lk-9' }; fs.writeFileSync(file, JSON.stringify(raw));
+  assert.strictEqual(await store.searchKey(), 'lk-9');
+  assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).search.keyEnc); assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).search.keyPlain, undefined);
+  await store.saveSearch({ key: '' }); assert.strictEqual(await store.searchKey(), ''); assert.strictEqual((await store.get()).search.hasKey, false);
+  await store.saveSearch({ enabled: true, key: 'lk-2' });
+  const broken = makeStore({ io: makeDisk(dir), crypto: { ...rot, dec: () => { throw new Error('locked'); } } });
+  await assert.rejects(broken.load(), /Couldn't read the saved search key/);
+  fs.rmSync(dir, { recursive: true });
+});

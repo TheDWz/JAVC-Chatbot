@@ -5,6 +5,7 @@ const { THINKING_SWITCH } = require('./api');
 const Lib = require('./lib');
 
 const FILE = 'settings.json';
+const hasKey = (o) => !!(o.keyEnc || o.keyPlain);
 
 /**
  * The settings store: profiles, personas and display settings in settings.json.
@@ -46,17 +47,17 @@ module.exports = ({ io, crypto }) => {
     const st = profiles.migrate(raw);
     let changed = text !== null && raw.version !== 2; // persist a migrated file right away so profile ids stay stable
     if (await crypto.available()) { // upgrade leftover plaintext keys now that a keyring is available
-      for (const p of st.profiles) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
+      for (const p of [...st.profiles, st.search]) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
     }
     if (changed) await write(st);
     return st;
   }
 
-  /** The decrypted API key of a stored profile, or a clear error when the keyring can't decrypt it. */
-  async function keyOf(p) {
+  /** The decrypted API key of a stored profile (or the search key), or a clear error when the keyring can't decrypt it. */
+  async function keyOf(p, what = 'API key') {
     if (p.keyEnc) {
       try { return await crypto.dec(p.keyEnc); }
-      catch { throw new Error("Couldn't read the saved API key (the system keyring may be locked or changed). Type the key again and save."); }
+      catch { throw new Error(`Couldn't read the saved ${what} (the system keyring may be locked or changed). Type the key again and save.`); }
     }
     return p.keyPlain || '';
   }
@@ -76,7 +77,21 @@ module.exports = ({ io, crypto }) => {
     load: serial(async () => {
       const st = await read(), p = st.profiles.find((x) => x.id === st.activeId);
       if (!p) throw new Error('No profile yet. Use the new-profile button to add one.');
-      return { endpoint: p.endpoint, model: p.model || '', effort: st.effort || '', format: p.format || 'auto', meta: !!p.meta, key: await keyOf(p) };
+      // the search key is only read when search is on, so a locked keyring can't break chats that don't use it
+      const search = st.search.enabled && hasKey(st.search) ? { key: await keyOf(st.search, 'search key') } : null;
+      return { endpoint: p.endpoint, model: p.model || '', effort: st.effort || '', format: p.format || 'auto', meta: !!p.meta, key: await keyOf(p), search };
+    }),
+    /** The Linkup API key, or '' when none is saved. */
+    searchKey: serial(async () => keyOf((await read()).search, 'search key')),
+    /** Saves {enabled, key} for web search. No `key` field keeps the stored key; `key: ''` clears it. */
+    saveSearch: serial(async (p) => {
+      const st = await read();
+      if (typeof p.enabled === 'boolean') st.search.enabled = p.enabled;
+      if (typeof p.key === 'string') {
+        delete st.search.keyEnc; delete st.search.keyPlain;
+        if (p.key.trim()) Object.assign(st.search, await encKey(p.key.trim()));
+      }
+      return commit(st);
     }),
     /** The API key of profile `id`, or '' for an unknown profile. */
     key: serial(async (id) => { const p = (await read()).profiles.find((x) => x.id === id); return p ? keyOf(p) : ''; }),

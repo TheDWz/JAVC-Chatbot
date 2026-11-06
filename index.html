@@ -253,6 +253,7 @@
   .prefs-body section { display: flex; flex-direction: column; gap: 12px; }
   .prefs-body h3 { margin: 6px 0 0; font-size: 15px; font-weight: 650; }
   .prefs-body .sub { margin: -6px 0 0; font-size: 13px; color: var(--muted); }
+  .prefs-body a { color: var(--a1); }
   .prefs-close { position: absolute; top: 14px; right: 14px; }
   .themegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
   .theme { display: flex; flex-direction: column; gap: 8px; padding: 8px; text-align: left; font-size: 13px; border-radius: 12px; cursor: pointer; background: transparent; border: 1px solid var(--line); }
@@ -446,6 +447,7 @@
       <h2 id="prefstitle">Settings</h2>
       <button type="button" role="tab" id="tab-appearance" data-pane="appearance" aria-controls="pane-appearance">Appearance</button>
       <button type="button" role="tab" id="tab-profiles" data-pane="profiles" aria-controls="pane-profiles">Profiles</button>
+      <button type="button" role="tab" id="tab-search" data-pane="search" aria-controls="pane-search">Search</button>
       <button type="button" role="tab" id="tab-replies" data-pane="replies" aria-controls="pane-replies">Replies</button>
     </div>
     <div class="prefs-body">
@@ -466,6 +468,19 @@
         <p class="sub">Each profile is an endpoint, an API key and a model. Switch the active one from the header.</p>
         <div id="proflist" class="proflist"></div>
         <button type="button" class="btn primary" id="addprofile">Add profile</button>
+      </section>
+      <section role="tabpanel" id="pane-search" aria-labelledby="tab-search" tabindex="0" hidden>
+        <h3>Web search</h3>
+        <p class="sub">Lets the model look things up on the web with <a href="https://www.linkup.so" target="_blank" rel="noreferrer">Linkup</a>. The model decides when to search; its search queries are sent to Linkup with your key.</p>
+        <label class="opt"><input type="checkbox" class="sw" id="searchon"><span>Let models search the web<small>Needs a Linkup API key and a model that supports tools.</small></span></label>
+        <label class="field">Linkup API key
+          <span class="input"><input id="searchkey" type="password" placeholder="Your Linkup API key" spellcheck="false">
+            <button type="button" class="icon-btn" id="searchreveal" title="Show key" aria-label="Show key"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          </span>
+        </label>
+        <p id="searchnote" class="sub" hidden></p>
+        <p id="searcherr" class="perr" role="alert" hidden></p>
+        <div class="btns"><button type="button" class="btn primary" id="searchsave">Save key</button></div>
       </section>
       <section role="tabpanel" id="pane-replies" aria-labelledby="tab-replies" tabindex="0" hidden>
         <h3>How replies are shown</h3>

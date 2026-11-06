@@ -29,9 +29,12 @@ function reasoningInfo(m) {
   return { efforts: null, meta: false };
 }
 
+// tools:false only when the list says so (OpenRouter-style supported_parameters without `tools`); plain /models says nothing.
+const noTools = (m) => Array.isArray(m.supported_parameters) && !m.supported_parameters.includes('tools');
+
 async function listModelsDetailed(endpoint, key, fetchFn) {
   const json = parseJson(await (await call(endpoint, key, '/models', null, fetchFn)).text());
-  return (json.data || []).map((m) => ({ id: m.id, ...reasoningInfo(m) })).sort((a, b) => (a.id < b.id ? -1 : 1));
+  return (json.data || []).map((m) => ({ id: m.id, ...reasoningInfo(m), ...(noTools(m) && { tools: false }) })).sort((a, b) => (a.id < b.id ? -1 : 1));
 }
 
 // DeepSeek, Z.ai (GLM) and Moonshot (Kimi) turn thinking off with thinking:{type:'disabled'}, not effort 'none'.
@@ -88,9 +91,33 @@ function thinkSplitter() {
 
 const pickReasoning = (o) => (typeof o.reasoning_content === 'string' ? o.reasoning_content : typeof o.reasoning === 'string' ? o.reasoning : '');
 
-// Streams a chat completion. onDelta({reasoning, content}) fires as text arrives; resolves to the full {content, reasoning}.
+// ---- Web search through Linkup (https://docs.linkup.so). The model asks for it with a web_search tool call. ----
+const SEARCH_TOOL = { type: 'function', function: {
+  name: 'web_search',
+  description: 'Search the web for current information, recent events or facts you are unsure about. Returns titles, URLs and page excerpts.',
+  parameters: { type: 'object', properties: { query: { type: 'string', description: 'A natural-language search query' } }, required: ['query'] },
+} };
+const SEARCH_ROUNDS = 4; // searches per reply; after that the model must answer
+
+async function linkupSearch(key, q, fetchFn = fetch, signal) {
+  let res;
+  try {
+    res = await fetchFn('https://api.linkup.so/v1/search', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, signal,
+      body: JSON.stringify({ q, depth: 'fast', outputType: 'searchResults', maxResults: 5 }),
+    });
+  } catch (e) { throw signal?.aborted ? new Error('Stopped') : e; }
+  if (!res.ok) throw new Error(`Linkup HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  let json; try { json = JSON.parse(await res.text()); } catch { throw new Error("Linkup didn't return JSON"); }
+  const hits = (json.results || []).filter((r) => r.type === 'text' && r.content);
+  // shortcut: 2000 characters per result keeps a search from flooding the context; raise it if answers come back too thin
+  return hits.length ? hits.map((r, i) => `[${i + 1}] ${r.name}\n${r.url}\n${String(r.content).slice(0, 2000)}`).join('\n\n') : 'No results.';
+}
+
+// One streamed request. onDelta({reasoning, content}) fires as text arrives; resolves to the full {content, reasoning}.
 // If the stream breaks or is stopped after some text arrived, the partial reply is returned with `error` or `stopped` set.
-async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal) {
+// Tool calls the model makes are pushed onto `calls` as {id, type, function:{name, arguments}}.
+async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, calls) {
   const res = await call(endpoint, key, '/chat/completions', { model, messages, ...extra, stream: true }, fetchFn, signal);
 
   const out = { content: '', reasoning: '' };
@@ -108,9 +135,11 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
     const m = json.choices?.[0]?.message || {};
     emit(pickReasoning(m), m.content || '', true);
+    for (const c of m.tool_calls || []) calls.push({ id: c.id, type: 'function', function: { name: c.function?.name || '', arguments: c.function?.arguments || '' } });
     return out;
   }
 
+  const byIndex = []; // streamed tool calls arrive in pieces: id and name first, then the arguments text
   const handle = (line) => {
     line = line.trim();
     if (!line.startsWith('data:')) return false;
@@ -120,6 +149,12 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     if (j.error) throw new Error('Stream error: ' + (j.error.message || JSON.stringify(j.error)));
     const d = j.choices?.[0]?.delta || {};
     emit(pickReasoning(d), d.content);
+    for (const t of d.tool_calls || []) {
+      const c = (byIndex[t.index ?? 0] ||= { id: '', type: 'function', function: { name: '', arguments: '' } });
+      if (t.id) c.id = t.id;
+      if (t.function?.name) c.function.name ||= t.function.name;
+      c.function.arguments += t.function?.arguments || '';
+    }
     return false;
   };
   const reader = res.body.getReader(), dec = new TextDecoder();
@@ -139,7 +174,41 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     cut = signal?.aborted ? { stopped: true } : { error: e.message };
   } finally { reader.cancel().catch(() => {}); }
   emit('', '', true); // flush anything the think splitter held back
+  calls.push(...byIndex.filter(Boolean));
   return cut ? { ...out, ...cut } : out;
+}
+
+// Streams a reply. Without `search` ({key}) this is a single request. With it, the model may call web_search up to SEARCH_ROUNDS times
+// before answering; text and reasoning from every round are joined. shortcut: the tool exchange stays inside this call and isn't saved
+// with the chat, so later turns see only the final answer, not the raw search results.
+async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search) {
+  if (!search) return streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []);
+  const total = { content: '', reasoning: '' }, msgs = [...messages];
+  const add = (r, c) => { total.reasoning += r; total.content += c; };
+  for (let round = 0; ; round++) {
+    const final = round >= SEARCH_ROUNDS, calls = [];
+    // tools stay in the request on the last round (tool_choice none): some backends reject tool messages when no tools are defined
+    const out = await streamOnce(endpoint, key, model, msgs, { ...extra, tools: [SEARCH_TOOL], tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
+      .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
+    add(out.reasoning, out.content);
+    if (out.error || out.stopped || final || !calls.length) return { ...total, ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) };
+    msgs.push({ role: 'assistant', content: out.content, tool_calls: calls });
+    for (const c of calls) {
+      let q = '', result;
+      try { q = String(JSON.parse(c.function.arguments || '{}').query || '').trim(); } catch {}
+      if (c.function.name !== 'web_search' || !q) result = 'Error: call web_search with a JSON object like {"query": "..."}.';
+      else {
+        const note = `Searching the web: ${q}\n`;
+        add(note, ''); onDelta({ reasoning: note, content: '' });
+        try { result = await linkupSearch(search.key, q, fetchFn, signal); }
+        catch (e) {
+          if (signal?.aborted) { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped'); }
+          result = 'Search failed: ' + e.message; // the model can still answer without it
+        }
+      }
+      msgs.push({ role: 'tool', tool_call_id: c.id, content: result });
+    }
+  }
 }
 
 module.exports = { listModelsDetailed, reasoningParams, chatStream, thinkSplitter, THINKING_SWITCH };

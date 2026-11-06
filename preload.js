@@ -10,15 +10,17 @@ contextBridge.exposeInMainWorld('api', {
   deletePersona: (id) => ipcRenderer.invoke('personas:delete', id),
   deleteProfile: (id) => ipcRenderer.invoke('profiles:delete', id),
   activateProfile: (id) => ipcRenderer.invoke('profiles:activate', id),
+  saveSearch: (p) => ipcRenderer.invoke('search:save', p),
+  getSearchKey: () => ipcRenderer.invoke('search:key'),
   getProfileKey: (id) => ipcRenderer.invoke('profiles:key', id),
   createSandbox: (html, color, scheme, flags) => ipcRenderer.invoke('sandbox:create', html, color, scheme, flags),
   listModels: () => ipcRenderer.invoke('models:list'),
   // Streams: onDelta gets {reasoning, content} pieces tagged with this request's id; resolves to the full reply.
-  chat: async (messages, onDelta) => {
+  chat: async (messages, onDelta, opts) => {
     const id = (currentId = Date.now().toString(36) + Math.random().toString(36).slice(2));
     const listener = (_e, rid, d) => { if (rid === id) onDelta?.(d); };
     ipcRenderer.on('chat:delta', listener);
-    try { return await ipcRenderer.invoke('chat:send', id, messages); }
+    try { return await ipcRenderer.invoke('chat:send', id, messages, opts); }
     finally { ipcRenderer.removeListener('chat:delta', listener); currentId = null; }
   },
   stopChat: () => currentId && ipcRenderer.invoke('chat:abort', currentId),
