@@ -1,8 +1,8 @@
-// Serves the smoke-test mock API from mobile/smoke/mock-api.mjs on 127.0.0.1:18765,
+// Serves the smoke-test mock API from mock-api.mjs on 127.0.0.1:18765,
 // for the app's built-in self-test (JAVC_SELFTEST=1, see ../README.md).
 // Anything the mock doesn't handle gets a 404.
 import http from 'node:http';
-import { handleApi } from '../../mobile/smoke/mock-api.mjs';
+import { handleApi } from './mock-api.mjs';
 
 const requests = [];
 

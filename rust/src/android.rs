@@ -1,4 +1,4 @@
-//! Android: the platform API of platform.rs, done by calling the app's Java activity (rust/android, MainActivity) over JNI.
+//! Android: the platform API of platform.rs, done by calling the app's Java activity (android/, MainActivity) over JNI.
 //! The Java side holds what needs the Android framework: the Keystore key, the clipboard, the file picker, links, the
 //! preview WebView and moving the app to the background.
 use crate::core::store::Crypto;

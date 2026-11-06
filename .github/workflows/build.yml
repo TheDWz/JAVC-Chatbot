@@ -1,12 +1,12 @@
-name: Build Rust packages
+name: Build packages
 
 on:
   push:
     tags: ['v*']
     branches: [main]
-    paths: ['rust/**', '.github/workflows/rust.yml']
+    paths: ['rust/**', 'android/**', '.github/workflows/build.yml']
   pull_request:
-    paths: ['rust/**', '.github/workflows/rust.yml']
+    paths: ['rust/**', 'android/**', '.github/workflows/build.yml']
   workflow_dispatch:
 
 jobs:
@@ -71,7 +71,7 @@ jobs:
           tar -czf "dist/javc-chatbot-$VERSION-linux-x64.tar.gz" -C dist/rust "$STAGING"
       - uses: actions/upload-artifact@v4
         with:
-          name: javc-chatbot-rust-Linux
+          name: javc-chatbot-Linux
           path: |
             dist/rust/*.AppImage
             dist/rust/*.deb
@@ -98,7 +98,7 @@ jobs:
         run: cargo packager --release --formats nsis
       - uses: actions/upload-artifact@v4
         with:
-          name: javc-chatbot-rust-Windows
+          name: javc-chatbot-Windows
           path: dist/rust/*.exe
           if-no-files-found: error
 
@@ -135,7 +135,7 @@ jobs:
             echo "::warning title=APK signed with a temporary key::The ANDROID_KEYSTORE_BASE64 secret isn't set, so this APK is signed with a throwaway debug key. It installs, but it can't be installed over the released app. See 'Release signing' in the README."
           fi
       - name: Build the release and debug APKs
-        working-directory: rust/android
+        working-directory: android
         run: ./gradlew assembleRelease assembleDebug
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -145,18 +145,18 @@ jobs:
         run: |
           VERSION=$(grep -m1 '^version = ' rust/Cargo.toml | cut -d '"' -f2)
           mkdir -p dist
-          cp rust/android/app/build/outputs/apk/release/app-release.apk "dist/JAVC-Chatbot-$VERSION.apk"
-          cp rust/android/app/build/outputs/apk/debug/app-debug.apk "dist/JAVC-Chatbot-$VERSION-debug.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/JAVC-Chatbot-$VERSION.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/JAVC-Chatbot-$VERSION-debug.apk"
       - uses: actions/upload-artifact@v4
         with:
-          name: javc-chatbot-rust-Android
+          name: javc-chatbot-Android
           path: |
             dist/*.apk
             !dist/*-debug.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: javc-chatbot-rust-Android-debug
+          name: javc-chatbot-Android-debug
           path: dist/*-debug.apk
           retention-days: 7
           if-no-files-found: error
@@ -174,7 +174,7 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          name: javc-chatbot-rust-Android-debug
+          name: javc-chatbot-Android-debug
           path: apk
       - name: Enable KVM
         run: |

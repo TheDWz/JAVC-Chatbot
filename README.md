@@ -8,7 +8,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-6d28d9?style=flat-square)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20Android-4f46e5?style=flat-square)](#download)
-[![Electron](https://img.shields.io/badge/Electron-45-2563eb?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Rust + Slint](https://img.shields.io/badge/Rust-Slint-2563eb?style=flat-square&logo=rust&logoColor=white)](https://slint.dev/)
 [![Build](https://img.shields.io/github/actions/workflow/status/TheDWz/JAVC-Chatbot/build.yml?style=flat-square&label=build)](https://github.com/TheDWz/JAVC-Chatbot/actions/workflows/build.yml)
 
 [Features](#features) · [Download](#download) · [Getting started](#getting-started) · [Privacy](#privacy--security) · [Build from source](#build-from-source)
@@ -30,7 +30,7 @@
 - **Personas.** Give the assistant a name, a personality and a system prompt. Each persona keeps its own chat history.
 - **Chat history.** Every conversation is saved locally and grouped by persona. You can duplicate a chat to another persona.
 - **Attachments.** Drop in text files, PDFs (text is extracted on your machine) or images for vision models.
-- **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view. Markdown, HTML, CSS and JavaScript can each be switched off.
+- **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it shows as code with a **Preview** button that runs it in a locked-down sandbox window. Markdown, HTML, CSS and JavaScript can each be switched off.
 - **Web search.** Let the model look things up with [Linkup](https://www.linkup.so). It decides when to search and answers from the results. Needs a Linkup API key (Settings → Search) and a model that supports tools.
 - **Model picker.** Fetch your provider's model list and search it as you type.
 - **Themes.** Six accent gradients (Aurora purple-to-blue is the default) or your own two colors, in dark or light mode following your system setting.
@@ -52,9 +52,11 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 
 > [!NOTE]
 > The Windows installer isn't code-signed yet, so SmartScreen may show "Windows protected your PC". Choose **More info → Run anyway**.
-> On distros that restrict unprivileged user namespaces (for example Ubuntu 24.04), the AppImage and tar.gz builds may need `--no-sandbox`. The `.deb` and `.rpm` packages don't.
+> The Linux packages need WebKitGTK 4.1 for the rich-reply preview (`libwebkit2gtk-4.1` on Debian/Ubuntu, `webkit2gtk4.1` on Fedora); the `.deb` and `.rpm` pull it in.
 >
-> The Android app isn't on the Play Store, so Android asks you to allow installs from the app you open the APK with. It needs an up-to-date **Android System WebView** (version 123 or later), which the Play Store keeps updated on most phones; if yours is too old, the app tells you and links to the update.
+> The Android app isn't on the Play Store, so Android asks you to allow installs from the app you open the APK with. It installs over the earlier Android app and keeps its chats and saved keys.
+>
+> Coming from an earlier desktop version? Settings and chats carry over, but API keys must be typed in again once.
 
 ## Getting started
 
@@ -68,53 +70,48 @@ Click the assistant's avatar on any reply to open its reasoning. The sliders but
 ## Privacy & security
 
 - **No telemetry.** The app only talks to the API endpoint you configure. The one exception is web search, which is off until you turn it on: then the queries the model writes are sent to Linkup (linkup.so) with your Linkup key.
-- **Encrypted keys.** API keys (including the Linkup key) are encrypted with your OS keychain through Electron's `safeStorage` and are only ever sent to the service they belong to: your provider, or Linkup for the search key. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device.
+- **Encrypted keys.** API keys (including the Linkup key) are encrypted with a key kept in your OS keyring (Secret Service on Linux, Credential Manager on Windows) and are only ever sent to the service they belong to: your provider, or Linkup for the search key. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device.
 - **Local data.** Settings and chats are stored in plain files on your machine:
   - Linux: `~/.config/javc-chatbot/`
   - Windows: `%APPDATA%\javc-chatbot\`
   - Android: the app's private storage, which other apps can't read. It's left out of cloud backups, and uninstalling the app deletes it.
   - Settings and chats from an older `chatbot` folder are moved here automatically on first launch.
-- **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn HTML, or just its CSS and JavaScript, off in Settings → Replies.
+- **Sandboxed rich content.** Model-written HTML runs only when you open its preview, in a separate window with an isolated, sandboxed frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn HTML, or just its CSS and JavaScript, off in Settings → Replies.
 - **No tracking pixels.** Remote images in Markdown are never loaded automatically. They show as links instead.
 
 ## Build from source
 
-You'll need [Node.js](https://nodejs.org/) 24 and npm.
+The app is written in Rust with a [Slint](https://slint.dev/) UI. You'll need stable Rust and, on Linux, the WebKitGTK and GTK development packages (`sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libfontconfig1-dev`, or `webkit2gtk4.1-devel gtk3-devel dbus-devel fontconfig-devel` on Fedora).
 
 ```bash
 git clone https://github.com/TheDWz/JAVC-Chatbot.git
-cd JAVC-Chatbot
-npm ci          # install dependencies
-npm start       # run the app
-npm test        # run the test suite
+cd JAVC-Chatbot/rust
+cargo run       # run the app
+cargo test      # run the test suite
 ```
 
 ### Packaging
 
+From `rust/`:
+
 ```bash
-npm run dist:linux     # AppImage, .deb, .rpm and .tar.gz in dist/
-npm run dist:win       # Windows installer in dist/
-npm run dist           # both
-npm run dist:android   # Android APK in dist/
+cargo packager --release --formats appimage,deb   # Linux, into dist/rust/
+cargo generate-rpm -o ../dist                     # .rpm
+cargo packager --release --formats nsis           # Windows installer (on Windows)
 ```
 
-- Building the `.rpm` needs `rpmbuild` (`sudo dnf install rpm-build` or `sudo apt install rpm`).
-- `dist:win` is meant to run on Linux. It needs Wine and a Bash shell.
-- **Continuous integration:** pushing a `v*` tag, or running the **Build packages** workflow manually, builds every package on GitHub-hosted runners and attaches them to the workflow run. The Android APK is also installed on an emulator and tested there: a profile, a streamed reply, a rich reply, PDF text, the back button and the encrypted key on disk.
+- **Continuous integration:** pull requests, pushes to `main`, `v*` tags and manual runs of the **Build packages** workflow build every package on GitHub-hosted runners and attach them to the workflow run. Each run also tests the app: the unit tests, the desktop app's built-in self-test against a mock API, and the Android APK on an emulator (the self-test and the back button).
 
 ### Android
 
-The Android app is a [Capacitor](https://capacitorjs.com/) shell around the same page. `mobile/` provides `window.api` in place of `preload.js`, and a small native plugin in `android/` handles what a WebView can't do safely. That covers streaming HTTP without browser CORS limits, private files, Keystore encryption and the rich-reply sandbox.
+`android/` is the Gradle project. A NativeActivity hosts the Slint window, and a little Java handles what needs Android itself: the Keystore, clipboard, file picker, links and the WebView for rich-reply previews. Gradle builds the Rust library with [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) first.
 
-You'll need [JDK 21](https://adoptium.net/) and the Android SDK (with [Android Studio](https://developer.android.com/studio), or set `ANDROID_HOME`).
+You'll need [JDK 21](https://adoptium.net/), the Android SDK with platform 36 and NDK 28 (`ANDROID_HOME` and `ANDROID_NDK_HOME`), `cargo install cargo-ndk` and `rustup target add aarch64-linux-android x86_64-linux-android`.
 
 ```bash
-npm run android:sync          # build www/ and copy it into android/
-npx cap open android          # open the project in Android Studio to run it on a phone or emulator
-npm run dist:android:debug    # or build a debug APK from the command line
+cd android
+./gradlew assembleDebug     # or assembleRelease
 ```
-
-After changing `index.html`, `renderer.js` or anything the app loads, run `npm run android:sync` again.
 
 ### Release signing
 
@@ -140,19 +137,17 @@ To sign a local build, set the same names as environment variables, with `ANDROI
 
 | Path | Purpose |
 | :-- | :-- |
-| `main.js` | Electron main process: window, IPC, rich-content sandbox |
-| `preload.js` | The narrow bridge between the page and the main process |
-| `index.html` / `renderer.js` | User interface, shared by the desktop and Android apps |
-| `lib.js` | Shared pure logic: prompts, attachments, model search, rich-reply splitting and sandbox pages |
-| `api.js` | OpenAI-compatible streaming client and reasoning support |
-| `profiles.js` / `store.js` | Connection profiles, personas and encrypted settings |
-| `chats.js` | Chat history |
-| `disk.js` | Desktop file access for settings and chats, and the move from the old `chatbot` folder |
-| `mobile/` | Android: `window.api` on top of the native plugin, the web build script, and the emulator smoke test |
-| `android/` | Android project (Capacitor), with the native plugin in `JavcPlugin.java` |
-| `capacitor.config.json` | Android app id and name |
-| `test.js` | Test suite (`node --test`) |
+| `rust/src/core/` | Settings, profiles, personas, chats and the OpenAI-compatible streaming client; no UI |
+| `rust/src/app.rs` | The UI controller |
+| `rust/ui/` | The Slint UI |
+| `rust/src/markdown.rs` / `attach.rs` | Reply rendering, and attachments (text, PDF, images) |
+| `rust/src/preview.rs` | The sandboxed rich-reply preview window (desktop) |
+| `rust/src/platform.rs` / `android.rs` | Desktop and Android specifics (key encryption, clipboard, files) |
+| `rust/selftest/` | The mock API and the scripts for the built-in self-test |
+| `android/` | Android project: the activity, the preview WebView and the Gradle build |
 | `build/` | App icon and the scripts that generate the desktop and Android icons |
+
+More detail, including the self-test, is in [`rust/README.md`](rust/README.md).
 
 ## License
 

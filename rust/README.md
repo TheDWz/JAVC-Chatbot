@@ -1,11 +1,11 @@
 # JAVC Chatbot (Rust)
 
-The Rust + Slint rewrite of JAVC Chatbot (Linux, Windows, Android). It lives next to
-the Electron app in this repository until it replaces it. It uses the same data
-folders as the Electron app — Linux `~/.config/javc-chatbot`, Windows
-`%APPDATA%\javc-chatbot` — so settings and chats carry over. Saved API keys must be
-typed again once; Electron's encryption can't be read. The Android app installs over
-the Capacitor one (same package and signing key) and keeps its chats and saved keys.
+JAVC Chatbot in Rust + Slint (Linux, Windows, Android); this replaced the earlier
+Electron and Capacitor app. It uses the same data folders as that app — Linux
+`~/.config/javc-chatbot`, Windows `%APPDATA%\javc-chatbot` — so settings and chats
+carry over. Saved desktop API keys must be typed again once; Electron's encryption
+can't be read. The Android app installs over the Capacitor one (same package and
+signing key) and keeps its chats and saved keys.
 
 ## Build and run
 
@@ -19,7 +19,7 @@ Run from this directory with `cargo run`. Tests: `cargo test`.
 
 ## Android
 
-`android/` is the Gradle project: `MainActivity` (a NativeActivity that hosts the
+`../android/` is the Gradle project: `MainActivity` (a NativeActivity that hosts the
 Slint window and does what needs the Android framework: Keystore, clipboard, file
 picker, links) and `RichActivity` (the preview WebView). Gradle builds the Rust
 library with cargo-ndk for arm64-v8a and x86_64 before packaging.
@@ -28,7 +28,7 @@ Needs JDK 17+, the Android SDK with platform 36 and NDK 28 (`ANDROID_HOME`,
 `ANDROID_NDK_HOME`), `cargo install cargo-ndk` and
 `rustup target add aarch64-linux-android x86_64-linux-android`. Then:
 
-    cd rust/android && ./gradlew assembleDebug    # or assembleRelease
+    cd android && ./gradlew assembleDebug    # or assembleRelease (from the repository root)
 
 Release signing uses the same `ANDROID_KEYSTORE_*` variables as the Capacitor build.
 
@@ -38,7 +38,7 @@ Debug builds have a self-test that drives the real UI against a mock API server.
 It prints `SELFTEST PASS` or `SELFTEST FAIL: <reason>` and exits 0 or 1.
 
 1. Start the mock server: `node rust/selftest/serve.mjs` (listens on
-   127.0.0.1:18765, using the mock in `mobile/smoke/mock-api.mjs`).
+   127.0.0.1:18765, using the mock in `rust/selftest/mock-api.mjs`).
 2. Point `XDG_CONFIG_HOME` at a folder containing
    `javc-chatbot/settings.json` — copy it from `rust/selftest/settings.json`.
 3. Run the app with `JAVC_SELFTEST=1`:
@@ -56,7 +56,7 @@ Variants:
 
 On Android, with an emulator running and a debug APK built:
 
-    rust/selftest/android.sh rust/android/app/build/outputs/apk/debug/app-debug.apk
+    rust/selftest/android.sh android/app/build/outputs/apk/debug/app-debug.apk
 
 It starts the mock, points the app's profile at it, runs the self-test (launch
 extra `--es selftest 1`, result in `adb logcat -s javc`) and checks the back button.
@@ -92,7 +92,8 @@ CI does all of this in `.github/workflows/rust.yml`.
 ## Known limits
 
 - Reply text can't be selected with the mouse; use the Copy buttons.
-- Dragging files onto the window doesn't work on native Wayland. Use the attach
-  button; it works under X11/XWayland and on Windows.
+- On Linux the window uses X11 (XWayland under Wayland) whenever `DISPLAY` is set:
+  winit can only receive dropped files on X11. Under fractional scaling the window
+  may look slightly softer than a native Wayland one.
 - On Linux the preview sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` to avoid a blank
   page on some GPUs.

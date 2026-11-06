@@ -2,7 +2,7 @@ apply plugin: 'com.android.application'
 
 // The version comes from rust/Cargo.toml, like the other packages: 1.2.3 -> versionName "1.2.3", versionCode 10203.
 def cargoVersion = {
-    def line = rootProject.file('../Cargo.toml').readLines().find { it ==~ /^version = "\d+\.\d+\.\d+".*/ }
+    def line = rootProject.file('../rust/Cargo.toml').readLines().find { it ==~ /^version = "\d+\.\d+\.\d+".*/ }
     if (line == null) throw new GradleException("No version found in rust/Cargo.toml")
     return (line =~ /^version = "(\d+\.\d+\.\d+)"/)[0][1]
 }()
@@ -62,7 +62,7 @@ tasks.register('cargoDebug', Exec) {
         environment 'ANDROID_HOME', android.sdkDirectory.absolutePath
         environment 'ANDROID_JAR', new File(android.sdkDirectory, 'platforms/android-36/android.jar').absolutePath
     }
-    workingDir file('../..') // the rust/ directory that holds Cargo.toml
+    workingDir file('../../rust') // the Rust crate
     commandLine cargoCmd(['--profile', 'android-debug'])
     if (System.getenv('ANDROID_NDK_HOME') != null) environment 'ANDROID_NDK_HOME', System.getenv('ANDROID_NDK_HOME')
 }
@@ -73,7 +73,7 @@ tasks.register('cargoRelease', Exec) {
         environment 'ANDROID_HOME', android.sdkDirectory.absolutePath
         environment 'ANDROID_JAR', new File(android.sdkDirectory, 'platforms/android-36/android.jar').absolutePath
     }
-    workingDir file('../..') // the rust/ directory that holds Cargo.toml
+    workingDir file('../../rust') // the Rust crate
     commandLine cargoCmd(['--release'])
     if (System.getenv('ANDROID_NDK_HOME') != null) environment 'ANDROID_NDK_HOME', System.getenv('ANDROID_NDK_HOME')
 }

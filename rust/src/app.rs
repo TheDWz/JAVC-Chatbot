@@ -1606,7 +1606,7 @@ fn expect(ok: bool, why: impl FnOnce() -> String) -> Option<Result<(), String>> 
     Some(if ok { Ok(()) } else { Err(why()) })
 }
 
-/// Smoke test against mobile/smoke/mock-api.mjs (JAVC_SELFTEST=1 on debug builds, or the Android debug intent extra):
+/// Smoke test against rust/selftest/mock-api.mjs (JAVC_SELFTEST=1 on debug builds, or the Android debug intent extra):
 /// drives the real controller through the key store, models, attachments, a streamed reply, Stop, and the saved chat,
 /// then reports. Expects one profile pointing at the mock API; it saves a test key into that profile.
 pub fn self_test(done: impl FnOnce(Result<(), String>) + 'static, files: Vec<std::path::PathBuf>) {
