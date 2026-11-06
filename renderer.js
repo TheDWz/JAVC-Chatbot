@@ -291,6 +291,7 @@ function editMsg(m, body, bubble, actions) {
     if (busy) return toast('Wait for the reply to finish'); // the box can stay open while a new message is sent
     const text = ta.value.trim();
     if (!text && !(user && m.files?.length)) return toast("A message can't be empty");
+    if (user && m === chat.messages[0] && chat.title === titleOf(m.text, m.files)) chat.title = titleOf(text, m.files);
     if (user) Object.assign(m, Lib.editUser(m, text)); else m.content = text;
     chat.updated = Date.now(); persist(); rerender();
   };
@@ -453,12 +454,16 @@ async function fetchModels() {
   finally { btn.disabled = false; btn.classList.remove('spin'); }
 }
 
+const titleOf = (text, files) => (text || files?.[0]?.name || 'New chat').replace(/\s+/g, ' ').slice(0, 40);
 function ready() {
   if (!state.activeId) { openProfileDialog(true); return false; }
   if (!settings.model) { showError('Pick a model first: open the model picker (fetch models if the list is empty).'); return false; }
   return true;
 }
-/** Streams a reply to the chat as it stands, adds it and returns it. On failure the reply row is removed, the error shown, and it rethrows. */
+/**
+ * Streams a reply to the chat as it stands, adds it and returns it (with `error` or `stopped` set when cut short; the caller
+ * says so). On failure the reply row is removed, the error shown, and it rethrows.
+ */
 async function generate() {
   const reply = addAssistant();
   setBusy(true);
@@ -467,7 +472,6 @@ async function generate() {
     const m = { role: 'assistant', content: out.content, reasoning: out.reasoning }; // reasoning is display-only, never sent back
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
     chat.updated = Date.now();
-    if (out.error) showError('Reply was cut off: ' + out.error); else if (out.stopped) toast('Stopped');
     return out;
   } catch (e) {
     reply.row.remove();
@@ -485,8 +489,9 @@ async function send() {
   chat.messages.push(m);
   const userRow = addUser(text, atts, m);
   try {
-    await generate();
-    if (!chat.title) chat.title = (text || atts[0]?.name || 'New chat').replace(/\s+/g, ' ').slice(0, 40);
+    const out = await generate();
+    if (out.error) showError('Reply was cut off: ' + out.error); else if (out.stopped) toast('Stopped');
+    if (!chat.title) chat.title = titleOf(text, atts);
     persist();
   } catch {
     // drop the failed turn and put the draft back in front of whatever was typed meanwhile
@@ -496,14 +501,19 @@ async function send() {
   }
 }
 
-// A user message gets a new reply; a reply is replaced. Everything after is dropped, unless the request fails
-// or the new reply is cut off by an error (a full reply shouldn't be lost to a broken connection).
+// A user message gets a new reply; a reply is replaced. Everything after is dropped, unless the new reply fails or is
+// cut short (by Stop or a broken connection): then the old messages come back, where the user was reading them.
 async function regenerate(m) {
+  if (busy) return toast('Wait for the reply to finish');
   const i = chat.messages.indexOf(m);
-  if (busy || i < 0 || !ready()) return;
-  const prev = chat.messages, restore = () => { chat.messages = prev; renderChat(); };
+  if (i < 0 || !ready()) return;
+  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; renderChat(); $('scroll').scrollTop = top; };
   chat.messages = prev.slice(0, m.role === 'user' ? i + 1 : i); renderChat();
-  try { if ((await generate()).error) restore(); else persist(); } catch { restore(); }
+  let out;
+  try { out = await generate(); } catch { return restore(); }
+  if (out.error) { restore(); showError('Regenerate was cut off, so the previous reply was kept: ' + out.error); }
+  else if (out.stopped) { restore(); toast('Stopped: kept the previous reply'); }
+  else persist();
 }
 
 // ---- Chat history ----
