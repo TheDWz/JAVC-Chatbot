@@ -45,7 +45,8 @@ function finishState(state, raw) {
   const richOff = raw?.rich === false; // old single switch: off meant "no HTML/CSS/JS", Markdown stayed on
   const r = raw?.render && typeof raw.render === 'object' ? raw.render : {};
   const render = Object.fromEntries(Lib.RENDER_KEYS.map((k) => [k, typeof r[k] === 'boolean' ? r[k] : !(richOff && k !== 'markdown')]));
-  return { ...state, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
+  const search = { enabled: raw?.search?.enabled === true, ...(raw?.search && typeof raw.search === 'object' ? keyOf(raw.search) : {}) }; // web search: {enabled, keyEnc|keyPlain}
+  return { ...state, search, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
 }
 
 const newId = () => 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -55,7 +56,7 @@ function upsert(state, p) {
   const profiles = state.profiles.map((x) => ({ ...x }));
   let target = p.id && profiles.find((x) => x.id === p.id);
   if (!target) { target = { id: newId(), model: '', format: 'auto', meta: false }; profiles.push(target); }
-  for (const k of ['name', 'endpoint', 'format', 'model', 'meta']) if (p[k] !== undefined) target[k] = p[k];
+  for (const k of ['name', 'endpoint', 'format', 'model', 'meta', 'noTools']) if (p[k] !== undefined) target[k] = p[k];
   if (p.keyEnc !== undefined || p.keyPlain !== undefined) { for (const k of KEY_FIELDS) delete target[k]; Object.assign(target, keyOf(p)); }
   const editing = p.id && state.profiles.some((x) => x.id === p.id) && state.profiles.some((x) => x.id === state.activeId);
   return { ...state, profiles, activeId: editing ? state.activeId : target.id }; // a new profile becomes active; editing another one doesn't switch
@@ -70,8 +71,9 @@ function remove(state, id) {
 function publicView(state) {
   return {
     activeId: state.activeId, effort: state.effort, templates: TEMPLATES, personas: state.personas, personaId: state.personaId, render: state.render, theme: state.theme,
-    profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, ...rest }) => ({
-      id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, hasKey: hasKey(rest),
+    search: { enabled: state.search.enabled, hasKey: hasKey(state.search) },
+    profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, noTools, ...rest }) => ({
+      id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, noTools: !!noTools, hasKey: hasKey(rest),
     })),
   };
 }

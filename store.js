@@ -5,6 +5,7 @@ const { THINKING_SWITCH } = require('./api');
 const Lib = require('./lib');
 
 const FILE = 'settings.json';
+const hasKey = (o) => !!(o.keyEnc || o.keyPlain);
 
 /**
  * The settings store: profiles, personas and display settings in settings.json.
@@ -46,17 +47,17 @@ module.exports = ({ io, crypto }) => {
     const st = profiles.migrate(raw);
     let changed = text !== null && raw.version !== 2; // persist a migrated file right away so profile ids stay stable
     if (await crypto.available()) { // upgrade leftover plaintext keys now that a keyring is available
-      for (const p of st.profiles) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
+      for (const p of [...st.profiles, st.search]) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
     }
     if (changed) await write(st);
     return st;
   }
 
-  /** The decrypted API key of a stored profile, or a clear error when the keyring can't decrypt it. */
-  async function keyOf(p) {
+  /** The decrypted API key of a stored profile (or the search key), or a clear error when the keyring can't decrypt it. */
+  async function keyOf(p, what = 'API key') {
     if (p.keyEnc) {
       try { return await crypto.dec(p.keyEnc); }
-      catch { throw new Error("Couldn't read the saved API key (the system keyring may be locked or changed). Type the key again and save."); }
+      catch { throw new Error(`Couldn't read the saved ${what} (the system keyring may be locked or changed). Type the key again and save.`); }
     }
     return p.keyPlain || '';
   }
@@ -73,10 +74,24 @@ module.exports = ({ io, crypto }) => {
     takeNotice() { const n = notice; notice = ''; return n; },
     get: serial(async () => withFlags(await read())),
     /** Flat view of the active profile, used by chat and model fetching. */
-    load: serial(async () => {
+    load: serial(async ({ search: wantSearch = false } = {}) => {
       const st = await read(), p = st.profiles.find((x) => x.id === st.activeId);
       if (!p) throw new Error('No profile yet. Use the new-profile button to add one.');
-      return { endpoint: p.endpoint, model: p.model || '', effort: st.effort || '', format: p.format || 'auto', meta: !!p.meta, key: await keyOf(p) };
+      // the search key is only decrypted when the caller will search, so a locked keyring can't break model refresh or chats without search
+      const search = wantSearch && st.search.enabled && hasKey(st.search) ? { key: await keyOf(st.search, 'search key') } : null;
+      return { endpoint: p.endpoint, model: p.model || '', effort: st.effort || '', format: p.format || 'auto', meta: !!p.meta, key: await keyOf(p), search };
+    }),
+    /** The Linkup API key, or '' when none is saved. */
+    searchKey: serial(async () => keyOf((await read()).search, 'search key')),
+    /** Saves {enabled, key} for web search. No `key` field keeps the stored key; `key: ''` clears it. */
+    saveSearch: serial(async (p) => {
+      const st = await read();
+      if (typeof p.enabled === 'boolean') st.search.enabled = p.enabled;
+      if (typeof p.key === 'string') {
+        delete st.search.keyEnc; delete st.search.keyPlain;
+        if (p.key.trim()) Object.assign(st.search, await encKey(p.key.trim()));
+      }
+      return commit(st);
     }),
     /** The API key of profile `id`, or '' for an unknown profile. */
     key: serial(async (id) => { const p = (await read()).profiles.find((x) => x.id === id); return p ? keyOf(p) : ''; }),
@@ -88,6 +103,7 @@ module.exports = ({ io, crypto }) => {
       if (patch.render && typeof patch.render === 'object') for (const k of Lib.RENDER_KEYS) if (typeof patch.render[k] === 'boolean') st.render = { ...st.render, [k]: patch.render[k] };
       const theme = Lib.cleanTheme(patch.theme); if (theme) st.theme = theme;
       const own = {}; for (const k of ['model', 'meta']) if (patch[k] !== undefined) own[k] = patch[k];
+      if (typeof patch.noTools === 'boolean') own.noTools = patch.noTools; // whether the profile's current model is known to lack tool support
       if (Object.keys(own).length && st.activeId) st = profiles.upsert(st, { id: st.activeId, ...own }); // never create a profile from a patch
       return commit(st);
     }),

@@ -329,6 +329,8 @@ const LEVELS = [
   ['xhigh', 'Extra high', 'Very deep, slower'], ['max', 'Max', 'Maximum effort, slowest'],
 ];
 let modelInfo = {};
+// Models that say they lack `tools` get no search. After a restart modelInfo is empty, so fall back to the flag saved with the profile.
+const toolsOk = () => (modelInfo[settings.model] ? modelInfo[settings.model].tools !== false : !settings.noTools);
 
 function renderLevels() {
   const info = modelInfo[settings.model] || {};
@@ -398,7 +400,10 @@ document.addEventListener('mousedown', (e) => { if (!$('modelpop').hidden && !$(
 function setModels(infos) {
   modelInfo = Object.fromEntries(infos.map((m) => [m.id, m]));
   const ids = infos.map((m) => m.id), saved = settings.model, sel = $('model');
-  if (ids.length) { settings.meta = infos.some((m) => m.meta); window.api.patchSettings({ meta: settings.meta }); } // an empty list says nothing about the gateway
+  if (ids.length) { // remember whether the current model lacks tools, so that is still known after a restart
+    const known = modelInfo[settings.model]; settings.meta = infos.some((m) => m.meta); if (known) settings.noTools = known.tools === false;
+    window.api.patchSettings({ meta: settings.meta, ...(known && { noTools: settings.noTools }) });
+  } // an empty list says nothing about the gateway
   sel.replaceChildren(...ids.map((id) => new Option(id, id)));
   // the saved choice is only ever changed by the user: keep it visible even if the provider stopped listing it
   if (saved && !ids.includes(saved)) sel.prepend(new Option(`${saved} (not in list)`, saved));
@@ -427,7 +432,7 @@ async function send() {
   const reply = addAssistant();
   setBusy(true);
   try {
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d));
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d), { search: toolsOk() });
     chat.messages.push({ role: 'assistant', content: out.content, reasoning: out.reasoning }); // reasoning is display-only, never sent back
     reply.done(out.content, out.reasoning);
     chat.updated = Date.now();
@@ -654,7 +659,7 @@ $('key').oninput = () => { keyDirty = true; };
 $('reveal').onclick = () => { const k = $('key'); k.type = k.type === 'password' ? 'text' : 'password'; };
 $('gear').onclick = () => openPrefs(state.activeId ? 'appearance' : 'profiles');
 $('fetch').onclick = fetchModels;
-$('model').onchange = () => { settings.model = $('model').value; window.api.patchSettings({ model: settings.model }); renderLevels(); if (!chat.messages.length) showEmpty(); };
+$('model').onchange = () => { settings.model = $('model').value; settings.noTools = modelInfo[settings.model]?.tools === false; window.api.patchSettings({ model: settings.model, noTools: settings.noTools }); renderLevels(); if (!chat.messages.length) showEmpty(); };
 $('newchat').onclick = $('histnew').onclick = startNew;
 $('send').onclick = () => (busy ? window.api.stopChat() : send());
 $('attach').onclick = () => $('picker').click();
@@ -668,7 +673,7 @@ addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); 
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
 // ---- Settings dialog: Appearance / Profiles / Replies ----
-const PANES = ['appearance', 'profiles', 'replies'];
+const PANES = ['appearance', 'profiles', 'search', 'replies'];
 let prefsDirty = false; // a Replies switch changed: redraw the open chat when the dialog closes
 function showPane(name, focus) {
   for (const n of PANES) {
@@ -679,7 +684,7 @@ function showPane(name, focus) {
 }
 function openPrefs(pane) {
   const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
-  renderThemes(); renderProfiles(); syncReplies(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
+  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
 }
 for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
 $('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
@@ -730,6 +735,36 @@ for (const c of document.querySelectorAll('[data-render]')) c.onchange = async (
   try { applyState(await window.api.patchSettings({ render: { [c.dataset.render]: c.checked } })); prefsDirty = true; }
   catch (e) { showError(cleanErr(e)); applyState(state); }
   syncReplies();
+};
+
+// ---- Search pane: the key is fetched only when the pane opens, and an untouched field never overwrites the stored one ----
+let searchKeyDirty = false, searchLoad = 0;
+async function loadSearchPane() {
+  const s = state.search, mine = ++searchLoad; searchKeyDirty = false; $('searchkey').type = 'password'; $('searcherr').hidden = true;
+  $('searchon').checked = s.enabled; $('searchkey').value = '';
+  const noTools = settings.model && !toolsOk();
+  $('searchnote').textContent = noTools ? "The current model doesn't support tools, so it won't search." : ''; $('searchnote').hidden = !noTools;
+  if (!s.hasKey) return;
+  const stale = () => mine !== searchLoad || searchKeyDirty; // a newer load started, or the user already typed: don't overwrite their edit
+  try { const k = await window.api.getSearchKey(); if (!stale()) $('searchkey').value = k; }
+  catch (e) { if (!stale()) { $('searcherr').textContent = cleanErr(e); $('searcherr').hidden = false; } }
+}
+async function saveSearch(p) {
+  $('searcherr').hidden = true;
+  try { applyState(await window.api.saveSearch(p)); return true; }
+  catch (e) { $('searcherr').textContent = cleanErr(e); $('searcherr').hidden = false; applyState(state); return false; }
+}
+$('searchkey').oninput = () => { searchKeyDirty = true; };
+$('searchreveal').onclick = () => { const k = $('searchkey'); k.type = k.type === 'password' ? 'text' : 'password'; };
+$('searchon').onchange = async () => {
+  if (!(await saveSearch({ enabled: $('searchon').checked }))) $('searchon').checked = state.search.enabled;
+  else if ($('searchon').checked && !state.search.hasKey) { $('searcherr').textContent = 'Add your Linkup API key below, or searching will not start.'; $('searcherr').hidden = false; }
+};
+$('searchsave').onclick = async () => {
+  const sent = $('searchkey').value;
+  if (!searchKeyDirty || !(await saveSearch({ key: sent }))) return;
+  if ($('searchkey').value === sent) searchKeyDirty = false; // typed again while saving: stays unsaved
+  toast(sent.trim() ? 'Key saved' : 'Key removed');
 };
 
 (async () => {
