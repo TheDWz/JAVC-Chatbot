@@ -104,6 +104,31 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   const saved = await page.evaluate(async () => (await window.api.loadChat((await window.api.listChats())[0].id)).messages.length);
   check(saved >= 2, `the saved chat loads with its messages (got ${saved})`);
 
+  log('Regenerate adds a version of the reply, and the arrows switch between them');
+  const vcount = (row) => page.textContent(`.row.${row} .vcount`);
+  await page.click('.row.assistant .mini:has-text("Regenerate")');
+  await page.waitForFunction(() => document.querySelector('.row.assistant .vcount')?.textContent === '2/2', null, { timeout: 30_000 });
+  await page.click('.row.assistant [title="Previous version"]');
+  await page.waitForFunction(() => document.querySelector('.row.assistant .vcount')?.textContent === '1/2', null, { timeout: 10_000 });
+
+  log('Edit adds a version of the user message and keeps the reply');
+  await page.click('.row.user .mini:has-text("Edit")');
+  await page.fill('.row.user .edit textarea', 'Say hello again');
+  await page.click('.row.user .edit .btn.primary');
+  await page.waitForFunction(() => document.querySelector('.row.user .vcount')?.textContent === '2/2', null, { timeout: 10_000 });
+  check((await page.textContent('.row.user .bubble')) === 'Say hello again', 'the edited text is shown');
+  check((await vcount('assistant')) === '1/2', 'the reply kept the version it was switched to');
+  const stored = await page.evaluate(async () => { // saves are async, so poll until both versions are on disk
+    for (let i = 0; i < 50; i++) {
+      const [u, a] = (await window.api.loadChat((await window.api.listChats())[0].id)).messages;
+      if (u.versions?.length === 2 && a.versions?.length === 2) return { text: u.text, versions: u.versions, replyV: a.v };
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return null;
+  });
+  check(stored?.text === 'Say hello again' && JSON.stringify(stored.versions) === '[{"text":"Say hello"},{"text":"Say hello again"}]' && stored.replyV === 0,
+    `both versions are saved, the user's as text only (got ${JSON.stringify(stored)})`);
+
   log('Reading a PDF on the device');
   const text = await page.evaluate(async (b64) => window.api.extractPdf(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer), tinyPdf('JAVC PDF OK'));
   check(text.includes('JAVC PDF OK'), `PDF text extracted (got ${JSON.stringify(text.slice(0, 80))})`);

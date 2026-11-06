@@ -1,6 +1,6 @@
 {
   "name": "javc-chatbot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "JAVC Chatbot: a desktop client for OpenAI-compatible APIs",
   "main": "main.js",
   "private": true,
