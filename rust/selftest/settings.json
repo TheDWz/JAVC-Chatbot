@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "activeId": "p1",
+  "effort": "",
+  "profiles": [
+    { "id": "p1", "name": "Mock", "endpoint": "http://127.0.0.1:18765/v1", "format": "auto", "model": "mock-model" }
+  ]
+}
