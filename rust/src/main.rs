@@ -9,8 +9,9 @@ fn main() -> anyhow::Result<()> {
         return javc::preview::run(std::path::Path::new(&args[2]));
     }
     // Linux: winit only receives dropped files on X11 (it has no Wayland drag-and-drop), so use XWayland when there is one.
+    // Checked first: winit allows one event loop per process, even a failed one, so a failed X11 start can't fall back.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("DISPLAY").is_some() {
+    if std::env::var_os("DISPLAY").is_some() && x11_reachable() {
         use slint::winit_030::winit::{event_loop::EventLoop, platform::x11::EventLoopBuilderExtX11};
         let mut b = EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
         b.with_x11();
@@ -45,4 +46,15 @@ fn main() -> anyhow::Result<()> {
     }
     ui.run()?;
     Ok(())
+}
+
+/// Whether the X server in DISPLAY accepts a connection (a stale DISPLAY in a Wayland session doesn't).
+#[cfg(target_os = "linux")]
+fn x11_reachable() -> bool {
+    let Ok(xlib) = x11_dl::xlib::Xlib::open() else { return false };
+    // SAFETY: a plain open/close of the default display; the pointer is only checked and closed.
+    unsafe {
+        let d = (xlib.XOpenDisplay)(std::ptr::null());
+        !d.is_null() && { (xlib.XCloseDisplay)(d); true }
+    }
 }

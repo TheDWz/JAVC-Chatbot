@@ -97,27 +97,37 @@ component Block inherits VerticalLayout {
         }
     }
     if b.kind == 1 || b.kind == 4: CodeBox { w: root.w; lang: b.lang; code: b.code; preview: b.preview; }
-    if b.kind == 2: Rectangle {
-        border-width: 1px;
-        border-color: Theme.line;
-        border-radius: 10px;
-        clip: true;
-        VerticalLayout {
-            for row[ri] in b.rows: Rectangle {
-                background: ri == 0 ? Theme.surface-2 : transparent;
-                HorizontalLayout {
-                    padding: 8px;
-                    spacing: 12px;
-                    for cell in row.cells: StyledText {
-                        width: (root.w - 18px - (b.cols - 1) * 12px) / max(1, b.cols);
-                        text: cell;
-                        default-color: Theme.text;
-                        default-font-size: 14px;
-                        link-color: Theme.accent-text;
-                        link-clicked(url) => { Chat.open-url(url); }
+    // a table too wide for the window scrolls sideways (columns keep at least 120px) instead of squeezing its text
+    if b.kind == 2: tf := Flickable {
+        property <length> tw: max(root.w, b.cols * 120px + (b.cols - 1) * 12px + 18px);
+        width: root.w;
+        height: tbl.preferred-height;
+        content-width: tw;
+        content-height: self.height;
+        interactive: tw > root.w;
+        tbl := Rectangle {
+            width: tf.tw;
+            border-width: 1px;
+            border-color: Theme.line;
+            border-radius: 10px;
+            clip: true;
+            VerticalLayout {
+                for row[ri] in b.rows: Rectangle {
+                    background: ri == 0 ? Theme.surface-2 : transparent;
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 12px;
+                        for cell in row.cells: StyledText {
+                            width: (tf.tw - 18px - (b.cols - 1) * 12px) / max(1, b.cols);
+                            text: cell;
+                            default-color: Theme.text;
+                            default-font-size: 14px;
+                            link-color: Theme.accent-text;
+                            link-clicked(url) => { Chat.open-url(url); }
+                        }
                     }
+                    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line-soft; }
                 }
-                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line-soft; }
             }
         }
     }
@@ -155,13 +165,14 @@ export component Message inherits HorizontalLayout {
                 border-color: Theme.line;
                 background: Theme.surface;
                 clip: true;
-                if c.is-image: Image { source: c.img; width: 180px; height: self.width * self.source.height / max(1, self.source.width) * 1px / 1px; image-fit: contain; }
-                if !c.is-image: HorizontalLayout {
-                    padding: 8px;
+                // one layout that is always there: a chip behind `if` gives the clipped Rectangle no size, and it never showed
+                HorizontalLayout {
+                    padding: c.is-image ? 0 : 8px;
                     spacing: 8px;
-                    Icon { d: Icons.file; color: Theme.muted; }
-                    Text { text: c.name; color: Theme.text; font-size: 13px; overflow: elide; max-width: 220px; }
-                    Text { text: c.size; color: Theme.faint; font-size: 12px; }
+                    if c.is-image: Image { source: c.img; width: 180px; height: self.width * self.source.height / max(1, self.source.width) * 1px / 1px; image-fit: contain; }
+                    if !c.is-image: Icon { d: Icons.file; color: Theme.muted; }
+                    if !c.is-image: Text { text: c.name; color: Theme.text; font-size: 13px; overflow: elide; max-width: 220px; }
+                    if !c.is-image: Text { text: c.size; color: Theme.faint; font-size: 12px; }
                 }
             }
         }

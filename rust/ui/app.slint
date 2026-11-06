@@ -331,25 +331,32 @@ export component AppWindow inherits Window {
                     padding-right: max(12px, (main-w - 790px) / 2);
                     padding-bottom: 10px;
                     spacing: 8px;
-                    if pending.length > 0: HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-                        for a[i] in pending: Rectangle {
-                            height: 44px;
-                            border-radius: 10px;
-                            border-width: 1px;
-                            border-color: Theme.line;
-                            background: Theme.surface;
-                            HorizontalLayout {
-                                padding: 6px;
-                                spacing: 8px;
-                                if a.is-image: Image { source: a.img; width: 32px; height: 32px; image-fit: cover; }
-                                if !a.is-image: Icon { d: Icons.file; color: Theme.muted; y: 7px; }
-                                VerticalLayout {
-                                    Text { text: a.name; font-size: 12px; color: Theme.text; overflow: elide; max-width: 140px; }
-                                    Text { text: a.size; font-size: 11px; color: Theme.faint; }
+                    // scrolls sideways when the chips don't fit (five on desktop, three on a phone)
+                    if pending.length > 0: chips := Flickable {
+                        height: 44px;
+                        content-width: max(self.width, row.preferred-width);
+                        interactive: row.preferred-width > self.width;
+                        row := HorizontalLayout {
+                            width: chips.content-width;
+                            spacing: 8px;
+                            alignment: start;
+                            for a[i] in pending: Rectangle {
+                                height: 44px;
+                                border-radius: 10px;
+                                border-width: 1px;
+                                border-color: Theme.line;
+                                background: Theme.surface;
+                                HorizontalLayout {
+                                    padding: 6px;
+                                    spacing: 8px;
+                                    if a.is-image: Image { source: a.img; width: 32px; height: 32px; image-fit: cover; }
+                                    if !a.is-image: Icon { d: Icons.file; color: Theme.muted; y: 7px; }
+                                    VerticalLayout {
+                                        Text { text: a.name; font-size: 12px; color: Theme.text; overflow: elide; max-width: 140px; }
+                                        Text { text: a.size; font-size: 11px; color: Theme.faint; }
+                                    }
+                                    IconBtn { icon: Icons.x; tip: "Remove"; size: 26px; y: 3px; clicked => { root.remove-pending(i); } }
                                 }
-                                IconBtn { icon: Icons.x; tip: "Remove"; size: 26px; y: 3px; clicked => { root.remove-pending(i); } }
                             }
                         }
                     }
@@ -428,7 +435,7 @@ export component AppWindow inherits Window {
         if hist-open: Rectangle {
             x: 0; y: 0;
             width: narrow ? min(300px, root.width - 40px) : 264px;
-            height: root.height;
+            height: parent.height; // the usable area: above the keyboard, inside the safe area
             background: Theme.surface;
             drop-shadow-blur: narrow ? 30px : 0;
             drop-shadow-color: #00000060;
@@ -503,7 +510,7 @@ export component AppWindow inherits Window {
                 width: narrow ? root.width - 24px : 380px;
                 x: narrow ? 12px : max(12px, min(root.width - self.width - 12px, mpill.absolute-position.x - root.absolute-position.x + mpill.width - self.width));
                 y: header.height + 2px;
-                height: min(440px, root.height - 80px);
+                height: min(440px, parent.height - self.y - 12px); // stays above the keyboard
                 background: Theme.surface;
                 border-radius: 14px;
                 border-width: 1px;
@@ -619,6 +626,8 @@ export component AppWindow inherits Window {
         // ---- settings ----
         if prefs: Modal {
             card-width: 720px;
+            // holds the keyboard focus while Settings is open, so typing doesn't reach the message box behind it
+            FocusScope { width: 0; height: 0; init => { self.focus(); } }
             HorizontalLayout {
                 min-height: 460px;
                 if !narrow: Rectangle {

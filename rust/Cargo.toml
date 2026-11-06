@@ -50,12 +50,16 @@ aes-gcm = "0.10"
 [target.'cfg(not(target_os = "android"))'.dependencies]
 slint = { version = "1.18", features = ["unstable-winit-030"] } # winit's window events, for dropped files
 dirs = "6"
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "windows-native", "apple-native"] }
 rfd = "0.16"
 arboard = { version = "3", features = ["wayland-data-control"] }
 open = "5"
 wry = "0.57"
 tao = "0.37"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0.2" # wry's own; its navigation handler can't tell a click from a script (preview.rs)
+x11-dl = "2.21" # winit's own; main.rs checks the X server is reachable before forcing X11
 
 [target.'cfg(target_os = "android")'.dependencies]
 slint = { version = "1.18", features = ["backend-android-activity-06"] }

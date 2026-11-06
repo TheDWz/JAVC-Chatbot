@@ -38,6 +38,11 @@ pub struct Store {
     lock: Mutex<()>,
 }
 
+/// The stored endpoint of profile `id`, when it exists.
+fn st_endpoint(st: &Value, id: &str) -> Option<String> {
+    st["profiles"].as_array().unwrap().iter().find(|p| s(p, "id") == id).map(|p| s(p, "endpoint").to_string())
+}
+
 impl Store {
     pub fn new(io: Disk, crypto: Box<dyn Crypto>) -> Self {
         Store { io, crypto, notice: Mutex::new(String::new()), lock: Mutex::new(()) }
@@ -134,11 +139,12 @@ impl Store {
     }
     /// Flat view of the active profile. The search key is only decrypted when the caller will search, so a locked keyring
     /// can't break model refresh or chats without search.
-    pub fn load(&self, want_search: bool) -> Result<Active> {
+    pub fn load(&self, profile: Option<&str>, want_search: bool) -> Result<Active> {
         let _g = self.guard();
         let st = self.read()?;
-        let Some(p) = st["profiles"].as_array().unwrap().iter().find(|x| s(x, "id") == s(&st, "activeId")) else {
-            bail!("No profile yet. Use the new-profile button to add one.")
+        let id = profile.unwrap_or(s(&st, "activeId"));
+        let Some(p) = st["profiles"].as_array().unwrap().iter().find(|x| s(x, "id") == id) else {
+            bail!(if profile.is_some() { "This profile no longer exists" } else { "No profile yet. Use the new-profile button to add one." })
         };
         let search = if want_search && st["search"]["enabled"] == true && has_key(&st["search"]) {
             Some(self.key_of(&st["search"], "search key")?)
@@ -188,7 +194,8 @@ impl Store {
             None => Ok(String::new()),
         }
     }
-    /// Applies a partial change: {effort, personaId, render, theme} are global; {model, meta, noTools} belong to the active profile. Invalid values are ignored.
+    /// Applies a partial change: {effort, personaId, render, theme} are global; {model, meta, noTools} belong to a profile —
+    /// the one named by profileId when it exists, else the active one. Invalid values are ignored.
     pub fn patch(&self, patch: &Value) -> Result<Value> {
         let _g = self.guard();
         let mut st = self.read()?;
@@ -197,8 +204,8 @@ impl Store {
         {
             st["personaId"] = pid.into();
         }
-        if let Some(e) = patch.get("effort") {
-            st["effort"] = e.as_str().unwrap_or("").into();
+        if let Some(e) = patch.get("effort").and_then(Value::as_str) {
+            st["effort"] = e.into();
         }
         if let Some(r) = patch.get("render").filter(|v| v.is_object()) {
             for k in RENDER_KEYS {
@@ -211,16 +218,25 @@ impl Store {
             st["theme"] = t;
         }
         let mut own = json!({});
-        for k in ["model", "meta"] {
-            if let Some(v) = patch.get(k) {
-                own[k] = v.clone();
-            }
+        if let Some(m) = patch.get("model").and_then(Value::as_str) {
+            own["model"] = m.into();
         }
-        if let Some(b) = patch.get("noTools").filter(|v| v.is_boolean()) {
-            own["noTools"] = b.clone(); // whether the profile's current model is known to lack tool support
+        if let Some(b) = patch.get("meta").and_then(Value::as_bool) {
+            own["meta"] = b.into();
         }
-        if !own.as_object().unwrap().is_empty() && !s(&st, "activeId").is_empty() {
-            own["id"] = st["activeId"].clone();
+        if let Some(b) = patch.get("noTools").and_then(Value::as_bool) {
+            own["noTools"] = b.into(); // whether the profile's current model is known to lack tool support
+        }
+        // an unknown profileId drops the profile changes rather than inventing a profile
+        let dest = match patch.get("profileId").and_then(Value::as_str) {
+            Some(pid) if st["profiles"].as_array().unwrap().iter().any(|p| s(p, "id") == pid) => Some(pid.to_string()),
+            Some(_) => None,
+            None => (!s(&st, "activeId").is_empty()).then(|| s(&st, "activeId").to_string()),
+        };
+        if !own.as_object().unwrap().is_empty()
+            && let Some(pid) = dest
+        {
+            own["id"] = pid.into();
             st = profiles::upsert(&st, &own); // never create a profile from a patch
         }
         self.commit(&st)
@@ -234,15 +250,22 @@ impl Store {
         }
         let host = url.host_str().map(|h| url.port().map_or(h.to_string(), |p| format!("{h}:{p}"))).unwrap_or_default();
         let name = if name.trim().is_empty() { host } else { name.trim().to_string() };
-        let mut upd = json!({ "name": name, "endpoint": url.as_str().trim_end_matches('/'), "format": if format.is_empty() { "auto" } else { format } });
+        let new_ep = url.as_str().trim_end_matches('/');
+        let mut upd = json!({ "name": name, "endpoint": new_ep, "format": if format.is_empty() { "auto" } else { format } });
+        let st = self.read()?;
         if let Some(id) = id {
             upd["id"] = id.into();
+            // the model-list discovery flags belong to the old endpoint, so a move forgets them
+            if st_endpoint(&st, id).is_some_and(|old| old.trim_end_matches('/') != new_ep) {
+                upd["meta"] = false.into();
+                upd["noTools"] = false.into();
+            }
         }
         if let Some(k) = key {
             let kv = if k.trim().is_empty() { json!({ "keyEnc": "" }) } else { self.enc_key(k.trim())? };
             upd.as_object_mut().unwrap().extend(kv.as_object().unwrap().clone());
         }
-        let st = profiles::upsert(&self.read()?, &upd);
+        let st = profiles::upsert(&st, &upd);
         self.commit(&st)
     }
     /// Creates or updates a persona and makes it the selected one.
@@ -361,7 +384,7 @@ pub mod tests {
     fn reading_without_a_file_writes_nothing() {
         let (dir, file, st) = tmp_store(Rot::default());
         st.get().unwrap();
-        assert!(st.load(false).is_err());
+        assert!(st.load(None, false).is_err());
         assert!(!file.exists());
         fs::remove_dir_all(dir).unwrap();
     }
@@ -397,13 +420,20 @@ pub mod tests {
     #[test]
     fn undecryptable_key_plaintext_upgrade_patch_never_creates() {
         let (dir, file, st) = tmp_store(Rot::default());
-        assert!(err(st.load(false)).contains("No profile yet"));
+        assert!(err(st.load(None, false)).contains("No profile yet"));
         st.patch(&json!({ "model": "m" })).unwrap();
         assert_eq!(st.get().unwrap()["profiles"], json!([]));
         let id = s(&st.save_profile(None, "P", "http://x", "", Some("sk-1")).unwrap(), "activeId").to_string();
-        assert_eq!(st.load(false).unwrap().key, "sk-1");
+        assert_eq!(st.load(None, false).unwrap().key, "sk-1");
+        // a named profile is loaded even when another is active, so a send matches the profile on screen
+        let id2 = s(&st.save_profile(None, "Q", "http://y", "", Some("sk-2")).unwrap(), "activeId").to_string();
+        assert_ne!(id, id2);
+        assert_eq!(st.load(None, false).unwrap().endpoint, "http://y");
+        assert_eq!(st.load(Some(&id), false).unwrap().key, "sk-1");
+        assert!(err(st.load(Some("gone"), false)).contains("no longer exists"));
+        st.activate(&id).unwrap();
         let broken = Store::new(Disk::new(&dir), Box::new(Rot { broken: Some("*".into()), ..Default::default() }));
-        assert!(err(broken.load(false)).contains("Couldn't read the saved API key"));
+        assert!(err(broken.load(None, false)).contains("Couldn't read the saved API key"));
         assert!(disk(&file)["profiles"][0].get("keyEnc").is_some());
         let mut raw = disk(&file);
         raw["profiles"][0].as_object_mut().unwrap().remove("keyEnc");
@@ -428,7 +458,7 @@ pub mod tests {
         st.save_profile(None, "P", "http://x", "", Some("sk-1")).unwrap();
         assert_eq!(disk(&file)["profiles"][0]["keyPlain"], "sk-1");
         c.off.store(false, Ordering::SeqCst);
-        assert_eq!(st.load(false).unwrap().key, "sk-1");
+        assert_eq!(st.load(None, false).unwrap().key, "sk-1");
         assert_eq!(disk(&file)["profiles"][0]["keyEnc"], B64.encode("sk-1"));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -530,21 +560,72 @@ pub mod tests {
     }
 
     #[test]
+    fn patch_types_and_profile_targeting() {
+        let (dir, file, st) = tmp_store(Rot::default());
+        st.patch(&json!({ "effort": "high" })).unwrap();
+        // wrong types are ignored, not zeroed
+        st.patch(&json!({ "effort": 5, "model": 7, "meta": "yes", "noTools": 1, "profileId": 3 })).unwrap();
+        let raw = disk(&file);
+        assert_eq!((s(&raw, "effort"), s(&raw["profiles"][0].clone(), "model")), ("high", ""));
+        // a named profile takes the model/meta/noTools changes, the active one is untouched
+        let a = s(&st.save_profile(None, "A", "http://a", "", None).unwrap(), "activeId").to_string();
+        let v = st.save_profile(None, "B", "http://b", "", None).unwrap();
+        let b = s(&v, "activeId").to_string();
+        st.patch(&json!({ "profileId": a, "model": "m-a", "meta": true, "noTools": true })).unwrap();
+        let v = st.get().unwrap();
+        let p = |id: &str| v["profiles"].as_array().unwrap().iter().find(|x| s(x, "id") == id).cloned().unwrap();
+        assert_eq!((s(&p(&a), "model"), p(&a)["meta"].clone(), p(&a)["noTools"].clone()), ("m-a", json!(true), json!(true)));
+        assert_eq!((s(&p(&b), "model"), p(&b)["meta"].clone()), ("", json!(false)));
+        // without profileId the changes land on the active profile, as before
+        st.patch(&json!({ "model": "m-b" })).unwrap();
+        let v = st.get().unwrap();
+        let p = |id: &str| v["profiles"].as_array().unwrap().iter().find(|x| s(x, "id") == id).cloned().unwrap();
+        assert_eq!(s(&p(&b), "model"), "m-b");
+        // an unknown profileId drops them
+        st.patch(&json!({ "profileId": "nope", "model": "x", "meta": true })).unwrap();
+        let v = st.get().unwrap();
+        assert!(v["profiles"].as_array().unwrap().iter().all(|x| s(x, "model") != "x"));
+        // a non-string profileId is simply ignored, like a missing one
+        st.patch(&json!({ "model": 9, "profileId": 42 })).unwrap();
+        let v = st.get().unwrap();
+        let still = v["profiles"].as_array().unwrap().iter().find(|x| s(x, "id") == b).cloned().unwrap();
+        assert_eq!(s(&still, "model"), "m-b");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn endpoint_change_forgets_discovery_flags() {
+        let (dir, file, st) = tmp_store(Rot::default());
+        let id = s(&st.save_profile(None, "P", "http://x/v1", "", None).unwrap(), "activeId").to_string();
+        st.patch(&json!({ "meta": true, "noTools": true, "model": "m" })).unwrap();
+        assert_eq!((disk(&file)["profiles"][0]["meta"].clone(), disk(&file)["profiles"][0]["noTools"].clone()), (json!(true), json!(true)));
+        // a different endpoint: the flags were discovered for the old one
+        st.save_profile(Some(&id), "P", "http://y/v1", "", None).unwrap();
+        assert_eq!((disk(&file)["profiles"][0]["meta"].clone(), disk(&file)["profiles"][0]["noTools"].clone()), (json!(false), json!(false)));
+        assert_eq!(disk(&file)["profiles"][0]["model"], "m"); // the model and key stay
+        // the same endpoint (trailing slash and all): the flags stay
+        st.patch(&json!({ "meta": true })).unwrap();
+        st.save_profile(Some(&id), "P", "http://y/v1/", "", None).unwrap();
+        assert_eq!(disk(&file)["profiles"][0]["meta"], json!(true));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn search_settings() {
         let (dir, file, st) = tmp_store(Rot::default());
         assert_eq!(st.get().unwrap()["search"], json!({ "enabled": false, "hasKey": false }));
         st.save_profile(None, "P", "http://x", "", Some("sk-1")).unwrap();
-        assert_eq!(st.load(true).unwrap().search, None);
+        assert_eq!(st.load(None, true).unwrap().search, None);
         let v = st.save_search(Some(true), Some("lk-1")).unwrap();
         assert_eq!(v["search"], json!({ "enabled": true, "hasKey": true }));
         assert!(!v.to_string().contains("lk-1") && !st.get().unwrap().to_string().contains("lk-1"));
         assert!(!fs::read_to_string(&file).unwrap().contains("lk-1"));
         assert_eq!(st.search_key().unwrap(), "lk-1");
-        assert_eq!(st.load(true).unwrap().search.as_deref(), Some("lk-1"));
-        assert_eq!(st.load(false).unwrap().search, None);
+        assert_eq!(st.load(None, true).unwrap().search.as_deref(), Some("lk-1"));
+        assert_eq!(st.load(None, false).unwrap().search, None);
         st.save_search(Some(false), None).unwrap();
         assert_eq!(st.search_key().unwrap(), "lk-1");
-        assert_eq!(st.load(true).unwrap().search, None);
+        assert_eq!(st.load(None, true).unwrap().search, None);
         st.patch(&json!({ "effort": "low", "theme": { "id": "rose" } })).unwrap();
         assert_eq!(st.get().unwrap()["search"]["hasKey"], true);
         let mut raw = disk(&file);
@@ -557,8 +638,8 @@ pub mod tests {
         assert_eq!(st.get().unwrap()["search"]["hasKey"], false);
         st.save_search(Some(true), Some("lk-2")).unwrap();
         let broken = Store::new(Disk::new(&dir), Box::new(Rot { broken: Some(B64.encode("lk-2")), ..Default::default() }));
-        assert!(err(broken.load(true)).contains("Couldn't read the saved search key"));
-        assert_eq!(broken.load(false).unwrap().key, "sk-1");
+        assert!(err(broken.load(None, true)).contains("Couldn't read the saved search key"));
+        assert_eq!(broken.load(None, false).unwrap().key, "sk-1");
         fs::remove_dir_all(dir).unwrap();
     }
 

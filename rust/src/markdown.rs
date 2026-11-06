@@ -94,7 +94,7 @@ impl Buf {
             };
             self.text(&decode(&rest[..lt]));
             rest = &rest[lt..];
-            let Some(gt) = rest.find('>') else {
+            let Some(gt) = tag_end(rest) else {
                 self.text(&decode(rest));
                 break;
             };
@@ -141,6 +141,20 @@ fn closing(name: &str) -> String {
         Some(m) => m.into(),
         None => String::new(),
     }
+}
+/// The first `>` outside single- or double-quoted attribute values, so a tag like <span title="a>b"> ends at its real close.
+fn tag_end(rest: &str) -> Option<usize> {
+    let mut quote = 0u8;
+    for (i, c) in rest.bytes().enumerate() {
+        if quote == 0 && (c == b'"' || c == b'\'') {
+            quote = c;
+        } else if c == quote {
+            quote = 0;
+        } else if c == b'>' && quote == 0 {
+            return Some(i);
+        }
+    }
+    None
 }
 /// Character references in raw HTML text (the common ones; anything else stays as written).
 fn decode(t: &str) -> String {
@@ -234,7 +248,7 @@ fn md_blocks(text: &str, html_on: bool, out: &mut Vec<Block>) {
                 if !buf.is_empty() {
                     flush(&mut buf, &mut cx, out); // an item that starts with a quote keeps its bullet on the quote's first line
                 }
-                cx.quote += 1;
+                cx.quote = cx.quote.saturating_add(1); // 256+ nested > must not overflow the counter
             }
             Event::End(TagEnd::BlockQuote(_)) => {
                 flush(&mut buf, &mut cx, out);
@@ -420,5 +434,24 @@ mod tests {
         all_parse(&bs);
         assert!(bs.iter().any(|b| matches!(b, Block::Code { code, .. } if code == "code")));
         assert!(bs.iter().any(|b| matches!(b, Block::Text { indent: 1, .. })));
+    }
+
+    #[test]
+    fn deep_quotes_do_not_overflow_the_counter() {
+        let bs = md(&">".repeat(300));
+        all_parse(&bs);
+        assert!(bs.iter().all(|b| matches!(b, Block::Text { quote: u8::MAX, .. }))); // it saturates instead of wrapping
+    }
+
+    #[test]
+    fn quoted_gt_inside_a_tag_does_not_leak() {
+        let bs = md("a <mark title=\"a>b\">x</mark> b");
+        all_parse(&bs);
+        let (m, p, _) = text(&bs[0]);
+        assert!(p.contains('x') && !p.contains("b\">") && !m.contains("b\">"), "{m} | {p}");
+        assert_eq!(tag_end("<mark title=\"a>b\">rest"), Some(17));
+        assert_eq!(tag_end("<b class='x>y'>t</b>"), Some(14));
+        assert_eq!(tag_end("<b><i"), Some(2)); // a > with no quotes around ends the tag
+        assert_eq!(tag_end("<b title=\"never"), None); // an unterminated quote never yields a tag
     }
 }

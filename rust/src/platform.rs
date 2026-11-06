@@ -3,6 +3,21 @@
 /// A picked file: its name and bytes.
 pub type Picked = (String, Vec<u8>);
 
+/// Reads at most this much of a file: one byte past the 25 MB attachment limit, so the limit check still fires without
+/// a huge file being loaded (the Android picker's rule).
+const READ_CAP: u64 = 25 * 1024 * 1024 + 1;
+/// The names and (capped) bytes of up to MAX_FILES + 1 files; one extra so the "max files" note still shows. Unreadable
+/// files are skipped.
+pub fn read_files(paths: Vec<std::path::PathBuf>) -> Vec<Picked> {
+    use std::io::Read;
+    let read = |p: &std::path::Path| -> Option<Picked> {
+        let mut bytes = vec![];
+        std::fs::File::open(p).ok()?.take(READ_CAP).read_to_end(&mut bytes).ok()?;
+        Some((p.file_name()?.to_string_lossy().into_owned(), bytes))
+    };
+    paths.iter().filter_map(|p| read(p)).take(crate::attach::MAX_FILES + 1).collect()
+}
+
 #[cfg(not(target_os = "android"))]
 pub use desktop::*;
 #[cfg(target_os = "android")]
@@ -47,8 +62,7 @@ mod desktop {
     /// Asks for files and hands their names and bytes to `done` (on a worker thread).
     pub fn pick_files(done: impl FnOnce(Vec<Picked>) + Send + 'static) {
         std::thread::spawn(move || {
-            let files = rfd::FileDialog::new().set_title("Attach files").pick_files().unwrap_or_default();
-            done(files.into_iter().filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), std::fs::read(&p).ok()?))).collect());
+            done(read_files(rfd::FileDialog::new().set_title("Attach files").pick_files().unwrap_or_default()));
         });
     }
     /// Opens the sandboxed preview window: this program again with `--preview`, so the webview has its own process.
@@ -60,9 +74,22 @@ mod desktop {
         o.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        std::io::Write::write_all(&mut o.open(&f)?, serde_json::json!({ "doc": doc, "csp": csp }).to_string().as_bytes())?;
-        std::process::Command::new(std::env::current_exe()?).arg("--preview").arg(&f).spawn()?;
-        Ok(())
+        let mut h = o.open(&f)?;
+        let started = (|| -> anyhow::Result<std::process::Child> {
+            std::io::Write::write_all(&mut h, serde_json::json!({ "doc": doc, "csp": csp }).to_string().as_bytes())?;
+            drop(h);
+            Ok(std::process::Command::new(std::env::current_exe()?).arg("--preview").arg(&f).spawn()?)
+        })();
+        match started {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait()); // reap it when the window closes (no zombie per preview)
+                Ok(()) // the preview process deletes the file once it has read it
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&f);
+                Err(e)
+            }
+        }
     }
     /// Android only: send the app to the background.
     pub fn minimize() {}

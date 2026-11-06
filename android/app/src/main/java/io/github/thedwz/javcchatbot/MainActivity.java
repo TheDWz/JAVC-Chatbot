@@ -32,7 +32,7 @@ import javax.crypto.spec.GCMParameterSpec;
 /**
  * The app's only Activity; its UI is a Slint window rendered by the Rust library (javc) over
  * android.app.NativeActivity. The Rust code calls the methods below over JNI; the static initializer
- * loads libjavc.so, which exports the native method filesPicked by name.
+ * loads libjavc.so, which exports the native methods filePicked, filesPicked and copyFailed by name.
  */
 public class MainActivity extends NativeActivity {
 
@@ -98,8 +98,14 @@ public class MainActivity extends NativeActivity {
     /** Copies `text` to the system clipboard, on the UI thread as ClipboardManager requires. */
     public void copyText(String text) {
         runOnUiThread(() -> {
-            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(ClipData.newPlainText("JAVC Chatbot", text));
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("JAVC Chatbot", text));
+            } catch (RuntimeException e) {
+                // a clip over the Binder limit (about 1 MB) throws here; uncaught it would crash the app
+                Log.w("javc", "copy failed", e);
+                copyFailed();
+            }
         });
     }
 
@@ -122,6 +128,7 @@ public class MainActivity extends NativeActivity {
 
     private static final int PICK_FILES = 42;
     private static final int MAX_FILE_BYTES = 25 * 1024 * 1024; // the Rust side rejects anything bigger
+    private static final int MAX_FILES = 5; // attach::MAX_FILES; one more is read so Rust still shows its "max files" note
     private final ExecutorService pickerExecutor = Executors.newSingleThreadExecutor();
 
     /** Opens the system document picker, allowing multiple files. The result arrives in onActivityResult. */
@@ -134,7 +141,7 @@ public class MainActivity extends NativeActivity {
                 i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                 startActivityForResult(i, PICK_FILES);
             } catch (ActivityNotFoundException e) {
-                filesPicked(new String[0], new byte[0][]);
+                filesPicked();
             }
         });
     }
@@ -156,19 +163,25 @@ public class MainActivity extends NativeActivity {
             }
         }
         if (uris.isEmpty()) {
-            filesPicked(new String[0], new byte[0][]);
+            filesPicked();
             return;
         }
         pickerExecutor.execute(() -> {
-            List<String> names = new ArrayList<>();
-            List<byte[]> contents = new ArrayList<>();
-            for (Uri uri : uris) {
-                byte[] bytes = readFileUpTo(uri, MAX_FILE_BYTES + 1); // one extra byte tells the Rust side it's too big
-                if (bytes == null) continue; // a file that can't be opened is skipped
-                names.add(displayName(uri));
-                contents.add(bytes);
+            // each file goes to Rust as soon as it's read, so only one is ever in the Java heap
+            try {
+                int n = 0;
+                for (Uri uri : uris) {
+                    if (n > MAX_FILES) break;
+                    byte[] bytes = readFileUpTo(uri, MAX_FILE_BYTES + 1); // one extra byte tells the Rust side it's too big
+                    if (bytes == null) continue; // a file that can't be opened is skipped
+                    filePicked(displayName(uri), bytes);
+                    n++;
+                }
+            } catch (RuntimeException | OutOfMemoryError e) {
+                Log.w("javc", "reading picked files failed", e);
+            } finally {
+                filesPicked(); // always: Rust ignores new picks until this one finishes
             }
-            filesPicked(names.toArray(new String[0]), contents.toArray(new byte[0][]));
         });
     }
 
@@ -205,7 +218,9 @@ public class MainActivity extends NativeActivity {
     }
 
     /** The file picker's answer: the picked files' names and their (possibly truncated) contents. */
-    private static native void filesPicked(String[] names, byte[][] data);
+    private static native void filePicked(String name, byte[] data);
+    private static native void filesPicked();
+    private static native void copyFailed();
 
     // ---- Rich-reply preview ----
 

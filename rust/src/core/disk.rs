@@ -15,9 +15,9 @@ impl Disk {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Disk { root: root.into() }
     }
-    /// The full path of `name`, which must be a plain file name (no folders, no `..`).
+    /// The full path of `name`, which must be a plain file name (no folders, no `..`, no `:` — on Windows `C:x` joined to the root escapes it).
     fn at(&self, name: &str) -> Result<PathBuf> {
-        if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+        if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
             bail!("Invalid file name");
         }
         Ok(self.root.join(name))
@@ -32,23 +32,36 @@ impl Disk {
     pub fn write(&self, name: &str, text: &str) -> Result<()> {
         let f = self.at(name)?;
         fs::create_dir_all(&self.root)?;
-        let tmp = self.root.join(format!("{name}.tmp"));
+        // a unique temp name: two app instances saving the same file must not clobber each other's temp file
+        let mut rnd = [0u8; 8];
+        getrandom::fill(&mut rnd)?;
+        let tmp = self.root.join(format!("{name}.{}.tmp", rnd.iter().map(|x| format!("{x:02x}")).collect::<String>()));
         let mut o = fs::OpenOptions::new();
-        o.write(true).create(true).truncate(true);
+        o.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        let mut h = o.open(&tmp)?;
-        h.write_all(text.as_bytes())?;
-        h.sync_all()?;
-        drop(h);
-        fs::rename(&tmp, &f)?; // a crash mid-write can't leave a half-written file
-        Ok(())
+        let r = (|| -> Result<()> {
+            let mut h = o.open(&tmp)?;
+            h.write_all(text.as_bytes())?;
+            h.sync_all()?;
+            drop(h);
+            fs::rename(&tmp, &f)?; // a crash mid-write can't leave a half-written file
+            Ok(())
+        })();
+        if r.is_err() {
+            let _ = fs::remove_file(&tmp); // never leave the temp file behind on a failed save
+        }
+        r
     }
     pub fn remove(&self, name: &str) -> Result<()> {
         match fs::remove_file(self.at(name)?) {
             Err(e) if e.kind() != ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
+    }
+    /// When `name` was last written; None if it's missing or the platform can't tell.
+    pub fn modified(&self, name: &str) -> Option<std::time::SystemTime> {
+        fs::metadata(self.at(name).ok()?).ok()?.modified().ok()
     }
     pub fn list(&self) -> Result<Vec<String>> {
         match fs::read_dir(&self.root) {
@@ -134,9 +147,21 @@ mod tests {
         assert_eq!(d.list().unwrap(), vec!["b.json"]);
         d.remove("b.json").unwrap();
         d.remove("b.json").unwrap(); // removing twice is fine
-        for bad in ["../x", "a/b", "a\\b", "..", ""] {
-            assert!(d.read(bad).unwrap_err().to_string().contains("Invalid file name"));
+        for bad in ["../x", "a/b", "a\\b", "..", "", "C:x", "a:b"] {
+            assert!(d.read(bad).unwrap_err().to_string().contains("Invalid file name"), "{bad}");
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn writes_leave_no_temp_files() {
+        let dir = tmp("disktmp");
+        let d = Disk::new(&dir);
+        d.write("a.json", "one").unwrap();
+        d.write("a.json", "two").unwrap();
+        d.write("b.json", "x").unwrap();
+        assert_eq!(d.read("a.json").unwrap().as_deref(), Some("two"));
+        assert!(!fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
         fs::remove_dir_all(dir).unwrap();
     }
 

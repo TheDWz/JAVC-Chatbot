@@ -106,7 +106,7 @@ cargo packager --release --formats nsis           # Windows installer (on Window
 
 `android/` is the Gradle project. A NativeActivity hosts the Slint window, and a little Java handles what needs Android itself: the Keystore, clipboard, file picker, links and the WebView for rich-reply previews. Gradle builds the Rust library with [cargo-ndk](https://github.com/bbqsrc/cargo-ndk) first.
 
-You'll need [JDK 21](https://adoptium.net/), the Android SDK with platform 36 and NDK 28 (`ANDROID_HOME` and `ANDROID_NDK_HOME`), `cargo install cargo-ndk` and `rustup target add aarch64-linux-android x86_64-linux-android`.
+You'll need [JDK 21](https://adoptium.net/), the Android SDK with platform 36 and NDK 28 (`ANDROID_HOME` and `ANDROID_NDK_HOME`), `cargo install --locked cargo-ndk@4.1.2` and `rustup target add aarch64-linux-android x86_64-linux-android`.
 
 ```bash
 cd android

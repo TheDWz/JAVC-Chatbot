@@ -19,6 +19,9 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.webkit.WebChromeClient;
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
@@ -53,15 +56,40 @@ public class RichActivity extends Activity {
      * The policy must be "sandbox allow-scripts", optionally followed by more rules.
      */
     static String put(String doc, String csp) {
-        if (doc == null || doc.length() > SANDBOX_MAX) throw new IllegalArgumentException("This content is too large to display");
-        boolean sandboxed = csp.equals(SANDBOX_CSP) || csp.startsWith(SANDBOX_CSP + "; ");
-        if (!sandboxed || csp.indexOf('\r') >= 0 || csp.indexOf('\n') >= 0) throw new IllegalArgumentException("Invalid sandbox policy");
+        check(doc, csp);
         String id = UUID.randomUUID().toString();
         docs.put(id, new String[] { doc, csp });
         return id;
     }
 
+    /** Throws unless the page fits and its policy starts with the sandbox rule (and is one header line). */
+    private static void check(String doc, String csp) {
+        if (doc == null || doc.length() > SANDBOX_MAX) throw new IllegalArgumentException("This content is too large to display");
+        boolean sandboxed = csp != null && (csp.equals(SANDBOX_CSP) || csp.startsWith(SANDBOX_CSP + "; "));
+        if (!sandboxed || csp.indexOf('\r') >= 0 || csp.indexOf('\n') >= 0) throw new IllegalArgumentException("Invalid sandbox policy");
+    }
+
+    /** Where a shown page is kept while the app's process may be killed in the background (a Bundle can't hold 2 MB). */
+    private File saved(String id) {
+        return new File(getCacheDir(), "rich-" + id);
+    }
+
+    /** After the process was killed, the page is only in the file written by onSaveInstanceState. */
+    private void restore(String id) {
+        try {
+            String all = new String(Files.readAllBytes(saved(id).toPath()), StandardCharsets.UTF_8);
+            int nl = all.indexOf('\n');
+            if (nl < 0) return;
+            String csp = all.substring(0, nl), doc = all.substring(nl + 1);
+            check(doc, csp);
+            docs.put(id, new String[] { doc, csp });
+        } catch (IOException | IllegalArgumentException e) {
+            // missing or damaged: the preview just closes
+        }
+    }
+
     private WebView web;
+    private String id;
 
     /** Creates the full-screen WebView and loads the stored page from the sandbox host. */
     @SuppressLint("SetJavaScriptEnabled")
@@ -69,7 +97,8 @@ public class RichActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         requestWindowFeature(Window.FEATURE_NO_TITLE); // the page gets the whole screen; Back closes it
         super.onCreate(savedInstanceState);
-        String id = getIntent().getStringExtra(ID_EXTRA);
+        id = getIntent().getStringExtra(ID_EXTRA);
+        if (id != null && !docs.containsKey(id) && savedInstanceState != null) restore(id);
         if (id == null || !docs.containsKey(id)) {
             finish();
             return;
@@ -110,7 +139,8 @@ public class RichActivity extends Activity {
                     Uri url = request.getUrl();
                     if (SANDBOX_HOST.equals(url.getHost())) return false;
                     String s = url.toString();
-                    if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("mailto:")) {
+                    // only a tap opens the browser: a script redirecting in a loop must not open page after page
+                    if (request.hasGesture() && (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("mailto:"))) {
                         try {
                             startActivity(new Intent(Intent.ACTION_VIEW, url));
                         } catch (ActivityNotFoundException e) {
@@ -153,12 +183,29 @@ public class RichActivity extends Activity {
         return new WebResourceResponse("text/html", "utf-8", 200, "OK", headers, new ByteArrayInputStream(doc[0].getBytes(StandardCharsets.UTF_8)));
     }
 
-    /** Destroys the WebView so its renderer and memory go away with the preview. */
+    /** Keeps the page in a file in case the process is killed while the preview is in the background. */
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        String[] doc = id != null ? docs.get(id) : null;
+        if (doc == null) return;
+        try {
+            Files.write(saved(id).toPath(), (doc[1] + "\n" + doc[0]).getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            // then a killed preview just closes
+        }
+    }
+
+    /** Destroys the WebView so its renderer and memory go away with the preview; a closed preview's saved page too. */
     @Override
     protected void onDestroy() {
         if (web != null) {
             web.destroy();
             web = null;
+        }
+        if (isFinishing() && id != null) {
+            saved(id).delete();
+            docs.remove(id);
         }
         super.onDestroy();
     }

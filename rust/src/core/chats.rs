@@ -82,18 +82,34 @@ impl Chats {
         let _g = self.guard();
         let (names, saved) = (self.chat_files(), self.read_index());
         let Some(names) = names else { return Ok(sorted(saved.unwrap_or_default())) }; // can't see the folder: show what the index says
+        let mut reread = false;
         let ix = match &saved {
             None => self.entries(&names),
             Some(saved) => {
                 let on_disk: HashSet<&str> = names.iter().map(|n| &n[..n.len() - 5]).collect();
-                let kept: Vec<Value> = saved.iter().filter(|c| on_disk.contains(id_of(c))).cloned().collect();
+                // a chat written after the index (a save interrupted before its index write) is re-read for its title and
+                // date; if it can't be read, its old entry stays
+                let since = self.io.modified(INDEX);
+                let kept: Vec<Value> = saved
+                    .iter()
+                    .filter(|c| on_disk.contains(id_of(c)))
+                    .map(|c| {
+                        let name = format!("{}.json", id_of(c));
+                        if !since.zip(self.io.modified(&name)).is_some_and(|(i, m)| m > i) {
+                            return c.clone();
+                        }
+                        reread = true;
+                        self.entries(&[name]).pop().unwrap_or_else(|| c.clone())
+                    })
+                    .collect();
                 let known: HashSet<&str> = kept.iter().map(id_of).collect();
                 let added = self.entries(&names.iter().filter(|n| !known.contains(&n[..n.len() - 5])).cloned().collect::<Vec<_>>());
-                if kept.len() == saved.len() && added.is_empty() { saved.clone() } else { [kept, added].concat() }
+                if kept == *saved && added.is_empty() { saved.clone() } else { [kept, added].concat() }
             }
         };
-        if saved.as_ref() != Some(&ix) && (!ix.is_empty() || saved.is_some()) {
-            self.write_index(&ix)?;
+        // rewritten after a re-read even when nothing changed, so the newer files aren't re-read on every listing
+        if (reread || saved.as_ref() != Some(&ix)) && (!ix.is_empty() || saved.is_some()) {
+            let _ = self.write_index(&ix); // best effort: the chats are listed anyway, and the next listing tries again
         }
         Ok(sorted(ix))
     }
@@ -156,7 +172,7 @@ mod tests {
         let c = Chats::new(Disk::new(&dir));
         c.save(&json!({ "id": "a1", "title": "A", "updated": 1, "messages": [] })).unwrap();
         c.save(&json!({ "id": "b2", "title": "B", "updated": 2, "messages": [] })).unwrap();
-        fs::write(dir.join("a1.json"), "not json").unwrap(); // list must not open chat files
+        fs::write(dir.join("a1.json"), "not json").unwrap(); // damaged after the index was written: its entry stays
         assert_eq!(ids(&c.list().unwrap()), ["b2", "a1"]);
         fs::remove_file(dir.join("_index.json")).unwrap();
         assert_eq!(ids(&c.list().unwrap()), ["b2"]); // rebuilt by scanning; the corrupt chat is skipped
@@ -165,6 +181,30 @@ mod tests {
         assert!(c.list().unwrap().is_empty());
         assert!(c.load("_index").unwrap_err().to_string().contains("Invalid chat id"));
         assert!(!fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn list_recovers_a_save_interrupted_before_the_index_write() {
+        let dir = tmp("chats4");
+        let c = Chats::new(Disk::new(&dir));
+        c.save(&json!({ "id": "a1", "title": "Old", "updated": 1, "messages": [] })).unwrap();
+        // the chat file is rewritten, then the app dies before updating the index
+        fs::write(dir.join("a1.json"), json!({ "id": "a1", "title": "New", "updated": 5, "messages": [] }).to_string()).unwrap();
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options().write(true).open(dir.join("_index.json")).unwrap().set_modified(past).unwrap();
+        assert_eq!(c.list().unwrap()[0]["title"], "New");
+        assert!(fs::read_to_string(dir.join("_index.json")).unwrap().contains("New"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // an index that can't be rewritten still lists the recovered chats
+            fs::write(dir.join("b2.json"), json!({ "id": "b2", "title": "B", "updated": 9, "messages": [] }).to_string()).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+            let r = c.list();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(ids(&r.unwrap()), ["b2", "a1"]);
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

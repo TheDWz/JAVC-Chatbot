@@ -3,7 +3,7 @@
 //! preview WebView and moving the app to the background.
 use crate::core::store::Crypto;
 use anyhow::{Result, anyhow};
-use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
+use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -27,18 +27,21 @@ fn call<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>) -> R
     // SAFETY: both pointers come from android-activity and live as long as the process
     let vm = unsafe { JavaVM::from_raw(app().vm_as_ptr().cast()) }?;
     let mut env = vm.attach_current_thread()?;
-    let activity = unsafe { JObject::from_raw(app().activity_as_ptr().cast()) };
-    match f(&mut env, &activity) {
-        Ok(v) => Ok(v),
-        Err(jni::errors::Error::JavaException) => {
-            let ex = env.exception_occurred()?;
-            env.exception_clear()?;
-            let msg = env.call_method(&ex, "getMessage", "()Ljava/lang/String;", &[]).and_then(|m| m.l()).ok();
-            let msg = msg.filter(|m| !m.is_null()).and_then(|m| env.get_string(&JString::from(m)).ok().map(String::from));
-            Err(anyhow!(msg.unwrap_or_else(|| "Android error".into())))
+    // the UI thread stays attached for the app's life, so its local references would pile up without a frame per call
+    env.with_local_frame(16, |env| -> Result<T> {
+        let activity = unsafe { JObject::from_raw(app().activity_as_ptr().cast()) };
+        match f(env, &activity) {
+            Ok(v) => Ok(v),
+            Err(jni::errors::Error::JavaException) => {
+                let ex = env.exception_occurred()?;
+                env.exception_clear()?;
+                let msg = env.call_method(&ex, "getMessage", "()Ljava/lang/String;", &[]).and_then(|m| m.l()).ok();
+                let msg = msg.filter(|m| !m.is_null()).and_then(|m| env.get_string(&JString::from(m)).ok().map(String::from));
+                Err(anyhow!(msg.unwrap_or_else(|| "Android error".into())))
+            }
+            Err(e) => Err(e.into()),
         }
-        Err(e) => Err(e.into()),
-    }
+    })
 }
 /// activity.<name>(String) -> String
 fn str_to_str(name: &str, arg: &str) -> Result<String> {
@@ -100,28 +103,44 @@ pub fn open_url(url: &str) {
 type Picked = super::platform::Picked;
 static PICK: Mutex<Option<Box<dyn FnOnce(Vec<Picked>) + Send>>> = Mutex::new(None);
 /// Shows the system file picker; `done` gets the chosen files (or none if cancelled), from MainActivity.filesPicked.
+/// A request while the picker is already open is ignored (a double tap would open two pickers, and the second result
+/// would find no callback).
 pub fn pick_files(done: impl FnOnce(Vec<Picked>) + Send + 'static) {
-    *PICK.lock().unwrap() = Some(Box::new(done));
+    {
+        let mut pick = PICK.lock().unwrap();
+        if pick.is_some() {
+            return;
+        }
+        *pick = Some(Box::new(done));
+    }
     if void("pickFiles", "()V", &[]).is_err()
         && let Some(f) = PICK.lock().unwrap().take()
     {
         f(vec![]);
     }
 }
-/// MainActivity.filesPicked(String[] names, byte[][] data): the picker's result, read on a Java worker thread.
+static PICKED: Mutex<Vec<Picked>> = Mutex::new(vec![]);
+/// MainActivity.filePicked(String name, byte[] data): one picked file, read on a Java worker thread. Files come one at a
+/// time so Java never holds them all: a few large ones would exceed its heap.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_thedwz_javcchatbot_MainActivity_filesPicked(mut env: JNIEnv, _this: JClass, names: JObjectArray, data: JObjectArray) {
-    let mut files = vec![];
-    let n = env.get_array_length(&names).unwrap_or(0);
-    for i in 0..n {
-        let (Ok(name), Ok(bytes)) = (env.get_object_array_element(&names, i), env.get_object_array_element(&data, i)) else { continue };
-        let name: String = env.get_string(&JString::from(name)).map(Into::into).unwrap_or_default();
-        let bytes = env.convert_byte_array(JByteArray::from(bytes)).unwrap_or_default();
-        files.push((name, bytes));
-    }
+pub extern "system" fn Java_io_github_thedwz_javcchatbot_MainActivity_filePicked(mut env: JNIEnv, _this: JClass, name: JString, data: JByteArray) {
+    let name: String = env.get_string(&name).map(Into::into).unwrap_or_default();
+    let bytes = env.convert_byte_array(data).unwrap_or_default();
+    PICKED.lock().unwrap().push((name, bytes));
+}
+/// MainActivity.filesPicked(): the picker is done; `done` gets the files sent so far (none if cancelled).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_thedwz_javcchatbot_MainActivity_filesPicked(_env: JNIEnv, _this: JClass) {
+    let files = std::mem::take(&mut *PICKED.lock().unwrap());
     if let Some(f) = PICK.lock().unwrap().take() {
         f(files);
     }
+}
+
+/// MainActivity.copyFailed(): the clipboard rejected the text copy_text sent.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_thedwz_javcchatbot_MainActivity_copyFailed(_env: JNIEnv, _this: JClass) {
+    crate::app::copy_failed();
 }
 
 /// Opens the rich-reply preview: RichActivity's WebView serves the page with its CSP, in an opaque sandboxed origin.

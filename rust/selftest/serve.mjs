@@ -7,6 +7,11 @@ import { handleApi } from './mock-api.mjs';
 const requests = [];
 
 const server = http.createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/_requests') { // for the self-test's check of what was actually sent
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(requests));
+    return;
+  }
   try {
     if (await handleApi(req, res, requests)) return;
   } catch (err) {

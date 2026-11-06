@@ -16,8 +16,8 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, StyledText, Timer, Ti
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 /// What the worker threads share: the stores, the HTTP client and the runtime.
@@ -47,14 +47,43 @@ fn with(f: impl FnOnce(&mut App)) {
         }
     })
 }
-/// Does `work` on a worker thread, then `done` with its result back on the UI thread.
-fn bg<T: Send + 'static>(work: impl FnOnce(&Svc) -> Result<T> + Send + 'static, done: impl FnOnce(&mut App, Result<T>) + Send + 'static) {
+type Job = Box<dyn FnOnce() + Send>;
+/// A worker thread whose jobs run in the order they were sent, so an older save can never land after a newer save or a
+/// delete.
+fn spawn_queue(name: &str) -> std::sync::mpsc::Sender<Job> {
+    let (tx, rx) = std::sync::mpsc::channel::<Job>();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            for job in rx {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)); // one bad job must not stop the queue
+            }
+        })
+        .expect("worker thread");
+    tx
+}
+// Settings and chat files get separate queues: a keyring unlock prompt holding up a settings job must not freeze the chats.
+static STORE_Q: LazyLock<std::sync::mpsc::Sender<Job>> = LazyLock::new(|| spawn_queue("javc-store"));
+static CHATS_Q: LazyLock<std::sync::mpsc::Sender<Job>> = LazyLock::new(|| spawn_queue("javc-chats"));
+fn run_on<T: Send + 'static>(
+    q: &std::sync::mpsc::Sender<Job>,
+    work: impl FnOnce(&Svc) -> Result<T> + Send + 'static,
+    done: impl FnOnce(&mut App, Result<T>) + Send + 'static,
+) {
     let sv = svc();
-    let rt = sv.clone();
-    rt.rt.spawn_blocking(move || {
-        let r = work(&sv);
+    let _ = q.send(Box::new(move || {
+        // a panic still reports back, so flags like `saving` are always cleared
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&sv))).unwrap_or_else(|_| Err(anyhow::anyhow!("Something went wrong (internal error)")));
         let _ = slint::invoke_from_event_loop(move || with(|a| done(a, r)));
-    });
+    }));
+}
+/// Does settings `work` on the store thread (in order), then `done` with its result back on the UI thread.
+fn bg<T: Send + 'static>(work: impl FnOnce(&Svc) -> Result<T> + Send + 'static, done: impl FnOnce(&mut App, Result<T>) + Send + 'static) {
+    run_on(&STORE_Q, work, done)
+}
+/// The same for chat files, on their own thread.
+fn bg_chats<T: Send + 'static>(work: impl FnOnce(&Svc) -> Result<T> + Send + 'static, done: impl FnOnce(&mut App, Result<T>) + Send + 'static) {
+    run_on(&CHATS_Q, work, done)
 }
 /// Runs `f` with the app after the current event is handled (so it never runs inside another `with`).
 fn later(f: impl FnOnce(&mut App) + 'static) {
@@ -166,8 +195,46 @@ pub struct App {
     err_timer: Timer,
     #[cfg_attr(target_os = "android", allow(dead_code))] // files dropped on the window (desktop)
     drops: Vec<std::path::PathBuf>,
+    converting: usize,              // attachment conversions still running; sending waits for them
+    checkpoint: Option<Instant>,    // when the reply in progress was last saved
+    ck_base: Option<Arc<Value>>,    // the chat as saved when the reply started; checkpoints add the reply so far to it
+    ck_every: Duration,             // how often to checkpoint: big chats (attached images) less often
+    ck_busy: bool,                  // a checkpoint is still being written; the next one waits
+    unsaved: Vec<(u32, Value)>,     // model/reasoning patches not saved yet, oldest first; laid over `settings`
+    patch_id: u32,
+    models_gen: u32,                // the latest model fetch; older results are dropped
+    saving: bool,                   // a dialog's Save is in flight; a second click does nothing
 }
 
+/// Lays patches that aren't saved yet over `set` (the active profile's settings), oldest first: effort is global, the
+/// model choices only count for the profile they were made in.
+fn overlay_unsaved(set: &mut Value, unsaved: &[(u32, Value)], active: &Value) {
+    for (_, p) in unsaved {
+        if let Some(e) = p.get("effort") {
+            set["effort"] = e.clone();
+        }
+        if p.get("profileId") == Some(active) {
+            for k in ["model", "noTools", "meta"] {
+                if let Some(v) = p.get(k) {
+                    set[k] = v.clone();
+                }
+            }
+        }
+    }
+}
+/// About how many bytes of text (attachments included) `v` holds; walks the strings, copies nothing.
+fn text_bytes(v: &Value) -> usize {
+    match v {
+        Value::String(t) => t.len(),
+        Value::Array(a) => a.iter().map(text_bytes).sum(),
+        Value::Object(o) => o.values().map(text_bytes).sum(),
+        _ => 0,
+    }
+}
+/// How often to save a streaming reply: every 5 s, plus 5 s per MB of chat (each save rewrites the whole file), at most 60 s.
+fn checkpoint_every(bytes: usize) -> Duration {
+    Duration::from_secs((5 + 5 * bytes as u64 / 1_000_000).min(60))
+}
 fn new_chat(persona: &str) -> Value {
     json!({ "id": format!("{}{}", crate::core::profiles::base36(now() as u64), crate::core::profiles::rand36(6)), "title": "", "created": now(), "updated": now(), "personaId": persona, "messages": [] })
 }
@@ -319,6 +386,7 @@ impl App {
         let st = &self.state;
         let mut set = arr(&st["profiles"]).into_iter().find(|p| p["id"] == st["activeId"]).unwrap_or(json!({}));
         set["effort"] = st["effort"].clone();
+        overlay_unsaved(&mut set, &self.unsaved, &st["activeId"]);
         self.settings = set;
         let profiles = arr(&st["profiles"]);
         self.ui.set_has_profiles(!profiles.is_empty());
@@ -392,10 +460,34 @@ impl App {
         }
         self.ui.set_side_note(ss(note));
     }
+    /// Saves a model or reasoning choice. Until it's saved it stays in `unsaved`, so a state that comes back meanwhile
+    /// (an older patch's, a theme save's) can't put the old choice back on screen; a failed save is shown and dropped.
+    fn patch(&mut self, p: Value) {
+        self.patch_id += 1;
+        let id = self.patch_id;
+        self.unsaved.push((id, p.clone()));
+        bg(
+            move |sv| sv.store.patch(&p),
+            move |a, r| {
+                a.unsaved.retain(|(i, _)| *i != id); // saved (now in the state) or failed (dropped)
+                match r {
+                    Ok(st) => a.apply_state(st),
+                    Err(e) => {
+                        a.show_error(&format!("Could not save the choice: {e}"));
+                        a.apply_state(a.state.clone()); // back to what is saved, so the UI doesn't show an unsaved choice
+                    }
+                }
+                a.render_model_btn();
+                a.render_levels();
+                if !a.has_messages() {
+                    a.show_empty(); // its "Chatting with" line names the model
+                }
+            },
+        );
+    }
     fn pick_level(&mut self, v: &str) {
         self.settings["effort"] = v.into();
-        let p = json!({ "effort": v });
-        bg(move |sv| sv.store.patch(&p), |_, _| {});
+        self.patch(json!({ "effort": v }));
         self.render_levels();
         let name = LEVELS.iter().find(|l| l.0 == v).map_or("", |l| l.1);
         self.toast(&format!("Reasoning: {name}"));
@@ -452,8 +544,8 @@ impl App {
         self.settings["model"] = id.into();
         let no_tools = self.model_info.get(id).is_some_and(|m| !m.tools);
         self.settings["noTools"] = no_tools.into();
-        let p = json!({ "model": id, "noTools": no_tools });
-        bg(move |sv| sv.store.patch(&p), |_, _| {});
+        let p = json!({ "model": id, "noTools": no_tools, "profileId": self.active() });
+        self.patch(p);
         self.render_levels();
         if !self.has_messages() {
             self.show_empty();
@@ -469,12 +561,12 @@ impl App {
             // remember whether the current model lacks tools, so that is still known after a restart
             let meta = infos.iter().any(|m| m.meta);
             self.settings["meta"] = meta.into();
-            let mut p = json!({ "meta": meta });
+            let mut p = json!({ "meta": meta, "profileId": self.active() });
             if let Some(k) = self.model_info.get(&saved) {
                 self.settings["noTools"] = (!k.tools).into();
                 p["noTools"] = (!k.tools).into();
             }
-            bg(move |sv| sv.store.patch(&p), |_, _| {});
+            self.patch(p);
         } // an empty list says nothing about the gateway
         let mut opts: Vec<(String, String)> = ids.iter().map(|i| (i.clone(), i.clone())).collect();
         // the saved choice is only ever changed by the user: keep it visible even if the provider stopped listing it
@@ -495,17 +587,23 @@ impl App {
             return self.open_profile_dialog(true, None);
         }
         let pid = self.active();
+        self.models_gen += 1;
+        let fetch = self.models_gen;
         self.ui.set_fetching(true);
         let sv = svc();
+        let pid2 = pid.clone();
         sv.rt.spawn(async move {
             let sv2 = svc();
             let r = async {
-                let st = tokio::task::spawn_blocking(move || sv2.store.load(false)).await??;
+                let st = tokio::task::spawn_blocking(move || sv2.store.load(Some(&pid2), false)).await??;
                 api::list_models_detailed(&svc().http, &st.endpoint, &st.key).await
             }
             .await;
             let _ = slint::invoke_from_event_loop(move || {
                 with(|a| {
+                    if fetch != a.models_gen {
+                        return; // a newer fetch (after a profile edit or switch) owns the list now
+                    }
                     a.ui.set_fetching(false);
                     if pid != a.active() {
                         return;
@@ -600,6 +698,23 @@ impl App {
             m.text = ss(format!("{}{c}", m.text));
             m.waiting = false;
         }
+        if !m.text.is_empty() && !self.ck_busy && self.checkpoint.is_some_and(|t| t.elapsed() >= self.ck_every)
+            && let Some(base) = self.ck_base.clone()
+        {
+            // the reply so far, so closing the app mid-reply keeps it; the finished reply replaces it. The chat is
+            // copied on the chats thread, not here: with attached images it can be megabytes.
+            self.checkpoint = Some(Instant::now());
+            self.ck_busy = true;
+            let reply = json!({ "role": "assistant", "content": m.text.as_str(), "reasoning": if m.no_reasoning { "" } else { m.reasoning.as_str() } });
+            bg_chats(
+                move |sv| {
+                    let mut chat = (*base).clone();
+                    chat["messages"].as_array_mut().unwrap().push(reply);
+                    sv.chats.save(&chat)
+                },
+                |a, _| a.ck_busy = false,
+            );
+        }
         self.msgs.set_row_data(i, m);
         if stick && !c.is_empty() {
             self.scroll_down();
@@ -622,6 +737,9 @@ impl App {
         if s(&self.settings, "model").is_empty() {
             return self.show_error("Pick a model first: open the model picker (fetch models if the list is empty).");
         }
+        if self.converting > 0 {
+            return self.toast("Wait for the attachments to finish loading");
+        }
         let atts = std::mem::take(&mut self.pending);
         self.render_chips();
         self.ui.set_draft(ss(""));
@@ -632,12 +750,24 @@ impl App {
         self.msgs.push(Self::user_msg(&text, chips));
         let files: Vec<Value> = atts.iter().map(|a| json!({ "name": a.name, "size": a.size, "kind": if matches!(a.kind, AttKind::Image(_)) { "image" } else { "text" } })).collect();
         self.chat["messages"].as_array_mut().unwrap().push(json!({ "role": "user", "content": shared::build_content(&text, &atts), "text": text, "files": files }));
+        // saved before the request, so closing the app mid-reply can't lose what was sent
+        if s(&self.chat, "title").is_empty() {
+            let t = if !text.is_empty() { text.clone() } else { atts.first().map_or("New chat".into(), |a| a.name.clone()) };
+            self.chat["title"] = t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect::<String>().into();
+        }
+        let prev_updated = std::mem::replace(&mut self.chat["updated"], now().into()); // put back if the turn fails
+        let base = self.persist();
+        self.ck_every = checkpoint_every(text_bytes(&base["messages"]));
+        self.ck_base = Some(base);
+        self.checkpoint = Some(Instant::now());
         self.msgs.push(Msg { reasoning: ss(WAITING), no_reasoning: true, waiting: true, ..Default::default() });
         self.reply_row = Some(self.msgs.row_count() - 1);
         self.scroll_down();
         self.set_busy(true);
         let messages = shared::request_messages(&self.chat, Some(&self.persona_of(&self.chat)), Some(self.render()));
         let want_search = self.tools_ok();
+        // the profile and choices on screen, even if saving them is still queued: endpoint and model always match
+        let (pid, model, effort) = (self.active(), s(&self.settings, "model").to_string(), s(&self.settings, "effort").to_string());
         let cancel = CancellationToken::new();
         self.cancel = Some(cancel.clone());
         *self.incoming.lock().unwrap() = Incoming::default();
@@ -645,9 +775,10 @@ impl App {
         svc().rt.spawn(async move {
             let r: Result<Reply> = async {
                 let sv = svc();
-                let st = tokio::task::spawn_blocking(move || sv.store.load(want_search)).await??;
-                let extra = api::reasoning_params(&st.endpoint, &st.effort, &st.format, st.meta);
-                let search = if want_search { st.search.clone().map(Search::linkup) } else { None };
+                let st = tokio::task::spawn_blocking(move || sv.store.load(Some(&pid), want_search)).await??;
+                let extra = api::reasoning_params(&st.endpoint, &effort, &st.format, st.meta);
+                let echo_reasoning = api::echoes_reasoning(&st.endpoint, &st.format, st.meta);
+                let search = if want_search { st.search.clone().map(|k| Search { echo_reasoning, ..Search::linkup(k) }) } else { None };
                 let mut on_delta = |d: Delta| {
                     let mut i = inc.lock().unwrap();
                     i.reasoning += &d.reasoning;
@@ -657,14 +788,16 @@ impl App {
                         let _ = slint::invoke_from_event_loop(|| with(|a| a.flush_incoming()));
                     }
                 };
-                api::chat_stream(&svc().http, &st.endpoint, &st.key, &st.model, messages, extra, &mut on_delta, &cancel, search.as_ref()).await
+                api::chat_stream(&svc().http, &st.endpoint, &st.key, &model, messages, extra, &mut on_delta, &cancel, search.as_ref()).await
             }
             .await;
-            let _ = slint::invoke_from_event_loop(move || with(|a| a.reply_finished(r, text, atts)));
+            let _ = slint::invoke_from_event_loop(move || with(|a| a.reply_finished(r, text, atts, prev_updated)));
         });
     }
-    fn reply_finished(&mut self, r: Result<Reply>, text: String, atts: Vec<Attachment>) {
+    fn reply_finished(&mut self, r: Result<Reply>, text: String, atts: Vec<Attachment>, prev_updated: Value) {
         self.cancel = None;
+        self.checkpoint = None;
+        self.ck_base = None;
         let row = self.reply_row.take();
         match r {
             Ok(out) => {
@@ -677,10 +810,6 @@ impl App {
                 }
                 self.scroll_down();
                 self.chat["updated"] = now().into();
-                if s(&self.chat, "title").is_empty() {
-                    let t = if !text.is_empty() { text.clone() } else { atts.first().map_or("New chat".into(), |a| a.name.clone()) };
-                    self.chat["title"] = t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect::<String>().into();
-                }
                 self.persist();
                 if let Some(e) = out.error {
                     self.show_error(&format!("Reply was cut off: {e}"));
@@ -689,8 +818,16 @@ impl App {
                 }
             }
             Err(e) => {
-                // drop the failed turn and put the draft back in front of whatever was typed meanwhile
+                // drop the failed turn (also from disk) and put the draft back in front of whatever was typed meanwhile
                 self.chat["messages"].as_array_mut().unwrap().pop();
+                self.chat["updated"] = prev_updated; // nothing was added, so the chat keeps its place in the history
+                if self.has_messages() {
+                    self.persist();
+                } else {
+                    self.chat["title"] = "".into(); // a chat that never got a reply isn't kept
+                    let id = s(&self.chat, "id").to_string();
+                    bg_chats(move |sv| sv.chats.remove(&id), |a, _| a.refresh_list(|_| {}));
+                }
                 let n = self.msgs.row_count();
                 if n >= 2 {
                     self.msgs.remove(n - 1);
@@ -718,15 +855,18 @@ impl App {
     fn render_chips(&self) {
         self.ui.set_pending(model_vec(self.pending.iter().map(|a| chip(&a.name, a.size, if let AttKind::Image(u) = &a.kind { Some(u.as_str()) } else { None }))));
     }
-    fn attach(&mut self, files: Vec<platform::Picked>) {
+    /// Converts files into attachments off the UI thread (not on the store thread: a big PDF must not hold up saves).
+    fn attach(&mut self, load: impl FnOnce() -> Vec<platform::Picked> + Send + 'static) {
         let room = MAX_FILES.saturating_sub(self.pending.len());
-        bg(
-            move |_| {
+        self.converting += 1;
+        svc().rt.spawn_blocking(move || {
+            // a panic here would leave `converting` stuck and block sending
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let files = load();
                 let (mut out, mut notes) = (vec![], vec![]);
-                for (i, (name, bytes)) in files.iter().enumerate() {
+                for (name, bytes) in &files {
                     if out.len() >= room {
                         notes.push(format!("Max {MAX_FILES} files per message"));
-                        let _ = i;
                         break;
                     }
                     match attach::attachment(name, bytes) {
@@ -737,28 +877,33 @@ impl App {
                         Err(e) => notes.push(e),
                     }
                 }
-                Ok((out, notes))
-            },
-            |a, r| {
-                let (atts, notes) = r.unwrap_or_default();
-                a.pending.extend(atts);
-                a.pending.truncate(MAX_FILES);
-                a.render_chips();
-                if let Some(n) = notes.last() {
-                    a.toast(n);
-                }
-            },
-        );
+                (out, notes)
+            }))
+            .unwrap_or_else(|_| (vec![], vec!["Couldn't read the attachment".to_string()]));
+            let _ = slint::invoke_from_event_loop(move || {
+                with(|a| {
+                    let (atts, notes) = r;
+                    a.converting -= 1;
+                    a.pending.extend(atts);
+                    a.pending.truncate(MAX_FILES);
+                    a.render_chips();
+                    if let Some(n) = notes.last() {
+                        a.toast(n);
+                    }
+                })
+            });
+        });
     }
     fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>) {
-        let files = paths.into_iter().filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), std::fs::read(&p).ok()?))).collect();
-        self.attach(files);
+        self.attach(move || platform::read_files(paths));
     }
 
     // ---- chat history ----
-    fn persist(&mut self) {
-        let chat = self.chat.clone();
-        bg(
+    /// Saves the open chat; returns the copy being saved.
+    fn persist(&mut self) -> Arc<Value> {
+        let chat = Arc::new(self.chat.clone());
+        let saved = chat.clone();
+        bg_chats(
             move |sv| {
                 sv.chats.save(&chat)?;
                 sv.chats.list()
@@ -771,9 +916,10 @@ impl App {
                 Err(e) => a.show_error(&format!("Could not save chat: {e}")),
             },
         );
+        saved
     }
     fn refresh_list(&mut self, then: impl FnOnce(&mut App) + Send + 'static) {
-        bg(
+        bg_chats(
             |sv| sv.chats.list(),
             move |a, r| match r {
                 Ok(l) => {
@@ -802,9 +948,12 @@ impl App {
         if self.busy || id == s(&self.chat, "id") {
             return;
         }
-        bg(
+        bg_chats(
             move |sv| sv.chats.load(&id),
             |a, r| match r {
+                // a reply started while this loaded: it owns the open chat until it's done
+                Ok(_) if a.busy => {}
+                Ok(c) if !c["messages"].is_array() => a.show_error("Could not open chat: the file is damaged (no message list)"),
                 Ok(c) => {
                     a.chat = c;
                     a.render_chat();
@@ -837,7 +986,7 @@ impl App {
         }
         self.armed = None;
         self.arm_timer.stop();
-        bg(
+        bg_chats(
             move |sv| sv.chats.remove(&id).map(|_| id),
             |a, r| match r {
                 Ok(id) => {
@@ -959,12 +1108,15 @@ impl App {
         self.ui.set_psdlg(true);
     }
     fn ps_save(&mut self) {
+        if std::mem::replace(&mut self.saving, true) {
+            return;
+        }
         self.ui.set_ps_err(ss(""));
         let (id, name, user, bot, prompt) =
             (self.editing_persona.clone(), self.ui.get_ps_name().to_string(), self.ui.get_ps_user().to_string(), self.ui.get_ps_bot().to_string(), self.ui.get_ps_prompt().to_string());
         bg(
             move |sv| sv.store.save_persona(id.as_deref(), &name, &user, &bot, &prompt),
-            |a, r| match r {
+            |a, r| match a.save_done(r) {
                 Ok(st) => {
                     a.ui.set_psdlg(false);
                     a.persona_changed(st);
@@ -1012,6 +1164,9 @@ impl App {
         self.ui.set_dup_err(ss(""));
         let Some(src) = self.dup_source.clone() else { return };
         let Some(pid) = arr(&self.state["personas"]).get(idx).map(|p| s(p, "id").to_string()) else { return };
+        if std::mem::replace(&mut self.saving, true) {
+            return;
+        }
         let fresh = new_chat(&pid);
         bg(
             move |sv| {
@@ -1026,7 +1181,7 @@ impl App {
                 let st = sv.store.patch(&json!({ "personaId": pid }))?;
                 Ok((st, sv.chats.list()?, s(&copy, "id").to_string()))
             },
-            |a, r| match r {
+            |a, r| match a.save_done(r) {
                 Ok((st, list, id)) => {
                     a.ui.set_dupdlg(false);
                     a.persona_changed(st);
@@ -1057,12 +1212,19 @@ impl App {
         self.key_dirty = false;
         if !is_new {
             // saving without typing a key keeps the stored one
+            let opened = id.clone();
             bg(
                 move |sv| sv.store.key(&id),
-                |a, r| match r {
-                    Ok(k) if !a.key_dirty => a.ui.set_p_key(ss(k)),
-                    Ok(_) => {}
-                    Err(e) => a.ui.set_p_err(ss(e.to_string())),
+                move |a, r| {
+                    // only into the dialog that asked: it may have been closed, or reopened on another profile
+                    if !a.ui.get_pdlg() || a.editing_id.as_deref() != Some(&opened) {
+                        return;
+                    }
+                    match r {
+                        Ok(k) if !a.key_dirty => a.ui.set_p_key(ss(k)),
+                        Ok(_) => {}
+                        Err(e) => a.ui.set_p_err(ss(e.to_string())),
+                    }
                 },
             );
         }
@@ -1111,7 +1273,15 @@ impl App {
             }
         }
     }
+    /// A dialog's save came back: allow the next click, and pass the result on.
+    fn save_done<T>(&mut self, r: T) -> T {
+        self.saving = false;
+        r
+    }
     fn p_save(&mut self) {
+        if std::mem::replace(&mut self.saving, true) {
+            return; // a second click while the first save runs would create the profile twice
+        }
         self.ui.set_p_err(ss(""));
         let id = self.editing_id.clone();
         let (name, endpoint) = (self.ui.get_p_name().to_string(), self.ui.get_p_endpoint().to_string());
@@ -1120,7 +1290,7 @@ impl App {
         let switched = id.is_none() || id.as_deref() == Some(&self.active());
         bg(
             move |sv| sv.store.save_profile(id.as_deref(), &name, &endpoint, format, key.as_deref()),
-            move |a, r| match r {
+            move |a, r| match a.save_done(r) {
                 Ok(st) => {
                     a.ui.set_pdlg(false);
                     a.profile_saved(st, switched);
@@ -1187,6 +1357,7 @@ impl App {
             self.render_chat(); // shortcut: a reply that is still streaming keeps its old look until the chat is reopened
         }
         self.prefs_dirty = false;
+        self.focus_input(); // Settings held the focus; give it back to the message box
     }
     fn custom(&self) -> Value {
         let u = &self.ui;
@@ -1360,6 +1531,17 @@ fn saved_hist() -> bool {
     std::fs::read_to_string(ui_file()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).is_none_or(|v| v["hist"] != false)
 }
 
+/// Android: the clipboard refused a copy that was already reported as "Copied" (it happens later, on the Java UI thread).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn copy_failed() {
+    let _ = slint::invoke_from_event_loop(|| {
+        with(|a| {
+            a.ui.set_toast_shown(false);
+            a.show_error("Couldn't copy: the text is too large for the clipboard");
+        })
+    });
+}
+
 /// Builds the window and wires every callback. The caller runs the event loop.
 pub fn build() -> Result<AppWindow> {
     let ui = AppWindow::new()?;
@@ -1395,6 +1577,15 @@ pub fn build() -> Result<AppWindow> {
         toast_timer: Timer::default(),
         err_timer: Timer::default(),
         drops: vec![],
+        converting: 0,
+        checkpoint: None,
+        ck_base: None,
+        ck_every: Duration::from_secs(5),
+        ck_busy: false,
+        unsaved: vec![],
+        patch_id: 0,
+        models_gen: 0,
+        saving: false,
     };
     APP.with(|a| *a.borrow_mut() = Some(app));
 
@@ -1454,7 +1645,7 @@ pub fn build() -> Result<AppWindow> {
     });
     ui.on_attach(|| {
         platform::pick_files(|files| {
-            let _ = slint::invoke_from_event_loop(move || with(|a| a.attach(files)));
+            let _ = slint::invoke_from_event_loop(move || with(|a| a.attach(move || files)));
         })
     });
     ui.on_remove_pending(|i| {
@@ -1674,6 +1865,38 @@ pub fn self_test(done: impl FnOnce(Result<(), String>) + 'static, files: Vec<std
             },
         ),
         step(
+            "request",
+            |a| {
+                // what the mock actually received (serve.mjs lists it), not just what the app kept
+                let base = s(&a.settings, "endpoint").trim_end_matches('/').trim_end_matches("/v1").to_string();
+                *SENT.lock().unwrap() = None;
+                svc().rt.spawn(async move {
+                    let t = async { svc().http.get(format!("{base}/_requests")).send().await?.text().await }.await;
+                    *SENT.lock().unwrap() = Some(t.map_err(|e| e.to_string()));
+                });
+            },
+            move |_| {
+                let t = SENT.lock().unwrap().clone()?;
+                let reqs: Value = match t.and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(format!("couldn't read the mock's requests: {e}"))),
+                };
+                let Some(r) = reqs.as_array().and_then(|a| a.iter().rev().find(|r| r["path"] == "/v1/chat/completions")) else {
+                    return Some(Err("the mock got no chat request".into()));
+                };
+                let body = s(r, "body");
+                Some(if s(r, "auth") != format!("Bearer {KEY}") {
+                    Err(format!("auth header {:?}", s(r, "auth")))
+                } else if !body.contains("Say hi with `code`") || !body.contains("\"mock-model\"") {
+                    Err("the prompt or model wasn't in the request".into())
+                } else if n_files > 0 && !body.contains("data:image/png;base64,") {
+                    Err("the image wasn't in the request".into())
+                } else {
+                    Ok(())
+                })
+            },
+        ),
+        step(
             "stop",
             |a| {
                 a.ui.set_draft(ss("Stop me"));
@@ -1717,6 +1940,7 @@ pub fn self_test(done: impl FnOnce(Result<(), String>) + 'static, files: Vec<std
     ];
     run_steps(steps.into(), Box::new(done));
 }
+static SENT: Mutex<Option<Result<String, String>>> = Mutex::new(None); // the self-test's "request" step
 /// After installing over the old app (Android) or starting on its data: the saved key must still decrypt to `key` and the
 /// saved chats must be listed. Reads only; changes nothing.
 pub fn carry_over_test(key: String, done: impl FnOnce(Result<(), String>) + 'static) {
@@ -1801,8 +2025,31 @@ mod tests {
     }
 
     #[test]
+    fn unsaved_choices_stay_on_screen() {
+        // an older state comes back (model A) while the pick of B and a new effort are still queued
+        let mut set = json!({ "model": "A", "effort": "low", "noTools": false });
+        let unsaved = [(1, json!({ "effort": "high" })), (2, json!({ "model": "B", "noTools": true, "profileId": "p1" })), (3, json!({ "model": "C", "profileId": "p2" }))];
+        overlay_unsaved(&mut set, &unsaved, &json!("p1"));
+        assert_eq!(set, json!({ "model": "B", "effort": "high", "noTools": true })); // p2's pick doesn't apply to p1
+        let mut set = json!({ "model": "A" });
+        overlay_unsaved(&mut set, &[], &json!("p1"));
+        assert_eq!(set, json!({ "model": "A" }));
+    }
+
+    #[test]
+    fn checkpoints_slow_down_for_big_chats() {
+        let chat = json!([{ "content": "abc" }, { "content": [{ "type": "image_url", "image_url": { "url": "x".repeat(10) } }] }]);
+        assert_eq!(text_bytes(&chat), 3 + "image_url".len() + 10);
+        assert_eq!(checkpoint_every(0), Duration::from_secs(5));
+        assert_eq!(checkpoint_every(3_000_000), Duration::from_secs(20));
+        assert_eq!(checkpoint_every(500_000_000), Duration::from_secs(60));
+    }
+
+    #[test]
     fn user_text_parses() {
         assert_eq!(user_md("a `b*` c."), "a `b*` c\\.");
+        // the newline stays a line break: Slint's from_markdown starts a new paragraph at every soft break
+        assert_eq!(user_md("two\nlines"), "two\nlines");
         for t in ["plain", "a `b` c", "*not bold* [x](y) <u>", "two\nlines `x`", "unclosed `tick", "``"] {
             assert!(StyledText::from_markdown(&user_md(t)).is_ok(), "{t}");
         }

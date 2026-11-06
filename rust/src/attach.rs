@@ -25,12 +25,21 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+/// u64 math, so extreme dimensions can't overflow before the comparison.
+fn too_big(w: u32, h: u32) -> bool {
+    w as u64 * h as u64 > 100_000_000
+}
+
 /// An attached image as a data URL, sized for chat. The longest side becomes at most 2048 px, which is what the big
 /// vision APIs scale down to anyway, so a phone photo goes from megabytes to a few hundred KB. An image that already fits
 /// and is at most 2 MB is kept byte for byte, so screenshots stay sharp and small GIFs keep their animation.
 fn image_url(bytes: &[u8], mime: &str) -> Result<(String, u64), String> {
     let mut dec = ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| e.to_string())?.into_decoder().map_err(|e| e.to_string())?;
     let orientation = dec.orientation().ok();
+    let (w, h) = dec.dimensions();
+    if too_big(w, h) {
+        return Err("image is too large (over 100 megapixels)".into()); // decoding it first would exhaust memory
+    }
     let mut img = image::DynamicImage::from_decoder(dec).map_err(|e| e.to_string())?;
     if let Some(o) = orientation {
         img.apply_orientation(o); // the photo's EXIF rotation
@@ -79,8 +88,8 @@ pub fn attachment(name: &str, bytes: &[u8]) -> Result<(Attachment, Option<String
     let text = if is_pdf {
         pdf_text(bytes).map_err(|e| format!("{name}: {e}"))?
     } else {
-        // 4 bytes per character is the UTF-8 maximum, so this slice always holds more than MAX_TEXT characters
-        let t = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_TEXT * 4)]).into_owned();
+        // decode everything: cutting the byte slice first can split a character, and leading whitespace ate into the limit
+        let t = String::from_utf8_lossy(bytes).into_owned();
         if t.contains('\0') {
             return Err(format!("{name}: not a text file"));
         }
@@ -122,6 +131,17 @@ mod tests {
         let (a, n) = attachment("big.txt", big.as_bytes()).unwrap();
         assert!(matches!(a.kind, AttKind::Text(t) if t.ends_with("[…truncated]") && t.len() == MAX_TEXT + "\n[…truncated]".len()));
         assert!(n.unwrap().contains("200k"));
+        // leading whitespace no longer eats into the limit
+        let padded = " ".repeat(300_000) + "hello";
+        let (a, n) = attachment("pad.txt", padded.as_bytes()).unwrap();
+        assert_eq!((a.kind, n), (AttKind::Text("hello".into()), None));
+    }
+
+    #[test]
+    fn oversized_images_rejected_by_dimension() {
+        assert!(!too_big(10_000, 10_000));
+        assert!(too_big(10_000, 10_001));
+        assert!(too_big(u32::MAX, u32::MAX));
     }
 
     #[test]

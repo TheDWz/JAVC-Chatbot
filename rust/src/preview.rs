@@ -14,7 +14,7 @@ const BASE: &str = "http://javcsandbox.localhost";
 #[cfg(not(windows))]
 const BASE: &str = "javcsandbox://localhost";
 
-const OUTER: &str = r#"<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:transparent}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><iframe sandbox="allow-scripts" src="doc" title="Rich content"></iframe></body></html>"#;
+const OUTER: &str = r#"<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:transparent}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><iframe sandbox="allow-scripts allow-top-navigation-by-user-activation" src="doc" title="Rich content"></iframe></body></html>"#;
 
 /// Runs the preview window for the page saved in `file` (written by platform::preview, deleted here once read).
 pub fn run(file: &std::path::Path) -> anyhow::Result<()> {
@@ -27,8 +27,10 @@ pub fn run(file: &std::path::Path) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(file)?;
     let _ = std::fs::remove_file(file);
     let v: serde_json::Value = serde_json::from_str(&text)?;
+    // A clicked link that leaves the page navigates the top frame (the page's script sets target=_top, see
+    // shared::PAGE_JS), which the sandbox allows only from a click; scripts can't send the user anywhere.
     let doc = v["doc"].as_str().unwrap_or("").to_string();
-    let csp = v["csp"].as_str().unwrap_or("sandbox allow-scripts").to_string();
+    let csp = v["csp"].as_str().unwrap_or("sandbox allow-scripts").replacen("sandbox allow-scripts", "sandbox allow-scripts allow-top-navigation-by-user-activation", 1);
     let dark = doc.contains("color-scheme:dark");
 
     let event_loop = EventLoop::new();
@@ -52,25 +54,46 @@ pub fn run(file: &std::path::Path) -> anyhow::Result<()> {
                 .body(body.into_bytes().into())
                 .unwrap()
         })
-        .with_navigation_handler(move |url| {
-            if url.starts_with(BASE) {
-                return true;
-            }
-            external(&url);
-            false
-        })
         .with_new_window_req_handler(move |url, _features| {
             external(&url);
             wry::NewWindowResponse::Deny
         })
         .with_url(format!("{BASE}/"));
+    // WebView2 reports only top-frame navigations, so this sees clicked links but never a script moving the inner frame.
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.with_navigation_handler(move |url| {
+        if url.starts_with(BASE) {
+            return true;
+        }
+        external(&url);
+        false
+    });
     // shortcut: wry has no permission-request hook, so camera/mic/location prompts follow the webview's default
     // (WebKitGTK denies them without a handler; WebView2 asks the user); add one if wry gains it.
+    // WebKitGTK reports every frame's navigations, and wry's handler drops whether it came from a click: ask WebKit directly.
     #[cfg(target_os = "linux")]
     let _webview = {
         use tao::platform::unix::WindowExtUnix;
-        use wry::WebViewBuilderExtUnix;
-        builder.build_gtk(window.default_vbox().unwrap())?
+        use webkit2gtk::glib::prelude::Cast;
+        use webkit2gtk::{NavigationPolicyDecision, NavigationPolicyDecisionExt, PolicyDecisionExt, PolicyDecisionType, URIRequestExt, WebViewExt};
+        use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
+        let wv = builder.build_gtk(window.default_vbox().unwrap())?;
+        wv.webview().connect_decide_policy(move |_, decision, kind| {
+            if kind != PolicyDecisionType::NavigationAction {
+                return false;
+            }
+            let Some(action) = decision.dynamic_cast_ref::<NavigationPolicyDecision>().and_then(|d| d.navigation_action()) else { return false };
+            let Some(url) = action.request().and_then(|r| r.uri()) else { return false };
+            if url.starts_with(BASE) {
+                return false; // our own pages load as usual
+            }
+            if action.is_user_gesture() {
+                external(&url);
+            }
+            decision.ignore();
+            true
+        });
+        wv
     };
     #[cfg(not(target_os = "linux"))]
     let _webview = builder.build(&window)?;

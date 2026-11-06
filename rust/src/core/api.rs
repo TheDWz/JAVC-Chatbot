@@ -1,9 +1,7 @@
 //! Minimal OpenAI-compatible client (port of api.js): model list, streamed replies, reasoning support and Linkup web search.
 use anyhow::{Result, anyhow, bail};
-use regex::Regex;
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
-use std::sync::LazyLock;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -35,8 +33,16 @@ async fn or_stop<T>(cancel: &CancellationToken, f: impl Future<Output = Result<T
     }
 }
 
+/// An endpoint may carry a query (Azure-style `…/v1?api-version=2`), which must stay after the path we append.
+fn join_url(endpoint: &str, path: &str) -> String {
+    match endpoint.split_once('?') {
+        Some((base, query)) => format!("{}{path}?{query}", base.trim_end_matches('/')),
+        None => format!("{}{path}", endpoint.trim_end_matches('/')),
+    }
+}
+
 async fn call(http: &Client, endpoint: &str, key: &str, path: &str, body: Option<&Value>, cancel: &CancellationToken) -> Result<Response> {
-    let url = format!("{}{path}", endpoint.trim_end_matches('/'));
+    let url = join_url(endpoint, path);
     let mut req = match body {
         Some(b) => http.post(url).header("Content-Type", "application/json").body(b.to_string()),
         None => http.get(url).header("Content-Type", "application/json"),
@@ -83,8 +89,11 @@ fn model_info(m: &Value) -> ModelInfo {
     let sp = m.get("supported_parameters").and_then(Value::as_array);
     let tools = !sp.is_some_and(|sp| !sp.iter().any(|p| p == "tools"));
     if let Some(r) = m.get("reasoning").filter(|r| r.is_object()) {
-        let efforts = match r.get("supported_efforts").and_then(Value::as_array) {
-            Some(a) => Efforts::Levels(a.iter().filter_map(|x| x.as_str().map(String::from)).collect()),
+        // Some(empty) is never produced: a list with no string entries means "no levels", not "unknown"
+        let levels = || r.get("supported_efforts").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>());
+        let efforts = match levels() {
+            Some(l) if l.is_empty() => Efforts::None,
+            Some(l) => Efforts::Levels(l),
             None => Efforts::Unknown,
         };
         return ModelInfo {
@@ -110,9 +119,18 @@ pub async fn list_models_detailed(http: &Client, endpoint: &str, key: &str) -> R
 }
 
 // DeepSeek, Z.ai (GLM) and Moonshot (Kimi) turn thinking off with thinking:{type:'disabled'}, not effort 'none'.
-static THINKING_SWITCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)deepseek\.com|api\.z\.ai|bigmodel\.cn|moonshot\.(ai|cn)").unwrap());
+// Match only the hostname: a path that merely mentions the provider is a proxy, not the provider.
+fn host_is(endpoint: &str, domain: &str) -> bool {
+    url::Url::parse(endpoint).ok().and_then(|u| u.host_str().map(str::to_lowercase)).is_some_and(|h| h == domain || h.ends_with(&format!(".{domain}")))
+}
+fn thinking_host(endpoint: &str) -> bool {
+    ["deepseek.com", "api.z.ai", "bigmodel.cn", "moonshot.ai", "moonshot.cn"].iter().any(|d| host_is(endpoint, d))
+}
 pub fn thinking_switch(endpoint: &str) -> bool {
-    THINKING_SWITCH.is_match(endpoint)
+    thinking_host(endpoint)
+}
+fn openrouter_host(endpoint: &str) -> bool {
+    host_is(endpoint, "openrouter.ai")
 }
 
 /// Which request shape to use. A gateway whose model list carries OpenRouter-style `reasoning` metadata (meta)
@@ -121,7 +139,7 @@ fn resolve_format<'a>(format: &'a str, endpoint: &str, meta: bool) -> &'a str {
     if !format.is_empty() && format != "auto" {
         return format;
     }
-    if meta || endpoint.to_lowercase().contains("openrouter.ai") {
+    if meta || openrouter_host(endpoint) {
         return "openrouter";
     }
     if thinking_switch(endpoint) { "thinking" } else { "openai" }
@@ -135,10 +153,15 @@ pub fn reasoning_params(endpoint: &str, effort: &str, format: &str, meta: bool) 
         "openrouter" => json!({ "reasoning": { "effort": effort } }),
         "thinking" if effort == "none" => json!({ "thinking": { "type": "disabled" } }),
         // shortcut: Moonshot's thinking field isn't accepted by always-on models (k3), so only non-Moonshot gets an explicit enable; revisit if Kimi docs say otherwise
-        "thinking" if endpoint.to_lowercase().contains("moonshot") => json!({ "reasoning_effort": effort }),
+        "thinking" if host_is(endpoint, "moonshot.ai") || host_is(endpoint, "moonshot.cn") => json!({ "reasoning_effort": effort }),
         "thinking" => json!({ "reasoning_effort": effort, "thinking": { "type": "enabled" } }),
         _ => json!({ "reasoning_effort": effort }),
     }
+}
+
+/// Whether the round's reasoning must be echoed back: thinking providers, and any profile forced to the thinking format.
+pub fn echoes_reasoning(endpoint: &str, format: &str, meta: bool) -> bool {
+    thinking_switch(endpoint) || resolve_format(format, endpoint, meta) == "thinking"
 }
 
 /// Local R1-style models put reasoning in content as <think>…</think>. Only a block at the very start counts,
@@ -147,6 +170,7 @@ pub fn reasoning_params(endpoint: &str, effort: &str, format: &str, meta: bool) 
 pub struct ThinkSplitter {
     mode: u8, // 0 start, 1 think, 2 done
     buf: String,
+    after_close: bool, // </think> was consumed: the line breaks right after it belong to it, not to the answer
 }
 const OPEN: &str = "<think>";
 const CLOSE: &str = "</think>";
@@ -169,8 +193,9 @@ impl ThinkSplitter {
         if self.mode == 1 {
             if let Some(i) = self.buf.find(CLOSE) {
                 reasoning = self.buf[..i].to_string();
-                self.buf = self.buf[i + CLOSE.len()..].trim_start().to_string();
+                self.buf = self.buf[i + CLOSE.len()..].to_string();
                 self.mode = 2;
+                self.after_close = true;
             } else {
                 let mut keep = 0; // hold back a possible partial </think> at the end
                 if !flush {
@@ -187,12 +212,41 @@ impl ThinkSplitter {
                 return (r, String::new());
             }
         }
-        (reasoning, std::mem::take(&mut self.buf))
+        // strip only line breaks: the answer's own indentation (an indented code block, say) is content
+        let mut content = std::mem::take(&mut self.buf);
+        if self.after_close && content.trim_start_matches(['\r', '\n']).is_empty() {
+            content = String::new();
+        } else if self.after_close {
+            content = content.trim_start_matches(['\r', '\n']).to_string();
+            self.after_close = false;
+        }
+        (reasoning, content)
     }
 }
 
 fn pick_reasoning(o: &Value) -> &str {
     o.get("reasoning_content").and_then(Value::as_str).or_else(|| o.get("reasoning").and_then(Value::as_str)).unwrap_or("")
+}
+
+/// Folds one streamed `reasoning_details` item into `details` by its `index` (missing = 0): text and summary grow,
+/// every other field is overwritten by the newer value; an unknown index appends.
+fn merge_detail(details: &mut Vec<Value>, item: &Value) {
+    let idx = |v: &Value| v.get("index").and_then(Value::as_u64).unwrap_or(0);
+    let Some(slot) = details.iter_mut().find(|d| idx(d) == idx(item)) else {
+        details.push(item.clone());
+        return;
+    };
+    let Some(dst) = slot.as_object_mut() else {
+        *slot = item.clone(); // whatever was there wasn't mergeable
+        return;
+    };
+    for (k, v) in item.as_object().into_iter().flatten() {
+        let joined = matches!(k.as_str(), "text" | "summary")
+            && v.as_str().is_some()
+            && dst.get(k.as_str()).and_then(Value::as_str).is_some();
+        let merged = if joined { format!("{}{}", dst[k.as_str()].as_str().unwrap(), v.as_str().unwrap()).into() } else { v.clone() };
+        dst.insert(k.clone(), merged);
+    }
 }
 
 /// A piece of a reply as it streams in.
@@ -206,6 +260,8 @@ pub struct Delta {
 pub struct Reply {
     pub content: String,
     pub reasoning: String,
+    /// OpenRouter-style structured reasoning, needed by some models to continue after a tool call.
+    pub details: Vec<Value>,
     pub error: Option<String>,
     pub stopped: bool,
 }
@@ -226,10 +282,12 @@ const SEARCH_ROUNDS: usize = 4; // Linkup requests (and tool rounds) per reply; 
 pub struct Search {
     pub key: String,
     pub url: String,
+    /// Whether the provider needs the round's reasoning echoed back with its tool calls.
+    pub echo_reasoning: bool,
 }
 impl Search {
     pub fn linkup(key: String) -> Self {
-        Search { key, url: LINKUP_URL.into() }
+        Search { key, url: LINKUP_URL.into(), echo_reasoning: false }
     }
 }
 
@@ -311,7 +369,9 @@ async fn stream_once(
             bail!("{}", e.get("message").and_then(Value::as_str).map_or_else(|| e.to_string(), String::from));
         }
         let m = json.pointer("/choices/0/message").cloned().unwrap_or(json!({}));
-        em.emit(pick_reasoning(&m), m.get("content").and_then(Value::as_str).unwrap_or(""), true);
+        // content is null when the model refuses; the refusal text is the reply then
+        em.emit(pick_reasoning(&m), m.get("content").and_then(Value::as_str).or_else(|| m.get("refusal").and_then(Value::as_str)).unwrap_or(""), true);
+        em.out.details = m.get("reasoning_details").and_then(Value::as_array).cloned().unwrap_or_default();
         for c in m.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
             calls.push(json!({ "id": c.get("id").cloned().unwrap_or(json!("")), "type": "function",
                 "function": { "name": c.pointer("/function/name").and_then(Value::as_str).unwrap_or(""), "arguments": c.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("") } }));
@@ -320,22 +380,37 @@ async fn stream_once(
     }
 
     let mut by_index: Vec<Option<Value>> = vec![]; // streamed tool calls arrive in pieces: id and name first, then the arguments text
-    let mut handle = |line: &[u8], em: &mut Emitter| -> Result<bool> {
+    // what one line says: [DONE] ends the reply, a finish_reason only proves it ended on purpose
+    #[derive(PartialEq)]
+    enum End {
+        No,
+        Done,
+        Finish,
+    }
+    let mut handle = |line: &[u8], em: &mut Emitter| -> Result<End> {
         let line = String::from_utf8_lossy(line);
         let line = line.trim();
-        let Some(data) = line.strip_prefix("data:") else { return Ok(false) };
+        let Some(data) = line.strip_prefix("data:") else { return Ok(End::No) };
         let data = data.trim();
         if data == "[DONE]" {
-            return Ok(true);
+            return Ok(End::Done);
         }
-        let Ok(j) = serde_json::from_str::<Value>(data) else { return Ok(false) };
+        let Ok(j) = serde_json::from_str::<Value>(data) else { return Ok(End::No) };
         if let Some(e) = j.get("error").filter(|e| !e.is_null()) {
             bail!("Stream error: {}", e.get("message").and_then(Value::as_str).map_or_else(|| e.to_string(), String::from));
         }
+        let finish = if j.pointer("/choices/0/finish_reason").and_then(Value::as_str).is_some() { End::Finish } else { End::No };
         let d = j.pointer("/choices/0/delta").cloned().unwrap_or(json!({}));
-        em.emit(pick_reasoning(&d), d.get("content").and_then(Value::as_str).unwrap_or(""), false);
+        // content is null when the model refuses; the refusal text is the reply then
+        em.emit(pick_reasoning(&d), d.get("content").and_then(Value::as_str).or_else(|| d.get("refusal").and_then(Value::as_str)).unwrap_or(""), false);
+        for r in d.get("reasoning_details").and_then(Value::as_array).into_iter().flatten() {
+            merge_detail(&mut em.out.details, r);
+        }
         for t in d.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
             let i = t.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if i > 64 {
+                bail!("Bad tool call index from the provider"); // a hostile index would resize the Vec into memory exhaustion
+            }
             if by_index.len() <= i {
                 by_index.resize(i + 1, None);
             }
@@ -343,23 +418,24 @@ async fn stream_once(
             if let Some(id) = t.get("id").and_then(Value::as_str).filter(|x| !x.is_empty()) {
                 c["id"] = id.into();
             }
+            // names arrive either split ("web_" then "search") or repeated whole in every chunk
             if let Some(n) = t.pointer("/function/name").and_then(Value::as_str).filter(|x| !x.is_empty())
-                && c["function"]["name"] == ""
+                && c["function"]["name"] != *n
             {
-                c["function"]["name"] = n.into();
+                c["function"]["name"] = format!("{}{n}", c["function"]["name"].as_str().unwrap_or("")).into();
             }
             if let Some(a) = t.pointer("/function/arguments").and_then(Value::as_str) {
                 let cur = c["function"]["arguments"].as_str().unwrap_or("").to_string();
                 c["function"]["arguments"] = (cur + a).into();
             }
         }
-        Ok(false)
+        Ok(finish)
     };
     let mut buf: Vec<u8> = vec![];
     let mut cut: Option<Result<(), String>> = None; // Err(message) = broken, Ok = stopped
     let read: Result<()> = async {
-        let mut finished = false;
-        while !finished {
+        let (mut end, mut finished) = (End::No, false);
+        while end != End::Done {
             let chunk = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => bail!("Stopped"),
@@ -367,13 +443,19 @@ async fn stream_once(
             };
             let Some(chunk) = chunk else { break };
             buf.extend_from_slice(&chunk);
-            while !finished && let Some(i) = buf.iter().position(|b| *b == b'\n') {
+            while end != End::Done && let Some(i) = buf.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = buf.drain(..=i).collect();
-                finished = handle(&line[..line.len() - 1], &mut em)?;
+                end = handle(&line[..line.len() - 1], &mut em)?;
+                finished |= end == End::Finish;
             }
         }
-        if !finished && !buf.is_empty() {
-            handle(&std::mem::take(&mut buf), &mut em)?;
+        if end != End::Done && !buf.is_empty() {
+            end = handle(&std::mem::take(&mut buf), &mut em)?;
+            finished |= end == End::Finish;
+        }
+        // the body ended without [DONE] and without a finish_reason: the reply was cut off before the end
+        if end != End::Done && !finished {
+            bail!("The reply ended early");
         }
         Ok(())
     }
@@ -429,10 +511,13 @@ pub async fn chat_stream(
             total.stopped = out.stopped;
             return Ok(total);
         }
-        // Thinking-mode providers (DeepSeek, GLM, Kimi) reject the follow-up with a 400 unless the round's reasoning goes back with its tool calls
+        // Thinking providers (and any profile forced to the thinking format) reject the follow-up with a 400 unless the round's reasoning goes back with its tool calls
         let mut asst = json!({ "role": "assistant", "content": out.content, "tool_calls": calls });
-        if thinking_switch(endpoint) && !out.reasoning.is_empty() {
+        if search.echo_reasoning && !out.reasoning.is_empty() {
             asst["reasoning_content"] = out.reasoning.clone().into();
+        }
+        if !out.details.is_empty() {
+            asst["reasoning_details"] = out.details.clone().into(); // OpenRouter needs these to continue some models' tool calls
         }
         msgs.push(asst);
         for c in &calls {

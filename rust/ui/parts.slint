@@ -13,11 +13,22 @@ export component IconBtn inherits Rectangle {
     height: size;
     border-radius: 10px;
     background: ta.has-hover && enabled ? Theme.surface-2 : transparent;
+    border-width: fs.has-focus ? 2px : 0;
+    border-color: Theme.ring;
     opacity: enabled ? 1 : 0.45;
     accessible-role: button;
     accessible-label: tip;
     accessible-action-default => { if (enabled) { clicked(); } }
     Icon { d: icon; color: root.tint; }
+    // Tab reaches it and Space/Enter presses it; a click doesn't move focus (the composer keeps it)
+    fs := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(e) => {
+            if (e.text == " " || e.text == Key.Return) { root.clicked(); return accept; }
+            return reject;
+        }
+    }
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
@@ -36,8 +47,8 @@ export component Btn inherits Rectangle {
     min-width: hl.min-width;
     border-radius: 10px;
     background: primary ? Theme.grad : (ta.has-hover ? Theme.surface-2 : Theme.surface);
-    border-width: primary ? 0 : 1px;
-    border-color: danger ? Theme.err.with-alpha(0.4) : Theme.line;
+    border-width: fs.has-focus ? 2px : (primary ? 0 : 1px);
+    border-color: fs.has-focus ? Theme.ring : (danger ? Theme.err.with-alpha(0.4) : Theme.line);
     opacity: enabled ? 1 : 0.5;
     accessible-role: button;
     accessible-label: text;
@@ -56,6 +67,15 @@ export component Btn inherits Rectangle {
             color: primary ? white : (danger ? Theme.err : Theme.text);
         }
     }
+    // Tab reaches it and Space/Enter presses it; a click doesn't move focus (the composer keeps it)
+    fs := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(e) => {
+            if (e.text == " " || e.text == Key.Return) { root.clicked(); return accept; }
+            return reject;
+        }
+    }
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
@@ -72,8 +92,8 @@ export component Mini inherits Rectangle {
     min-width: hl.min-width;
     horizontal-stretch: 0;
     border-radius: 7px;
-    border-width: 1px;
-    border-color: Theme.line;
+    border-width: fs.has-focus ? 2px : 1px;
+    border-color: fs.has-focus ? Theme.ring : Theme.line;
     background: ta.has-hover ? Theme.surface-2 : transparent;
     accessible-role: button;
     accessible-label: text;
@@ -85,6 +105,15 @@ export component Mini inherits Rectangle {
         if icon != "": Icon { d: icon; width: 13px; height: 13px; y: (parent.height - self.height) / 2; color: Theme.muted; }
         Text { text: root.text; font-size: 12px; color: Theme.muted; vertical-alignment: center; }
     }
+    // Tab reaches it and Space/Enter presses it; a click doesn't move focus (the composer keeps it)
+    fs := FocusScope {
+        enabled: true;
+        focus-on-click: false;
+        key-pressed(e) => {
+            if (e.text == " " || e.text == Key.Return) { root.clicked(); return accept; }
+            return reject;
+        }
+    }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
 
@@ -95,13 +124,22 @@ export component Chip inherits Rectangle {
     height: 32px;
     min-width: t.min-width + 24px;
     border-radius: 16px;
-    border-width: 1px;
-    border-color: ta.has-hover ? Theme.ring : Theme.line;
+    border-width: fs.has-focus ? 2px : 1px;
+    border-color: ta.has-hover || fs.has-focus ? Theme.ring : Theme.line;
     background: Theme.surface;
     accessible-role: button;
     accessible-label: text;
     accessible-action-default => { clicked(); }
     t := Text { text: root.text; font-size: 13px; color: Theme.text; }
+    // Tab reaches it and Space/Enter presses it; a click doesn't move focus (the composer keeps it)
+    fs := FocusScope {
+        enabled: true;
+        focus-on-click: false;
+        key-pressed(e) => {
+            if (e.text == " " || e.text == Key.Return) { root.clicked(); return accept; }
+            return reject;
+        }
+    }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
 
@@ -132,8 +170,15 @@ export component Modal inherits Rectangle {
         drop-shadow-blur: 30px;
         drop-shadow-color: #00000060;
         clip: true;
-        body := VerticalLayout {
-            @children
+        // a form taller than the window (a phone with the keyboard up) scrolls instead of hiding its buttons
+        fl := Flickable {
+            content-width: self.width;
+            content-height: max(self.height, body.preferred-height);
+            body := VerticalLayout {
+                width: fl.content-width;
+                height: fl.content-height;
+                @children
+            }
         }
     }
 }

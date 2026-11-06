@@ -24,8 +24,8 @@ Slint window and does what needs the Android framework: Keystore, clipboard, fil
 picker, links) and `RichActivity` (the preview WebView). Gradle builds the Rust
 library with cargo-ndk for arm64-v8a and x86_64 before packaging.
 
-Needs JDK 17+, the Android SDK with platform 36 and NDK 28 (`ANDROID_HOME`,
-`ANDROID_NDK_HOME`), `cargo install cargo-ndk` and
+Needs JDK 21, the Android SDK with platform 36 and NDK 28 (`ANDROID_HOME`,
+`ANDROID_NDK_HOME`), `cargo install --locked cargo-ndk@4.1.2` and
 `rustup target add aarch64-linux-android x86_64-linux-android`. Then:
 
     cd android && ./gradlew assembleDebug    # or assembleRelease (from the repository root)
@@ -59,7 +59,8 @@ On Android, with an emulator running and a debug APK built:
     rust/selftest/android.sh android/app/build/outputs/apk/debug/app-debug.apk
 
 It starts the mock, points the app's profile at it, runs the self-test (launch
-extra `--es selftest 1`, result in `adb logcat -s javc`) and checks the back button.
+extra `--es selftest <path>` with `build/icon.png` copied onto the device as the attachment, result in
+`adb logcat -s javc`) and checks that Back leaves the app running.
 
 Debug builds only. Warning: the self-test saves a test API key into the profile it
 uses — don't point it at your real settings.
@@ -87,7 +88,7 @@ RPM, also from `rust/`:
 
     cargo generate-rpm -o ../dist
 
-CI does all of this in `.github/workflows/rust.yml`.
+CI does all of this in `.github/workflows/build.yml`.
 
 ## Known limits
 

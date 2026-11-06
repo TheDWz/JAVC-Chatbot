@@ -4,9 +4,9 @@ on:
   push:
     tags: ['v*']
     branches: [main]
-    paths: ['rust/**', 'android/**', '.github/workflows/build.yml']
+    paths: ['rust/**', 'android/**', 'build/**', '.github/workflows/build.yml']
   pull_request:
-    paths: ['rust/**', 'android/**', '.github/workflows/build.yml']
+    paths: ['rust/**', 'android/**', 'build/**', '.github/workflows/build.yml']
   workflow_dispatch:
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --manifest-path rust/Cargo.toml
       - name: Install packaging tools
-        run: cargo install --locked cargo-packager cargo-generate-rpm
+        run: cargo install --locked cargo-packager@0.11.8 cargo-generate-rpm@0.21.1
       - name: Build AppImage and deb (cargo-packager)
         working-directory: rust
         run: cargo packager --release --formats appimage,deb
@@ -92,7 +92,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --manifest-path rust/Cargo.toml
       - name: Install cargo-packager
-        run: cargo install --locked cargo-packager
+        run: cargo install --locked cargo-packager@0.11.8
       - name: Build NSIS installer (cargo-packager)
         working-directory: rust
         run: cargo packager --release --formats nsis
@@ -143,7 +143,8 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       - name: Name the APKs
         run: |
-          VERSION=$(grep -m1 '^version = ' rust/Cargo.toml | cut -d '"' -f2)
+          VERSION=$(cargo metadata --format-version 1 --no-deps --manifest-path rust/Cargo.toml \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk "dist/JAVC-Chatbot-$VERSION.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "dist/JAVC-Chatbot-$VERSION-debug.apk"

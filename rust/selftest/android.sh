@@ -21,9 +21,12 @@ adb shell am force-stop $PKG
 sed 's#http://127.0.0.1:18765/v1#http://10.0.2.2:18765/v1#' "$HERE/settings.json" > "${TMPDIR:-/tmp}/javc-settings.json"
 adb push "${TMPDIR:-/tmp}/javc-settings.json" /data/local/tmp/javc-settings.json >/dev/null
 adb shell "run-as $PKG sh -c 'mkdir -p files && cat > files/settings.json' < /data/local/tmp/javc-settings.json"
+# an image to attach, so the test covers image conversion too (the app can read its own files folder)
+adb push "$HERE/../../build/icon.png" /data/local/tmp/javc-icon.png >/dev/null
+adb shell "run-as $PKG sh -c 'cat > files/selftest.png' < /data/local/tmp/javc-icon.png"
 
 adb logcat -c
-adb shell am start -n $PKG/.MainActivity --es selftest 1
+adb shell am start -n $PKG/.MainActivity --es selftest /data/user/0/$PKG/files/selftest.png
 result=""
 for i in $(seq 1 120); do
   result=$(adb logcat -d -s javc:I | grep -o 'SELFTEST.*' | head -1 || true)
@@ -41,4 +44,6 @@ sleep 2
 top=$(adb shell dumpsys activity activities | grep -m1 topResumedActivity || true)
 [[ $top != *"$PKG/"* ]] || { echo "back button: the app is still in front ($top)"; exit 1; }
 [ "$(adb shell pidof $PKG)" = "$pid" ] || { echo "back button: the app was closed"; exit 1; }
+# ...and the activity itself is kept (a finished one would come back as a fresh start)
+adb shell dumpsys activity activities | grep -q "$PKG/.MainActivity" || { echo "back button: the activity was finished"; exit 1; }
 echo "back button OK"

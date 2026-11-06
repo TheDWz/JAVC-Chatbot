@@ -47,8 +47,12 @@ fn arr(v: &Value) -> Vec<Value> {
 pub fn migrate(raw: &Value) -> Value {
     let effort = |r: &Value| Value::String(s(r, "effort").to_string());
     if raw.get("version").and_then(Value::as_i64) == Some(2) && raw.get("profiles").is_some_and(Value::is_array) {
-        // an earlier version pre-created the four templates; drop the ones that never got a key
-        let profiles: Vec<Value> = arr(&raw["profiles"]).into_iter().filter(|p| !(TEMPLATES.iter().any(|t| t.id == s(p, "id")) && !has_key(p))).collect();
+        // an earlier version pre-created the four templates; drop the ones that never got a key — but keep a template
+        // the user configured anyway (a model chosen, or another endpoint such as a local server that needs no key)
+        let drop = |p: &Value| {
+            TEMPLATES.iter().find(|t| t.id == s(p, "id")).is_some_and(|t| !has_key(p) && s(p, "model").is_empty() && norm(s(p, "endpoint")) == norm(t.endpoint))
+        };
+        let profiles: Vec<Value> = arr(&raw["profiles"]).into_iter().filter(|p| !drop(p)).collect();
         let active = fallback_active(&profiles, s(raw, "activeId"));
         return finish_state(json!({ "version": 2, "activeId": active, "effort": effort(raw), "profiles": profiles }), raw);
     }
@@ -235,8 +239,10 @@ mod tests {
 
     #[test]
     fn v2_drops_seeded_templates_without_key() {
+        // seeded templates carried the template's own endpoint and an empty model
         let seed = |id: &str, k: bool| {
-            let mut p = json!({ "id": id, "name": id, "endpoint": format!("https://x/{id}"), "model": "", "format": "auto", "meta": false });
+            let ep = TEMPLATES.iter().find(|t| t.id == id).map_or_else(|| format!("https://x/{id}"), |t| t.endpoint.to_string());
+            let mut p = json!({ "id": id, "name": id, "endpoint": ep, "model": "", "format": "auto", "meta": false });
             if k {
                 p["keyEnc"] = "K".into();
             }
@@ -248,6 +254,20 @@ mod tests {
         assert_eq!(st["activeId"], "nanogpt");
         assert_eq!(st["effort"], "low");
         assert_eq!(migrate(&json!({ "version": 2, "activeId": "x", "profiles": [seed("openai", false)] }))["activeId"], "");
+    }
+
+    #[test]
+    fn v2_keeps_a_customized_template_without_key() {
+        let tpl = |id: &str| TEMPLATES.iter().find(|t| t.id == id).unwrap().endpoint;
+        // a model was chosen (a keyless local server, say)
+        let model_set = json!({ "id": "openai", "endpoint": tpl("openai"), "model": "local-llm", "format": "auto", "meta": false });
+        assert_eq!(ids(&migrate(&json!({ "version": 2, "profiles": [model_set] }))), ["openai"]);
+        // the endpoint was changed (trailing slash only counts as unchanged)
+        let moved = json!({ "id": "venice", "endpoint": "http://localhost:8080/v1", "model": "", "format": "auto", "meta": false });
+        assert_eq!(ids(&migrate(&json!({ "version": 2, "profiles": [moved] }))), ["venice"]);
+        let slashed = json!({ "id": "venice", "endpoint": format!("{}/", tpl("venice")), "model": "", "format": "auto", "meta": false });
+        let gone: Vec<String> = ids(&migrate(&json!({ "version": 2, "profiles": [slashed] })));
+        assert!(gone.is_empty());
     }
 
     #[test]

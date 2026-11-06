@@ -60,35 +60,50 @@ fn region_start(text: &str, i: usize) -> bool {
     sp <= 3 && tag_start_at(text, i + sp)
 }
 
-/// Byte ranges of fenced code blocks.
+/// Byte ranges of fenced code blocks. A fence can follow list markers ("- ```", "1. "); its closing fence
+/// may then be indented up to that column plus three spaces.
 fn fenced_ranges(text: &str) -> Vec<(usize, usize)> {
     let mut out = vec![];
-    let mut open: Option<(u8, usize, usize)> = None; // (char, len, start)
+    let mut open: Option<(u8, usize, usize, usize)> = None; // (char, len, start, max closing indent)
     let mut pos = 0;
     for line in text.split('\n') {
-        let sp = line.bytes().take(4).take_while(|c| *c == b' ').count();
-        let fence = (sp <= 3)
-            .then(|| {
-                let t = &line[sp..];
-                let ch = *t.as_bytes().first()?;
-                if ch != b'`' && ch != b'~' {
-                    return None;
-                }
-                let n = t.bytes().take_while(|c| *c == ch).count();
-                (n >= 3).then_some((ch, n, sp + n))
-            })
-            .flatten();
-        match (open, fence) {
-            (Some((ch, len, start)), Some((c, n, end))) if c == ch && n >= len && line[end..].trim().is_empty() => {
+        let b = line.as_bytes();
+        let sp = b.iter().take_while(|c| **c == b' ').count();
+        // one or more list markers ("- ", "* ", "+ ", "1. ", "10) ": up to 9 digits, as in CommonMark), each followed by a space
+        let (mut i, mut markers) = (sp, 0);
+        while let Some(after) = match b.get(i) {
+            Some(b'-' | b'*' | b'+') => Some(1),
+            Some(d) if d.is_ascii_digit() => {
+                let n = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+                (n <= 9 && matches!(b.get(i + n), Some(b'.') | Some(b')'))).then_some(n + 1)
+            }
+            _ => None,
+        } && b.get(i + after).is_some_and(|c| *c == b' ')
+        {
+            i += after + 1;
+            i += b[i..].iter().take_while(|c| **c == b' ').count();
+            markers += 1;
+        }
+        let run = |from: usize| -> Option<(u8, usize)> {
+            let ch = *b.get(from)?;
+            (ch == b'`' || ch == b'~').then(|| (ch, b[from..].iter().take_while(|c| **c == ch).count()))
+        };
+        if let Some((ch, len, start, max_sp)) = open {
+            if markers == 0 && sp <= max_sp
+                && let Some((_, n)) = run(sp).filter(|&(f, n)| f == ch && n >= len)
+                && line[sp + n..].trim().is_empty()
+            {
                 out.push((start, pos + line.len()));
                 open = None;
             }
-            (None, Some((c, n, _))) => open = Some((c, n, pos)),
-            _ => {}
+        } else if sp <= 3
+            && let Some((c, n)) = run(i).filter(|&(_, n)| n >= 3)
+        {
+            open = Some((c, n, pos, if markers > 0 { i + 3 } else { 3 }));
         }
         pos += line.len() + 1;
     }
-    if let Some((_, _, start)) = open {
+    if let Some((_, _, start, _)) = open {
         out.push((start, text.len()));
     }
     out
@@ -96,7 +111,8 @@ fn fenced_ranges(text: &str) -> Vec<(usize, usize)> {
 
 /// Index just after the HTML block that starts at `start`. Directly following blocks (style, markup, script) are one page. An unclosed block runs to the end.
 fn region_end(text: &str, start: usize) -> usize {
-    let mut depth = 0usize;
+    // an omitted end tag (<div><p>x</div>) must close there, so nesting is tracked by name, not by count
+    let mut stack: Vec<String> = vec![];
     let mut pos = start;
     while let Some(m) = TAG.captures_at(text, pos) {
         let whole = m.get(0).unwrap();
@@ -108,7 +124,9 @@ fn region_end(text: &str, start: usize) -> usize {
         let name = m[2].to_ascii_lowercase();
         let self_closing = m[3].trim_end().ends_with('/');
         if close {
-            depth = depth.saturating_sub(1);
+            if let Some(i) = stack.iter().rposition(|n| *n == name) {
+                stack.truncate(i); // pop through the nearest matching open tag; an unmatched close is ignored
+            }
         } else if RAW.contains(&name.as_str()) && !self_closing {
             let end = Regex::new(&format!(r"(?i)</{name}\b[^>]*>")).unwrap();
             match end.find_at(text, pos) {
@@ -116,9 +134,9 @@ fn region_end(text: &str, start: usize) -> usize {
                 None => return text.len(),
             }
         } else if !VOID.contains(&name.as_str()) && !self_closing {
-            depth += 1;
+            stack.push(name);
         }
-        if depth > 0 {
+        if !stack.is_empty() {
             continue;
         }
         let here = pos;
@@ -172,7 +190,10 @@ pub fn safe_color(c: &str) -> &str {
     static OK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_#(),.\s%/-]{1,60}$").unwrap());
     if OK.is_match(c) { c } else { "#888" }
 }
-pub const RESIZE: &str = r#"(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()"#;
+/// The page's own script: reports its height to the parent, and sends a clicked link that leaves the page to the top
+/// frame, the only navigation every platform's webview reports (the sandbox allows it only from a click). Links within
+/// the page (#section) stay in place.
+pub const PAGE_JS: &str = r#"document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("a[href]");if(!a)return;const u=new URL(a.href,location.href);if(u.protocol+u.host!==location.protocol+location.host)a.target="_top"},true);(()=>{const p=()=>parent.postMessage({richHeight:Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,document.body.scrollHeight))},"*");const o=new ResizeObserver(p);o.observe(document.documentElement);o.observe(document.body);addEventListener("load",p);p()})()"#;
 fn sha(s: &str) -> String {
     format!("'sha256-{}'", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(s.as_bytes())))
 }
@@ -188,14 +209,14 @@ pub fn rich_doc(html: &str, color: &str, scheme: &str, css: bool, js: bool) -> (
         safe_color(color)
     );
     let doc = format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="{s}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>{style}</style></head><body>{html}<script>{RESIZE}</script></body></html>"#
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="{s}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>{style}</style></head><body>{html}<script>{PAGE_JS}</script></body></html>"#
     );
     let mut csp = vec!["sandbox allow-scripts".to_string()];
     if !css {
         csp.push(format!("style-src {}", sha(&style)));
     }
     if !js {
-        csp.push(format!("script-src {}; frame-src 'none'; object-src 'none'", sha(RESIZE)));
+        csp.push(format!("script-src {}; frame-src 'none'; object-src 'none'", sha(PAGE_JS)));
     }
     (doc, csp.join("; "))
 }
@@ -430,6 +451,24 @@ mod tests {
         assert_eq!(kinds("<pre>x</pre>"), ["html"]);
         assert_eq!(kinds("<preview>x</preview>"), ["md"]);
         assert!(split_rich("").is_empty());
+    }
+
+    #[test]
+    fn omitted_end_tags_close_at_their_own_close() {
+        // <p> and the second <li> are never closed: the answer after the block must stay Markdown
+        assert_eq!(kinds("<div><p>x</div>\n\nSome **md**"), ["html", "md"]);
+        assert_eq!(kinds("<ul><li>a<li>b</ul>\n\nSome **md**"), ["html", "md"]);
+    }
+
+    #[test]
+    fn fences_after_list_markers_hold_their_html() {
+        assert_eq!(kinds("- Example:\n- ```html\n  <div>x</div>\n  ```\n"), ["md"]);
+        assert_eq!(kinds("10. ```html\n    <div>x</div>\n    ```\n"), ["md"]);
+        assert_eq!(kinds("0) ```html\n   <div>x</div>\n   ```\n"), ["md"]);
+        assert_eq!(kinds("1. ```\n   <div>x</div>\n   ```\n\ntail"), ["md"]);
+        assert_eq!(kinds("  * ```js\n    <div>x</div>\n    ```\n"), ["md"]);
+        // the fence must be the line's content, not just anywhere in it
+        assert_eq!(kinds("- see ```html``` inline\n\n<div>live</div>"), ["md", "html"]);
     }
 
     #[test]

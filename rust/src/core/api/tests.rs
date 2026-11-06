@@ -208,6 +208,75 @@ fn reasoning_params_per_endpoint() {
     assert_eq!(reasoning_params(gw, "low", "openai", true), json!({ "reasoning_effort": "low" }));
 }
 
+#[test]
+fn provider_detection_looks_only_at_the_host() {
+    // a path that mentions the provider is a proxy, and a look-alike domain isn't the provider either
+    for not in ["https://proxy.example/deepseek.com/v1", "https://deepseek.com.evil.example/v1", "https://evil.example/?x=moonshot.ai"] {
+        assert!(!thinking_switch(not), "{not}");
+    }
+    for yes in [
+        "https://api.deepseek.com/v1",
+        "https://api.z.ai/api/paas/v4",
+        "https://bigmodel.cn/api/paas/v4",
+        "https://api.bigmodel.cn/v1",
+        "https://api.moonshot.ai/v1",
+        "https://api.moonshot.cn/v1",
+    ] {
+        assert!(thinking_switch(yes), "{yes}");
+    }
+    assert_eq!(resolve_format("", "https://openrouter.ai/api/v1", false), "openrouter");
+    assert_eq!(resolve_format("", "https://notopenrouter.ai/v1", false), "openai");
+    assert_eq!(resolve_format("", "https://proxy.example/openrouter.ai/v1", false), "openai");
+    // Moonshot: only the real host gets thinking-shaped params at all (the path can no longer trigger it)
+    assert_eq!(reasoning_params("https://proxy.example/moonshot/v1", "max", "", false), json!({ "reasoning_effort": "max" }));
+    assert_eq!(reasoning_params("https://api.moonshot.cn/v1", "low", "", false), json!({ "reasoning_effort": "low" }));
+}
+
+#[test]
+fn echoes_reasoning_covers_forced_thinking_format() {
+    assert!(echoes_reasoning("https://api.deepseek.com/v1", "openai", false)); // thinking host
+    assert!(echoes_reasoning("https://gw.example/v1", "thinking", false)); // a gateway forced to the thinking shape
+    assert!(!echoes_reasoning("https://gw.example/v1", "auto", false));
+    assert!(!echoes_reasoning("https://api.openai.com/v1", "openai", false));
+    assert!(!echoes_reasoning("https://gw.example/v1", "", true)); // openrouter-style meta isn't the thinking shape
+}
+
+#[test]
+fn join_url_keeps_the_endpoint_query() {
+    assert_eq!(join_url("https://h/v1?api-version=2", "/models"), "https://h/v1/models?api-version=2");
+    assert_eq!(join_url("https://h/v1/?api-version=2", "/models"), "https://h/v1/models?api-version=2");
+    assert_eq!(join_url("https://h/v1/", "/models"), "https://h/v1/models");
+    assert_eq!(join_url("https://h/v1", "/chat/completions"), "https://h/v1/chat/completions");
+}
+
+#[tokio::test]
+async fn endpoint_query_survives_a_request() {
+    let m = mock(|_| Answer::Full(200, "application/json", json!({ "data": [] }).to_string())).await;
+    list_models_detailed(&Client::new(), &format!("{}/v1?api-version=2", m.url), "").await.unwrap();
+    assert_eq!(m.reqs.lock().unwrap()[0].path, "/v1/models?api-version=2");
+}
+
+#[test]
+fn model_info_efforts_are_never_an_empty_list() {
+    let mi = |v: Value| model_info(&v).efforts;
+    assert_eq!(mi(json!({ "id": "a", "reasoning": { "supported_efforts": [] } })), Efforts::None);
+    assert_eq!(mi(json!({ "id": "b", "reasoning": { "supported_efforts": [1, true, null] } })), Efforts::None);
+    assert_eq!(mi(json!({ "id": "c", "reasoning": {} })), Efforts::Unknown);
+    assert_eq!(mi(json!({ "id": "d", "reasoning": { "supported_efforts": ["low", 2] } })), Efforts::Levels(vec!["low".into()]));
+}
+
+#[test]
+fn think_close_strips_only_line_breaks_even_across_chunks() {
+    assert_eq!(ThinkSplitter::default().push("<think>r</think>\n\n    code", true), ("r".into(), "    code".into()));
+    let mut s = ThinkSplitter::default();
+    assert_eq!(s.push("<think>r</think>", false), ("r".into(), "".into()));
+    assert_eq!(s.push("\n\n    code", true), ("".into(), "    code".into()));
+    // line breaks split over chunks are stripped the same way
+    let mut s = ThinkSplitter::default();
+    s.push("<think>r</think>\n", false);
+    assert_eq!(s.push("\n    code", true), ("".into(), "    code".into()));
+}
+
 #[tokio::test]
 async fn streams_reasoning_and_content_deltas() {
     let m = mock(|_| sse(frames(&[json!({ "reasoning_content": "Let me " }), json!({ "reasoning_content": "think." }), json!({ "reasoning": " More." }), json!({ "content": "Hello" }), json!({ "content": " wörld" })]))).await;
@@ -287,7 +356,7 @@ async fn no_content_204_is_fine_for_models() {
 async fn search_mock(replies: Vec<Answer>, linkup: impl Fn() -> Answer + Send + Sync + 'static) -> (Mock, Search) {
     let q = Mutex::new(VecDeque::from(replies));
     let m = mock(move |r| if r.path == "/linkup" { linkup() } else { q.lock().unwrap().pop_front().expect("no reply left") }).await;
-    let s = Search { key: "lk-1".into(), url: format!("{}/linkup", m.url) };
+    let s = Search { key: "lk-1".into(), url: format!("{}/linkup", m.url), echo_reasoning: false };
     (m, s)
 }
 fn chats(m: &Mock) -> Vec<Value> {
@@ -370,13 +439,12 @@ async fn search_stop_while_linkup_in_flight() {
 }
 
 #[tokio::test]
-async fn search_reasoning_goes_back_only_on_thinking_providers() {
-    for (thinking, expected) in [(true, Some("plan the search")), (false, None)] {
+async fn search_reasoning_goes_back_only_when_echoed() {
+    for (echo, expected) in [(true, Some("plan the search")), (false, None)] {
         let call = format!("data: {}\n\n", json!({ "choices": [{ "delta": { "reasoning_content": "plan the search" } }] })) + &one_call("{\"query\":\"q\"}");
-        let (m, s) = search_mock(vec![sse(call), sse(frames(&[json!({ "content": "done" })]))], linkup_ok(json!([]))).await;
-        // the endpoint's host decides; route a deepseek-looking path to the mock (the regex matches anywhere in the URL)
-        let ep = if thinking { format!("{}/deepseek.com", m.url) } else { m.url.clone() };
-        run(&m.url, Some(&ep), json!({}), Some(&s), &CancellationToken::new()).await.out.unwrap();
+        let (m, mut s) = search_mock(vec![sse(call), sse(frames(&[json!({ "content": "done" })]))], linkup_ok(json!([]))).await;
+        s.echo_reasoning = echo; // the app sets this from echoes_reasoning(); the host alone no longer decides
+        run(&m.url, None, json!({}), Some(&s), &CancellationToken::new()).await.out.unwrap();
         assert_eq!(chats(&m)[1]["messages"][1].get("reasoning_content").and_then(Value::as_str), expected);
     }
 }
@@ -405,4 +473,90 @@ async fn search_non_streaming_reply_with_tool_calls() {
     let (m, s) = search_mock(vec![Answer::Full(200, "application/json", first), Answer::Full(200, "application/json", second)], linkup_ok(json!([]))).await;
     assert_eq!(run(&m.url, None, json!({}), Some(&s), &CancellationToken::new()).await.out.unwrap().content, "done");
     assert_eq!(chats(&m)[1]["messages"].as_array().unwrap().last().unwrap()["content"], "No results.");
+}
+
+#[tokio::test]
+async fn absurd_tool_call_index_is_rejected() {
+    let m = mock(|_| sse(tool_frames(&[json!([{ "index": 999_999, "function": { "name": "web_search", "arguments": "{}" } }])]))).await;
+    let e = simple(&m.url).await.out.unwrap_err().to_string();
+    assert!(e.contains("Bad tool call index"), "{e}");
+    // one past the boundary is fine: a stream can legally carry 65 tool calls
+    let ok = json!([{ "index": 64, "id": "c", "function": { "name": "web_search", "arguments": "{\"query\":\"q\"}" } }]);
+    let (m, s) = search_mock(vec![sse(tool_frames(&[ok])), sse(frames(&[json!({ "content": "done" })]))], linkup_ok(json!([]))).await;
+    assert_eq!(run(&m.url, None, json!({}), Some(&s), &CancellationToken::new()).await.out.unwrap().content, "done");
+    assert_eq!(chats(&m)[1]["messages"][1]["tool_calls"][0]["id"], "c");
+}
+
+#[tokio::test]
+async fn refusal_text_used_when_content_is_missing() {
+    let m = mock(|_| Answer::Full(200, "application/json", json!({ "choices": [{ "message": { "refusal": "I can't" } }] }).to_string())).await;
+    assert_eq!(simple(&m.url).await.out.unwrap().content, "I can't");
+    let m = mock(|_| sse(frames(&[json!({ "content": null, "refusal": "won't" })]))).await;
+    assert_eq!(simple(&m.url).await.out.unwrap().content, "won't");
+    // real content still wins
+    let m = mock(|_| sse(frames(&[json!({ "content": "hi", "refusal": "no" })]))).await;
+    assert_eq!(simple(&m.url).await.out.unwrap().content, "hi");
+}
+
+#[tokio::test]
+async fn stream_ending_without_done_or_finish_reason_was_cut() {
+    let text = frames(&[json!({ "content": "Hi" })]).replace("data: [DONE]\n\n", "");
+    let m = mock(move |_| Answer::Sse { text: text.clone(), cut: false }).await;
+    let out = simple(&m.url).await.out.unwrap();
+    assert_eq!((out.content.as_str(), out.error.as_deref()), ("Hi", Some("The reply ended early")));
+    // nothing arrived: an error, not an empty reply
+    let m = mock(|_| Answer::Sse { text: String::new(), cut: false }).await;
+    assert!(simple(&m.url).await.out.unwrap_err().to_string().contains("ended early"));
+    // a finish_reason proves the reply ended on purpose, even without [DONE]
+    let done = format!("data: {}\n\n", json!({ "choices": [{ "delta": { "content": "ok" }, "finish_reason": "stop" }] }));
+    let m = mock(move |_| Answer::Sse { text: done.clone(), cut: false }).await;
+    let out = simple(&m.url).await.out.unwrap();
+    assert_eq!((out.content.as_str(), out.error), ("ok", None));
+}
+
+#[tokio::test]
+async fn streamed_tool_names_assemble_and_repeats_dont_double() {
+    for (name, pieces) in [("web_search", ["web_", "search"]), ("web_search", ["web_search", "web_search"])] {
+        let (m, s) = search_mock(
+            vec![sse(tool_frames(&pieces.iter().map(|p| json!([{ "index": 0, "id": "c1", "function": { "name": p } }])).collect::<Vec<_>>())), sse(frames(&[json!({ "content": "done" })]))],
+            linkup_ok(json!([])),
+        )
+        .await;
+        run(&m.url, None, json!({}), Some(&s), &CancellationToken::new()).await.out.unwrap();
+        assert_eq!(chats(&m)[1]["messages"][1]["tool_calls"][0]["function"]["name"], name);
+    }
+}
+
+#[tokio::test]
+async fn streamed_reasoning_details_merge_by_index() {
+    let one = |d: Value| format!("data: {}\n\n", json!({ "choices": [{ "delta": d }] }));
+    let text = one(json!({ "reasoning_details": [{ "index": 0, "type": "text", "text": "Le" }] }))
+        + &one(json!({ "reasoning_details": [{ "index": 0, "text": "t me" }, { "index": 1, "type": "summary", "summary": "S" }] }))
+        + &one(json!({ "reasoning_details": [{ "index": 1, "summary": "o far" }, { "index": 3, "text": "appended" }] }))
+        + "data: [DONE]\n\n";
+    let m = mock(move |_| Answer::Sse { text: text.clone(), cut: false }).await;
+    let out = simple(&m.url).await.out.unwrap();
+    assert_eq!(
+        out.details,
+        vec![
+            json!({ "index": 0, "type": "text", "text": "Let me" }),
+            json!({ "index": 1, "type": "summary", "summary": "So far" }),
+            json!({ "index": 3, "text": "appended" }),
+        ]
+    );
+    // the plain-JSON path takes the array as is
+    let msg = json!({ "choices": [{ "message": { "content": "hi", "reasoning_details": [{ "type": "text", "text": "r" }] } }] }).to_string();
+    let m = mock(move |_| Answer::Full(200, "application/json", msg.clone())).await;
+    assert_eq!(simple(&m.url).await.out.unwrap().details, vec![json!({ "type": "text", "text": "r" })]);
+}
+
+#[tokio::test]
+async fn reasoning_details_go_back_with_tool_calls() {
+    let one = |d: Value| format!("data: {}\n\n", json!({ "choices": [{ "delta": d }] }));
+    let first = one(json!({ "reasoning_details": [{ "index": 0, "type": "text", "text": "plan" }], "reasoning_content": "plan" })) + &one_call("{\"query\":\"q\"}");
+    let (m, s) = search_mock(vec![sse(first), sse(frames(&[json!({ "content": "done" })]))], linkup_ok(json!([]))).await;
+    run(&m.url, None, json!({}), Some(&s), &CancellationToken::new()).await.out.unwrap();
+    let asst = &chats(&m)[1]["messages"][1];
+    assert_eq!(asst["reasoning_details"][0], json!({ "index": 0, "type": "text", "text": "plan" }));
+    assert!(asst.get("reasoning_content").is_none()); // the mock gateway doesn't echo reasoning_content
 }
