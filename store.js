@@ -74,11 +74,11 @@ module.exports = ({ io, crypto }) => {
     takeNotice() { const n = notice; notice = ''; return n; },
     get: serial(async () => withFlags(await read())),
     /** Flat view of the active profile, used by chat and model fetching. */
-    load: serial(async () => {
+    load: serial(async ({ search: wantSearch = false } = {}) => {
       const st = await read(), p = st.profiles.find((x) => x.id === st.activeId);
       if (!p) throw new Error('No profile yet. Use the new-profile button to add one.');
-      // the search key is only read when search is on, so a locked keyring can't break chats that don't use it
-      const search = st.search.enabled && hasKey(st.search) ? { key: await keyOf(st.search, 'search key') } : null;
+      // the search key is only decrypted when the caller will search, so a locked keyring can't break model refresh or chats without search
+      const search = wantSearch && st.search.enabled && hasKey(st.search) ? { key: await keyOf(st.search, 'search key') } : null;
       return { endpoint: p.endpoint, model: p.model || '', effort: st.effort || '', format: p.format || 'auto', meta: !!p.meta, key: await keyOf(p), search };
     }),
     /** The Linkup API key, or '' when none is saved. */
@@ -103,6 +103,7 @@ module.exports = ({ io, crypto }) => {
       if (patch.render && typeof patch.render === 'object') for (const k of Lib.RENDER_KEYS) if (typeof patch.render[k] === 'boolean') st.render = { ...st.render, [k]: patch.render[k] };
       const theme = Lib.cleanTheme(patch.theme); if (theme) st.theme = theme;
       const own = {}; for (const k of ['model', 'meta']) if (patch[k] !== undefined) own[k] = patch[k];
+      if (typeof patch.noTools === 'boolean') own.noTools = patch.noTools; // whether the profile's current model is known to lack tool support
       if (Object.keys(own).length && st.activeId) st = profiles.upsert(st, { id: st.activeId, ...own }); // never create a profile from a patch
       return commit(st);
     }),

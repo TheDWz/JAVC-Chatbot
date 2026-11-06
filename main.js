@@ -55,7 +55,7 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   running.set(id, ctl); // before any await, so Stop works from the first moment
   const onDelta = (d) => { if (!e.sender.isDestroyed()) e.sender.send('chat:delta', id, d); };
   try {
-    const s = await store.load();
+    const s = await store.load({ search: !!opts?.search });
     return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), onDelta, undefined, ctl.signal, opts?.search ? s.search : null);
   } finally { running.delete(id); }
 });

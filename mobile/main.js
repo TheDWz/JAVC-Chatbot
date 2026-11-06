@@ -44,7 +44,7 @@ window.api = {
   async chat(messages, onDelta, opts) {
     const ctl = (current = new AbortController());
     try {
-      const s = await store.load();
+      const s = await store.load({ search: !!opts?.search });
       return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), (d) => onDelta?.(d), nativeFetch, ctl.signal, opts?.search ? s.search : null); // Linkup goes through nativeFetch too
     } finally { if (current === ctl) current = null; }
   },

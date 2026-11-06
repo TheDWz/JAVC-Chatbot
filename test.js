@@ -769,15 +769,57 @@ test('web search: after the round cap the model must answer (tool_choice none), 
   assert.strictEqual(out.content, '');
 });
 
-test('web search: bad tool arguments are reported to the model; Stop during a search stops the reply', async () => {
-  const chats = [];
+test('web search: bad tool arguments are reported to the model and never reach Linkup', async () => {
+  const chats = [], hits = [];
   const replies = [toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{oops' } }]]), frames([{ content: 'ok' }])];
-  const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch(replies, linkupOk([])), undefined, { key: 'lk' });
+  const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch(replies, linkupOk([]), chats, hits), undefined, { key: 'lk' });
   assert.strictEqual(out.content, 'ok');
+  assert.strictEqual(chats[1].messages[0].tool_calls[0].id, 'c');
+  assert.deepStrictEqual(chats[1].messages[1], { role: 'tool', tool_call_id: 'c', content: 'Error: call web_search with a JSON object like {"query": "..."}.' });
+  assert.strictEqual(hits.length, 0);
+});
+
+test('web search: Stop while a Linkup request is in flight cancels it and stops the reply', async () => {
   const ctl = new AbortController();
-  const hang = (url, opts) => (url.startsWith('https://api.linkup.so') ? new Promise((_, no) => (opts.signal.aborted ? no(new Error('fetch failed')) : opts.signal.addEventListener('abort', () => no(new Error('fetch failed'))))) : sse(toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]))(url, opts));
-  const run = chatStream('http://x', 'k', 'm', [], {}, (d) => { if (d.reasoning.startsWith('Searching')) ctl.abort(); }, hang, ctl.signal, { key: 'lk' });
-  await assert.rejects(run, /Stopped/);
+  let listening; const registered = new Promise((ok) => { listening = ok; });
+  const f = (url, opts) => (url.startsWith('https://api.linkup.so')
+    ? new Promise((_, no) => { opts.signal.addEventListener('abort', () => no(new Error('fetch failed'))); listening(); }) // pending until aborted
+    : sse(toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]))(url, opts));
+  const run = chatStream('http://x', 'k', 'm', [], {}, () => {}, f, ctl.signal, { key: 'lk' });
+  const settled = assert.rejects(run, /Stopped/);
+  await registered; // the request is now pending, not merely about to start
+  ctl.abort();
+  await settled;
+});
+
+test('web search: reasoning_content goes back with tool calls only on thinking-mode providers', async () => {
+  const call = () => toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]).replace('data: {"choices"', `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'plan the search' } }] })}\n\ndata: {"choices"`);
+  for (const [endpoint, expected] of [['https://api.deepseek.com/v1', 'plan the search'], ['https://api.openai.com/v1', undefined]]) {
+    const chats = [];
+    await chatStream(endpoint, 'k', 'm', [], {}, () => {}, searchFetch([call(), frames([{ content: 'done' }])], linkupOk([]), chats), undefined, { key: 'lk' });
+    assert.strictEqual(chats[1].messages[0].reasoning_content, expected, endpoint);
+  }
+});
+
+test('web search: at most four Linkup requests per reply, even with parallel calls; extra calls get a limit message', async () => {
+  const chats = [], hits = [];
+  const two = toolFrames([[{ index: 0, id: 'a', function: { name: 'web_search', arguments: '{"query":"one"}' } }, { index: 1, id: 'b', function: { name: 'web_search', arguments: '{"query":"two"}' } }]]);
+  const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch([two, two, two, frames([{ content: 'ok' }])], linkupOk([]), chats, hits), undefined, { key: 'lk' });
+  assert.strictEqual(out.content, 'ok');
+  assert.strictEqual(hits.length, 4); // 3 rounds x 2 calls = 6 requested
+  const tools = chats[3].messages.filter((m) => m.role === 'tool');
+  assert.strictEqual(tools.length, 6);
+  assert.deepStrictEqual(tools.slice(4).map((m) => m.content), ['Search limit reached. Answer with what you already have.', 'Search limit reached. Answer with what you already have.']);
+});
+
+test('web search: the "model has no tools" flag is remembered per profile, booleans only', async () => {
+  const { dir, store } = tmpStore();
+  await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' });
+  assert.strictEqual((await store.get()).profiles[0].noTools, false);
+  assert.strictEqual((await store.patch({ model: 'm', noTools: true })).profiles[0].noTools, true);
+  assert.strictEqual((await store.patch({ noTools: 'yes' })).profiles[0].noTools, true); // not a boolean: ignored
+  assert.strictEqual((await store.patch({ noTools: false })).profiles[0].noTools, false);
+  fs.rmSync(dir, { recursive: true });
 });
 
 test('web search: a non-streaming reply with message.tool_calls works too', async () => {
@@ -799,21 +841,23 @@ test('web search settings: off by default, key encrypted and never exposed, keep
   const { dir, file, store } = tmpStore();
   assert.deepStrictEqual((await store.get()).search, { enabled: false, hasKey: false });
   await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' });
-  assert.strictEqual((await store.load()).search, null);
+  assert.strictEqual((await store.load({ search: true })).search, null);
   const v = await store.saveSearch({ enabled: true, key: 'lk-1' });
   assert.deepStrictEqual(v.search, { enabled: true, hasKey: true });
   assert.ok(!JSON.stringify(v).includes('lk-1') && !JSON.stringify(await store.get()).includes('lk-1'));
   assert.ok(!fs.readFileSync(file, 'utf8').includes('lk-1')); // stored encrypted
-  assert.strictEqual(await store.searchKey(), 'lk-1'); assert.strictEqual((await store.load()).search.key, 'lk-1');
+  assert.strictEqual(await store.searchKey(), 'lk-1'); assert.strictEqual((await store.load({ search: true })).search.key, 'lk-1');
+  assert.strictEqual((await store.load()).search, null); // not asked for: not decrypted
   await store.saveSearch({ enabled: false }); // no `key` field: the stored key stays
-  assert.strictEqual(await store.searchKey(), 'lk-1'); assert.strictEqual((await store.load()).search, null);
+  assert.strictEqual(await store.searchKey(), 'lk-1'); assert.strictEqual((await store.load({ search: true })).search, null);
   await store.patch({ effort: 'low', theme: { id: 'rose' } }); assert.strictEqual((await store.get()).search.hasKey, true); // other saves don't drop it
   const raw = JSON.parse(fs.readFileSync(file, 'utf8')); raw.search = { enabled: true, keyPlain: 'lk-9' }; fs.writeFileSync(file, JSON.stringify(raw));
   assert.strictEqual(await store.searchKey(), 'lk-9');
   assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).search.keyEnc); assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).search.keyPlain, undefined);
   await store.saveSearch({ key: '' }); assert.strictEqual(await store.searchKey(), ''); assert.strictEqual((await store.get()).search.hasKey, false);
   await store.saveSearch({ enabled: true, key: 'lk-2' });
-  const broken = makeStore({ io: makeDisk(dir), crypto: { ...rot, dec: () => { throw new Error('locked'); } } });
-  await assert.rejects(broken.load(), /Couldn't read the saved search key/);
+  const broken = makeStore({ io: makeDisk(dir), crypto: { ...rot, dec: (b) => { if (b === rot.enc('lk-2')) throw new Error('locked'); return rot.dec(b); } } }); // only the search key is unreadable
+  await assert.rejects(broken.load({ search: true }), /Couldn't read the saved search key/);
+  assert.strictEqual((await broken.load()).key, 'sk-1'); // model refresh and chats without search still work
   fs.rmSync(dir, { recursive: true });
 });

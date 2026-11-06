@@ -97,7 +97,7 @@ const SEARCH_TOOL = { type: 'function', function: {
   description: 'Search the web for current information, recent events or facts you are unsure about. Returns titles, URLs and page excerpts.',
   parameters: { type: 'object', properties: { query: { type: 'string', description: 'A natural-language search query' } }, required: ['query'] },
 } };
-const SEARCH_ROUNDS = 4; // searches per reply; after that the model must answer
+const SEARCH_ROUNDS = 4; // Linkup requests (and tool rounds) per reply; after that the model must answer
 
 async function linkupSearch(key, q, fetchFn = fetch, signal) {
   let res;
@@ -184,6 +184,7 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
 async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search) {
   if (!search) return streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []);
   const total = { content: '', reasoning: '' }, msgs = [...messages];
+  let searches = 0; // Linkup requests so far in this reply, across rounds and parallel calls
   const add = (r, c) => { total.reasoning += r; total.content += c; };
   for (let round = 0; ; round++) {
     const final = round >= SEARCH_ROUNDS, calls = [];
@@ -192,12 +193,15 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
       .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
     add(out.reasoning, out.content);
     if (out.error || out.stopped || final || !calls.length) return { ...total, ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) };
-    msgs.push({ role: 'assistant', content: out.content, tool_calls: calls });
+    // Thinking-mode providers (DeepSeek, GLM, Kimi) reject the follow-up with a 400 unless the round's reasoning goes back with its tool calls
+    msgs.push({ role: 'assistant', content: out.content, tool_calls: calls, ...(THINKING_SWITCH.test(endpoint) && out.reasoning && { reasoning_content: out.reasoning }) });
     for (const c of calls) {
       let q = '', result;
       try { q = String(JSON.parse(c.function.arguments || '{}').query || '').trim(); } catch {}
       if (c.function.name !== 'web_search' || !q) result = 'Error: call web_search with a JSON object like {"query": "..."}.';
+      else if (searches >= SEARCH_ROUNDS) result = 'Search limit reached. Answer with what you already have.';
       else {
+        searches++;
         const note = `Searching the web: ${q}\n`;
         add(note, ''); onDelta({ reasoning: note, content: '' });
         try { result = await linkupSearch(search.key, q, fetchFn, signal); }
