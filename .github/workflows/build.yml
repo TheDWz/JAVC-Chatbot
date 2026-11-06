@@ -23,8 +23,8 @@ jobs:
             artifacts: dist/*.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -34,7 +34,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npx electron-builder ${{ matrix.target }} --publish never
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: javc-chatbot-${{ runner.os }}
           path: ${{ matrix.artifacts }}
@@ -45,16 +45,16 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: 1 # the Android build doesn't need Electron itself
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5 # not v6: it changed its license terms
       - run: npm ci
       - run: npm test
       - name: Release signing key
@@ -83,7 +83,7 @@ jobs:
             !dist/*-debug.apk
           archive: false
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: javc-chatbot-Android-debug
           path: dist/*-debug.apk
@@ -99,13 +99,13 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: 1
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci && npm install --no-save playwright@1.64.1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: javc-chatbot-Android-debug
           path: apk
@@ -122,7 +122,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: node mobile/smoke/android.mjs apk/*.apk
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: android-smoke
