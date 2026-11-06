@@ -26,7 +26,7 @@ homepage = "https://github.com/TheDWz/JAVC-Chatbot"
 formats = ["appimage", "deb", "nsis"]
 
 [deb]
-depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libxkbcommon-x11-0"]
 
 [nsis]
 installer-mode = "currentUser"

@@ -19,6 +19,7 @@ assets = [
 [package.metadata.generate-rpm.requires]
 "webkit2gtk4.1" = "*"
 gtk3 = "*"
+libxkbcommon-x11 = "*" # winit loads it at run time for X11 keyboard input
 
 [lib]
 name = "javc"
