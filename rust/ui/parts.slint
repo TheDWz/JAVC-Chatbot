@@ -1,0 +1,228 @@
+// Small building blocks shared by the window and the dialogs.
+import { Theme, Icon, Icons } from "theme.slint";
+import { LineEdit } from "std-widgets.slint";
+
+export component IconBtn inherits Rectangle {
+    in property <string> icon;
+    in property <string> tip;
+    in property <bool> enabled: true;
+    in property <color> tint: Theme.text;
+    in property <length> size: 34px;
+    callback clicked();
+    width: size;
+    height: size;
+    border-radius: 10px;
+    background: ta.has-hover && enabled ? Theme.surface-2 : transparent;
+    opacity: enabled ? 1 : 0.45;
+    accessible-role: button;
+    accessible-label: tip;
+    accessible-action-default => { if (enabled) { clicked(); } }
+    Icon { d: icon; color: root.tint; }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    in property <string> icon;
+    callback clicked();
+    height: 36px;
+    min-width: hl.min-width;
+    border-radius: 10px;
+    background: primary ? Theme.grad : (ta.has-hover ? Theme.surface-2 : Theme.surface);
+    border-width: primary ? 0 : 1px;
+    border-color: danger ? Theme.err.with-alpha(0.4) : Theme.line;
+    opacity: enabled ? 1 : 0.5;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-action-default => { if (enabled) { clicked(); } }
+    hl := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 8px;
+        alignment: center;
+        if icon != "": Icon { d: icon; y: (parent.height - self.height) / 2; color: primary ? white : Theme.text; }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-weight: 600;
+            font-size: 14px;
+            color: primary ? white : (danger ? Theme.err : Theme.text);
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// A small text button inside code blocks and replies ("Copy", "Preview").
+export component Mini inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    callback clicked();
+    height: 26px;
+    min-width: hl.min-width;
+    horizontal-stretch: 0;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: Theme.line;
+    background: ta.has-hover ? Theme.surface-2 : transparent;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-action-default => { clicked(); }
+    hl := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
+        if icon != "": Icon { d: icon; width: 13px; height: 13px; y: (parent.height - self.height) / 2; color: Theme.muted; }
+        Text { text: root.text; font-size: 12px; color: Theme.muted; vertical-alignment: center; }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+/// A clickable suggestion or template chip.
+export component Chip inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 32px;
+    min-width: t.min-width + 24px;
+    border-radius: 16px;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.ring : Theme.line;
+    background: Theme.surface;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-action-default => { clicked(); }
+    t := Text { text: root.text; font-size: 13px; color: Theme.text; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+/// A labelled form field.
+export component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> hint;
+    spacing: 6px;
+    Text { text: label; font-size: 13px; font-weight: 600; color: Theme.muted; }
+    @children
+    if hint != "": Text { text: hint; font-size: 12px; color: Theme.faint; wrap: word-wrap; }
+}
+
+/// A modal card on a dimmed backdrop. Clicking the backdrop does nothing (like a <dialog>).
+export component Modal inherits Rectangle {
+    in property <length> card-width: 480px;
+    background: #05060aa0;
+    TouchArea { }
+    card := Rectangle {
+        width: min(root.width - 32px, card-width);
+        height: min(root.height - 32px, body.preferred-height);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.surface;
+        border-radius: 18px;
+        border-width: 1px;
+        border-color: Theme.line;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000060;
+        clip: true;
+        body := VerticalLayout {
+            @children
+        }
+    }
+}
+
+export component ErrText inherits Text {
+    color: Theme.err;
+    font-size: 13px;
+    wrap: word-wrap;
+}
+
+/// A password-style field with a show button.
+export component SecretEdit inherits HorizontalLayout {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in-out property <bool> shown;
+    callback edited(string);
+    spacing: 6px;
+    le := LineEdit {
+        text <=> root.text;
+        placeholder-text: placeholder;
+        input-type: shown ? InputType.text : InputType.password;
+        edited(t) => { root.edited(t); }
+    }
+    IconBtn { icon: Icons.eye; tip: shown ? "Hide key" : "Show key"; y: (parent.height - self.height) / 2; clicked => { shown = !shown; } }
+    public function focus-it() { le.focus(); }
+}
+
+/// Saturation/value square plus a hue strip: a color picker for the custom theme.
+export component ColorPicker inherits VerticalLayout {
+    in-out property <float> h; // 0-360
+    in-out property <float> s; // 0-1
+    in-out property <float> v; // 0-1
+    callback moved(); // live preview while dragging
+    callback committed(); // released: save
+    spacing: 8px;
+    sq := Rectangle {
+        height: 120px;
+        border-radius: 10px;
+        clip: true;
+        background: @linear-gradient(90deg, white 0%, hsv(h, 1, 1) 100%);
+        Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
+        Rectangle {
+            x: s * parent.width - 7px;
+            y: (1 - v) * parent.height - 7px;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            border-width: 2px;
+            border-color: white;
+            drop-shadow-blur: 2px;
+            drop-shadow-color: #0008;
+        }
+        TouchArea {
+            mouse-cursor: crosshair;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    s = clamp(self.mouse-x / parent.width, 0, 1);
+                    v = clamp(1 - self.mouse-y / parent.height, 0, 1);
+                    root.moved();
+                }
+                if (e.kind == PointerEventKind.up) { root.committed(); }
+            }
+            moved => {
+                s = clamp(self.mouse-x / parent.width, 0, 1);
+                v = clamp(1 - self.mouse-y / parent.height, 0, 1);
+                root.moved();
+            }
+        }
+    }
+    Rectangle {
+        height: 14px;
+        border-radius: 7px;
+        background: @linear-gradient(90deg, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+        Rectangle {
+            x: h / 360 * parent.width - 7px;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            border-width: 2px;
+            border-color: white;
+            background: hsv(h, 1, 1);
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) { h = clamp(self.mouse-x / parent.width, 0, 0.9999) * 360; root.moved(); }
+                if (e.kind == PointerEventKind.up) { root.committed(); }
+            }
+            moved => { h = clamp(self.mouse-x / parent.width, 0, 0.9999) * 360; root.moved(); }
+        }
+    }
+}

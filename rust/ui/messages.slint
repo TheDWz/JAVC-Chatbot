@@ -1,0 +1,236 @@
+// The chat log: user bubbles, assistant replies (with their reasoning), and a reply's Markdown blocks.
+import { Theme, Icon, Icons } from "theme.slint";
+import { Mini } from "parts.slint";
+
+export struct TableRow { cells: [styled-text] }
+// kind: 0 prose, 1 code, 2 table, 3 rule, 4 html (sandboxed preview), 5 plain text
+export struct MdBlock {
+    kind: int,
+    text: styled-text,
+    plain: string,
+    level: int,
+    indent: int,
+    bullet: string,
+    quote: int,
+    lang: string,
+    code: string,
+    preview: bool,
+    rows: [TableRow],
+    cols: int,
+}
+export struct AttChip { name: string, size: string, is-image: bool, img: image }
+export struct Msg {
+    user: bool,
+    text: string, // user text, the streaming reply, or the finished reply's raw text (for Copy)
+    styled: styled-text, // the user's text with `inline code`
+    chips: [AttChip],
+    blocks: [MdBlock],
+    reasoning: string,
+    no-reasoning: bool, // the placeholder line is shown instead of real reasoning
+    open: bool,
+    thinking: bool,
+    waiting: bool, // nothing has arrived yet: typing dots
+    done: bool,
+}
+
+export global Chat {
+    callback copy(string);
+    callback open-url(string);
+    callback preview(string);
+    callback toggle-reasoning(int);
+}
+
+// Wrapping text gets an explicit width everywhere below: Slint measures an unsized wrapping text at its one-line width,
+// so the log's scroll height would miss every wrapped line.
+component CodeBox inherits Rectangle {
+    in property <length> w;
+    in property <string> lang;
+    in property <string> code;
+    in property <bool> preview;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.line;
+    background: Theme.code-bg;
+    clip: true;
+    VerticalLayout {
+        Rectangle {
+            height: 34px;
+            background: Theme.surface-2;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 6px;
+                spacing: 6px;
+                Text { text: lang == "" ? "code" : lang; font-size: 12px; color: Theme.muted; vertical-alignment: center; horizontal-stretch: 1; }
+                if preview: Mini { y: 4px; text: "Preview"; icon: Icons.expand; clicked => { Chat.preview(code); } }
+                Mini { y: 4px; text: "Copy"; icon: Icons.copy; clicked => { Chat.copy(code); } }
+            }
+        }
+        HorizontalLayout {
+            padding: 12px;
+            Text {
+                width: root.w - 26px;
+                text: code;
+                font-family: "monospace";
+                font-size: 13px;
+                color: Theme.text;
+                wrap: char-wrap;
+            }
+        }
+    }
+}
+
+component Block inherits VerticalLayout {
+    in property <MdBlock> b;
+    in property <length> w;
+    if b.kind == 0: HorizontalLayout {
+        padding-left: b.indent * 20px + (b.quote > 0 ? 14px : 0);
+        spacing: 8px;
+        if b.quote > 0: Rectangle { width: 3px; background: Theme.line; border-radius: 2px; }
+        if b.bullet != "": Text { text: b.bullet; color: Theme.muted; width: 24px; font-size: 15px; }
+        StyledText {
+            width: root.w - b.indent * 20px - (b.quote > 0 ? 25px : 0px) - (b.bullet != "" ? 32px : 0px);
+            text: b.text;
+            default-color: b.quote > 0 ? Theme.muted : Theme.text;
+            default-font-size: b.level == 1 ? 22px : b.level == 2 ? 19px : b.level == 3 ? 17px : 15px;
+            link-color: Theme.accent-text;
+            link-clicked(url) => { Chat.open-url(url); }
+        }
+    }
+    if b.kind == 1 || b.kind == 4: CodeBox { w: root.w; lang: b.lang; code: b.code; preview: b.preview; }
+    if b.kind == 2: Rectangle {
+        border-width: 1px;
+        border-color: Theme.line;
+        border-radius: 10px;
+        clip: true;
+        VerticalLayout {
+            for row[ri] in b.rows: Rectangle {
+                background: ri == 0 ? Theme.surface-2 : transparent;
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 12px;
+                    for cell in row.cells: StyledText {
+                        width: (root.w - 18px - (b.cols - 1) * 12px) / max(1, b.cols);
+                        text: cell;
+                        default-color: Theme.text;
+                        default-font-size: 14px;
+                        link-color: Theme.accent-text;
+                        link-clicked(url) => { Chat.open-url(url); }
+                    }
+                }
+                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line-soft; }
+            }
+        }
+    }
+    if b.kind == 3: Rectangle { height: 1px; background: Theme.line; }
+    if b.kind == 5: Text { width: root.w; text: b.plain; color: Theme.text; font-size: 15px; wrap: word-wrap; }
+}
+
+component Dots inherits HorizontalLayout {
+    spacing: 4px;
+    property <duration> t: animation-tick();
+    for i in 3: Rectangle {
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.muted;
+        opacity: 0.35 + 0.65 * abs(sin((t / 1ms / 400 + i * 0.6) * 1rad));
+    }
+}
+
+export component Message inherits HorizontalLayout {
+    in property <Msg> m;
+    in property <int> index;
+    in property <length> max-bubble;
+    in property <length> col-width; // the reply column's width, given from outside so wrapped text measures its real height
+    spacing: 12px;
+    alignment: m.user ? end : stretch;
+    if m.user: VerticalLayout {
+        spacing: 6px;
+        alignment: end;
+        for c in m.chips: HorizontalLayout {
+            alignment: end;
+            Rectangle {
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.line;
+                background: Theme.surface;
+                clip: true;
+                if c.is-image: Image { source: c.img; width: 180px; height: self.width * self.source.height / max(1, self.source.width) * 1px / 1px; image-fit: contain; }
+                if !c.is-image: HorizontalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    Icon { d: Icons.file; color: Theme.muted; }
+                    Text { text: c.name; color: Theme.text; font-size: 13px; overflow: elide; max-width: 220px; }
+                    Text { text: c.size; color: Theme.faint; font-size: 12px; }
+                }
+            }
+        }
+        if m.text != "": HorizontalLayout {
+            alignment: end;
+            Rectangle {
+                background: Theme.grad;
+                border-radius: 16px;
+                max-width: root.max-bubble;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    padding-top: 9px;
+                    padding-bottom: 9px;
+                    ut := StyledText { width: min(root.max-bubble - 28px, self.preferred-width); text: m.styled; default-color: white; default-font-size: 15px; link-color: white; }
+                }
+            }
+        }
+    }
+    if !m.user: av := Rectangle {
+        width: 32px;
+        height: 32px;
+        border-radius: 10px;
+        background: Theme.grad;
+        drop-shadow-blur: m.thinking ? 14px : 0;
+        drop-shadow-color: Theme.a1.with-alpha(0.5);
+        accessible-role: button;
+        accessible-label: m.open ? "Hide reasoning" : "Show reasoning";
+        accessible-action-default => { Chat.toggle-reasoning(index); }
+        Icon { d: Icons.logo; color: white; width: 22px; height: 22px; stroke-width: 1.8px; }
+        TouchArea { mouse-cursor: pointer; clicked => { Chat.toggle-reasoning(index); } }
+    }
+    if !m.user: VerticalLayout {
+        spacing: 10px;
+        width: root.col-width;
+        alignment: start;
+        if m.open: Rectangle {
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.line;
+            background: Theme.surface;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+                Text { text: "Reasoning"; font-size: 12px; font-weight: 600; color: Theme.muted; }
+                Flickable {
+                    height: min(rt.preferred-height, 260px);
+                    content-height: rt.preferred-height;
+                    content-y: min(0, self.height - self.content-height); // keeps to the latest reasoning
+                    rt := Text {
+                        width: parent.width;
+                        text: m.reasoning;
+                        wrap: word-wrap;
+                        font-size: 13px;
+                        color: m.no-reasoning ? Theme.faint : Theme.muted;
+                        font-italic: m.no-reasoning;
+                    }
+                }
+            }
+        }
+        if m.waiting: Dots { padding-top: 12px; }
+        if !m.done && !m.waiting: Text { width: root.col-width; text: m.text; color: Theme.text; font-size: 15px; wrap: word-wrap; }
+        if m.done: VerticalLayout {
+            spacing: 12px;
+            for b in m.blocks: Block { b: b; w: root.col-width; }
+        }
+        if m.done: HorizontalLayout {
+            alignment: start;
+            Mini { text: "Copy"; icon: Icons.copy; clicked => { Chat.copy(m.text); } }
+        }
+    }
+}

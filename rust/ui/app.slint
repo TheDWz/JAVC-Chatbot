@@ -1,0 +1,915 @@
+// The window: history, header, chat log, composer, and every dialog and panel (index.html).
+import { Theme, Icon, Icons } from "theme.slint";
+import { IconBtn, Btn, Mini, Chip, Field, Modal, ErrText, SecretEdit, ColorPicker } from "parts.slint";
+import { Message, Msg, MdBlock, TableRow, AttChip, Chat } from "messages.slint";
+import { LineEdit, TextEdit, ComboBox, ScrollView, Switch, Palette } from "std-widgets.slint";
+
+export { Theme, Chat, Msg, MdBlock, TableRow, AttChip }
+
+export struct ChatRow { group: string, id: string, title: string, active: bool, armed: bool }
+export struct ModelRow { id: string, current: bool }
+export struct Level { value: string, name: string, desc: string, model-default: bool, checked: bool }
+export struct ThemeTile { id: string, name: string, a1: color, a2: color, checked: bool }
+export struct ProfileRow { id: string, name: string, sub: string, active: bool }
+export struct Opt { id: string, name: string }
+
+/// Which empty-state action the line under "How can I help?" offers: 0 none, 1 create a profile, 2 open settings.
+export component AppWindow inherits Window {
+    title: "JAVC Chatbot";
+    icon: @image-url("../../build/icon.png");
+    preferred-width: 900px;
+    preferred-height: 700px;
+    min-width: 340px;
+    min-height: 420px;
+    background: Theme.bg;
+    default-font-size: 15px;
+
+    out property <bool> narrow: self.width <= 720px;
+    out property <bool> phone: self.width <= 600px;
+    property <length> main-w: self.width - (hist-open && !narrow ? 264px : 0px); // the width beside the history column
+    in property <bool> touch; // Android: Enter makes a new line, the send button sends
+    in property <bool> busy;
+
+    // ---- header ----
+    in property <[string]> profile-names;
+    in-out property <int> profile-index;
+    in property <bool> has-profiles;
+    in property <string> model-label: "No model selected";
+    in property <bool> fetching;
+    callback profile-selected(int);
+    callback add-profile();
+    callback fetch-models();
+    callback new-chat();
+    callback gear();
+
+    // ---- history ----
+    in-out property <bool> hist-open: true;
+    in property <[string]> persona-names;
+    in-out property <int> persona-index;
+    in property <[ChatRow]> chats;
+    callback hist-toggled(bool);
+    callback persona-selected(int);
+    callback new-persona();
+    callback edit-persona();
+    callback open-chat(string);
+    callback delete-chat(string);
+    callback dup-chat(string);
+
+    // ---- log ----
+    in property <[Msg]> msgs;
+    in property <string> empty-line;
+    in property <int> empty-action;
+    callback empty-clicked();
+
+    // ---- composer ----
+    in-out property <string> draft;
+    in property <string> placeholder: "Message JAVC Chatbot…";
+    in property <[AttChip]> pending;
+    in property <bool> dropping;
+    callback send();
+    callback stop();
+    callback attach();
+    callback remove-pending(int);
+
+    // ---- model picker ----
+    in-out property <bool> model-pop;
+    in-out property <string> model-query;
+    in property <[ModelRow]> model-rows;
+    in property <string> model-note; // shown instead of rows when there are none
+    in property <string> model-count;
+    in-out property <int> model-hi;
+    callback open-model-pop();
+    callback model-query-edited(string);
+    callback pick-model(string);
+    callback model-key(string); // "down" "up" "enter"
+
+    // ---- reasoning panel ----
+    in-out property <bool> side-open;
+    in property <string> side-model;
+    in property <[Level]> levels;
+    in property <string> side-note;
+    callback pick-level(string);
+
+    // ---- toasts ----
+    in property <string> toast-text;
+    in property <bool> toast-shown;
+    in property <string> err-text;
+    in property <bool> err-shown;
+
+    // ---- profile dialog ----
+    in-out property <bool> pdlg;
+    in property <bool> pdlg-new;
+    in property <[Opt]> templates;
+    in-out property <string> p-name;
+    in-out property <string> p-endpoint;
+    in-out property <string> p-key;
+    in-out property <bool> p-key-shown;
+    in-out property <int> p-format;
+    in property <string> p-err;
+    in property <bool> p-del-armed;
+    callback p-template(int);
+    callback p-key-edited();
+    callback p-save();
+    callback p-delete();
+
+    // ---- persona dialog ----
+    in-out property <bool> psdlg;
+    in property <bool> ps-new;
+    in property <bool> ps-deletable;
+    in-out property <string> ps-name;
+    in-out property <string> ps-user;
+    in-out property <string> ps-bot;
+    in-out property <string> ps-prompt;
+    in property <string> ps-err;
+    in property <bool> ps-del-armed;
+    callback ps-save();
+    callback ps-delete();
+
+    // ---- duplicate dialog ----
+    in-out property <bool> dupdlg;
+    in property <string> dup-sub;
+    in-out property <int> dup-index;
+    in property <string> dup-err;
+    callback dup-confirm(int);
+
+    // ---- settings ----
+    in-out property <bool> prefs;
+    in-out property <int> pane; // 0 appearance, 1 profiles, 2 search, 3 replies
+    in property <[ThemeTile]> themes;
+    in-out property <float> c1h;
+    in-out property <float> c1s;
+    in-out property <float> c1v;
+    in-out property <float> c2h;
+    in-out property <float> c2s;
+    in-out property <float> c2v;
+    in property <[ProfileRow]> profiles;
+    in-out property <bool> search-on;
+    in-out property <string> search-key;
+    in-out property <bool> search-key-shown;
+    in property <string> search-note;
+    in property <string> search-err;
+    in-out property <bool> r-markdown;
+    in-out property <bool> r-html;
+    in-out property <bool> r-css;
+    in-out property <bool> r-js;
+    callback pick-theme(string);
+    callback custom-moved();
+    callback custom-committed();
+    callback edit-profile(string);
+    callback search-toggled(bool);
+    callback search-key-edited();
+    callback search-save();
+    callback render-toggled(string, bool);
+    callback prefs-closed();
+
+    /// Escape (and the Android back button) closes whatever is on top; false when nothing was open.
+    callback close-top() -> bool;
+
+    public function scroll-bottom() { log.content-y = min(0px, log.visible-height - log.content-height); }
+    public function light-mode() { Palette.color-scheme = ColorScheme.light; } // the self-test tour's look at the light theme
+    public function near-bottom() -> bool { return log.content-height + log.content-y - log.visible-height < 40px; }
+    public function focus-input() { if (!touch) { input.focus(); } }
+
+    keys := FocusScope {
+        // explicit sizes keep the window's own size out of the layouts below (no binding loop through root.width)
+        // Android draws the window under the status and gesture bars; keep the UI inside the safe area (0 on desktop)
+        x: root.safe-area-insets.left; y: root.safe-area-insets.top;
+        width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+        // ...and above the on-screen keyboard while it is shown, so the composer stays visible
+        height: (root.virtual-keyboard-size.height > 0 ? min(root.virtual-keyboard-position.y, root.height - root.safe-area-insets.bottom)
+            : root.height - root.safe-area-insets.bottom) - root.safe-area-insets.top;
+        capture-key-pressed(e) => {
+            if (e.text == Key.Escape && root.close-top()) { return accept; }
+            // Android: Back always stays ours; with nothing open close-top sends the app to the background instead of closing it
+            if (e.text == Key.Back) { if (!e.repeat) { root.close-top(); } return accept; }
+            return reject;
+        }
+        // the release too, or Android handles it as a second Back
+        capture-key-released(e) => { return e.text == Key.Back ? accept : reject; }
+
+        HorizontalLayout {
+            width: parent.width;
+            height: parent.height;
+            // ---- chat history (a side column; an overlay on narrow windows) ----
+            if hist-open && !narrow: Rectangle { width: 264px; } // the history column itself is drawn below, over this space
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                // ---- header ----
+                // phones (≤600px) put profile and model on a second row, like the JS app; elsewhere they sit in `slot`
+                header := Rectangle {
+                    height: phone ? 100px : 56px;
+                    background: Theme.bg;
+                    property <length> cw: min(170px, max(110px, main-w / 6));
+                    property <length> mw: min(240px, max(120px, main-w / 4));
+                    property <length> avail: self.width - 24px - 34px - 16px; // the phone row, less the refresh button
+                    HorizontalLayout {
+                        y: 0; height: 56px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+                        IconBtn { icon: Icons.hist; tip: "Chat history"; y: 11px; clicked => { hist-open = !hist-open; root.hist-toggled(hist-open); } }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            horizontal-stretch: 1;
+                            alignment: start;
+                            Rectangle {
+                                width: 26px; height: 26px; y: 15px;
+                                border-radius: 8px;
+                                background: Theme.grad;
+                                Icon { d: Icons.logo; color: white; width: 22px; height: 22px; stroke-width: 1.8px; }
+                            }
+                            if main-w >= 760px || phone: Text { text: "JAVC Chatbot"; font-weight: 650; vertical-alignment: center; color: Theme.text; }
+                        }
+                        slot := Rectangle { width: phone ? 0px : cw + mw + 34px + 16px + (narrow ? 0px : 42px); }
+                        IconBtn { icon: Icons.plus; tip: "New chat"; y: 11px; enabled: !busy; clicked => { root.new-chat(); } }
+                        IconBtn { icon: Icons.sliders; tip: "Reasoning level"; y: 11px; clicked => { side-open = true; } }
+                        IconBtn { icon: Icons.gear; tip: "Settings"; y: 11px; clicked => { root.gear(); } }
+                    }
+                    grp := HorizontalLayout {
+                        x: phone ? 12px : slot.x;
+                        y: phone ? 52px : 0px;
+                        width: phone ? parent.width - 24px : slot.width;
+                        height: phone ? 44px : 56px;
+                        spacing: 8px;
+                        ComboBox {
+                            y: (grp.height - 36px) / 2; height: 36px;
+                            width: phone ? avail / 2.6 : cw;
+                            enabled: !busy && has-profiles;
+                            model: has-profiles ? profile-names : ["No profiles yet"];
+                            current-index <=> profile-index;
+                            selected => { root.profile-selected(self.current-index); }
+                        }
+                        if !narrow: IconBtn { icon: Icons.plus; tip: "New profile"; y: (grp.height - 34px) / 2; enabled: !busy; clicked => { root.add-profile(); } }
+                        mpill := Rectangle {
+                            y: (grp.height - 36px) / 2; height: 36px;
+                            width: phone ? avail * 1.6 / 2.6 : mw;
+                            border-radius: 18px;
+                            border-width: 1px;
+                            border-color: model-pop ? Theme.ring : Theme.line;
+                            background: Theme.surface;
+                            accessible-role: button;
+                            accessible-label: "Model: " + model-label;
+                            accessible-action-default => { root.open-model-pop(); }
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 10px;
+                                spacing: 6px;
+                                Text { text: model-label; overflow: elide; vertical-alignment: center; font-size: 14px; color: Theme.text; horizontal-stretch: 1; }
+                                Icon { d: Icons.chevron; y: (parent.height - self.height) / 2; color: Theme.muted; width: 14px; height: 14px; }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => { if (model-pop) { model-pop = false; } else { root.open-model-pop(); } } }
+                        }
+                        IconBtn {
+                            icon: Icons.refresh; tip: "Fetch models"; y: (grp.height - 34px) / 2; enabled: !fetching;
+                            clicked => { root.fetch-models(); }
+                        }
+                    }
+                    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line-soft; }
+                }
+
+                // ---- the chat log ----
+                log := ScrollView {
+                    vertical-stretch: 1;
+                    content-height: logbody.preferred-height;
+                    // a fixed width lets wrapped text report its real height, so the end of a long reply can be scrolled to
+                    logbody := VerticalLayout {
+                        width: log.visible-width;
+                        alignment: start;
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        padding-left: max(16px, (log.visible-width - 760px) / 2);
+                        padding-right: max(16px, (log.visible-width - 760px) / 2);
+                        spacing: 22px;
+                        if msgs.length == 0: VerticalLayout {
+                            padding-top: max(24px, (log.visible-height - 360px) / 2);
+                            spacing: 14px;
+                            alignment: center;
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 56px; height: 56px;
+                                    border-radius: 16px;
+                                    background: Theme.grad;
+                                    drop-shadow-blur: 24px;
+                                    drop-shadow-color: Theme.a1.with-alpha(0.35);
+                                    Icon { d: Icons.logo; color: white; width: 40px; height: 40px; stroke-width: 1.6px; }
+                                }
+                            }
+                            Text { text: "How can I help?"; font-size: 26px; font-weight: 700; horizontal-alignment: center; color: Theme.text; }
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: empty-line;
+                                    color: empty-action != 0 ? Theme.accent-text : Theme.muted;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                    TouchArea {
+                                        enabled: empty-action != 0;
+                                        mouse-cursor: empty-action != 0 ? pointer : default;
+                                        clicked => { root.empty-clicked(); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 8px;
+                                for s in (narrow ? ["Explain a concept simply", "Write a bash one-liner"] : ["Explain a concept simply", "Write a bash one-liner", "Brainstorm project ideas"]): Chip {
+                                    text: s;
+                                    clicked => { draft = s + ": "; input.focus(); }
+                                }
+                            }
+                        }
+                        for m[i] in msgs: Message { m: m; index: i; max-bubble: log.visible-width * 0.8; col-width: min(760px, log.visible-width - 32px) - 44px; }
+                    }
+                }
+
+                // ---- composer ----
+                VerticalLayout {
+                    vertical-stretch: 0;
+                    padding-left: max(12px, (main-w - 790px) / 2);
+                    padding-right: max(12px, (main-w - 790px) / 2);
+                    padding-bottom: 10px;
+                    spacing: 8px;
+                    if pending.length > 0: HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        for a[i] in pending: Rectangle {
+                            height: 44px;
+                            border-radius: 10px;
+                            border-width: 1px;
+                            border-color: Theme.line;
+                            background: Theme.surface;
+                            HorizontalLayout {
+                                padding: 6px;
+                                spacing: 8px;
+                                if a.is-image: Image { source: a.img; width: 32px; height: 32px; image-fit: cover; }
+                                if !a.is-image: Icon { d: Icons.file; color: Theme.muted; y: 7px; }
+                                VerticalLayout {
+                                    Text { text: a.name; font-size: 12px; color: Theme.text; overflow: elide; max-width: 140px; }
+                                    Text { text: a.size; font-size: 11px; color: Theme.faint; }
+                                }
+                                IconBtn { icon: Icons.x; tip: "Remove"; size: 26px; y: 3px; clicked => { root.remove-pending(i); } }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        border-radius: 18px;
+                        border-width: 1px;
+                        border-color: input.has-focus ? Theme.ring : Theme.line;
+                        background: Theme.surface;
+                        min-height: 52px;
+                        HorizontalLayout {
+                            padding: 8px;
+                            spacing: 8px;
+                            alignment: stretch;
+                            IconBtn { icon: Icons.attach; tip: "Attach files"; y: parent.height - self.height - 8px; clicked => { root.attach(); } }
+                            // a bare TextInput: the stock TextEdit draws its own box and a focus underline inside ours
+                            Flickable {
+                                horizontal-stretch: 1;
+                                height: min(200px, max(36px, input.preferred-height + 16px));
+                                content-height: input.preferred-height + 16px;
+                                content-y: min(0px, self.height - self.content-height); // keep the caret's end in view while typing
+                                FocusScope {
+                                    capture-key-pressed(e) => {
+                                        if (e.text == Key.Return && !e.modifiers.shift && !touch) {
+                                            if (!busy) { root.send(); }
+                                            return accept;
+                                        }
+                                        return reject;
+                                    }
+                                    if draft == "": Text {
+                                        x: 4px; y: 8px;
+                                        text: placeholder;
+                                        color: Theme.faint;
+                                        font-size: 15px;
+                                    }
+                                    input := TextInput {
+                                        x: 4px; y: 8px;
+                                        width: parent.width - 8px;
+                                        text <=> draft;
+                                        single-line: false;
+                                        wrap: word-wrap;
+                                        font-size: 15px;
+                                        color: Theme.text;
+                                        selection-background-color: Theme.ring;
+                                        accessible-label: placeholder;
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                width: 36px; height: 36px;
+                                y: parent.height - self.height - 8px;
+                                border-radius: 12px;
+                                background: Theme.grad;
+                                accessible-role: button;
+                                accessible-label: busy ? "Stop" : "Send";
+                                accessible-action-default => { if (busy) { root.stop(); } else { root.send(); } }
+                                Icon { d: busy ? Icons.stop : Icons.send; color: white; }
+                                TouchArea { mouse-cursor: pointer; clicked => { if (busy) { root.stop(); } else { root.send(); } } }
+                            }
+                        }
+                    }
+                    Text {
+                        text: touch ? "Tap the arrow to send" : "Enter to send · Shift+Enter for newline";
+                        font-size: 12px;
+                        color: Theme.faint;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ---- chat history: a column on wide windows, a drawer with a scrim on narrow ones ----
+        if hist-open && narrow: Rectangle {
+            background: #05060a66;
+            TouchArea { clicked => { hist-open = false; } }
+        }
+        if hist-open: Rectangle {
+            x: 0; y: 0;
+            width: narrow ? min(300px, root.width - 40px) : 264px;
+            height: root.height;
+            background: Theme.surface;
+            drop-shadow-blur: narrow ? 30px : 0;
+            drop-shadow-color: #00000060;
+            TouchArea { }
+            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line-soft; }
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+                Btn { text: "New chat"; icon: Icons.plus; enabled: !busy; clicked => { root.new-chat(); } }
+                HorizontalLayout {
+                    spacing: 6px;
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        enabled: !busy;
+                        model: persona-names;
+                        current-index <=> persona-index;
+                        selected => { root.persona-selected(self.current-index); }
+                    }
+                    IconBtn { icon: Icons.plus; tip: "New persona"; enabled: !busy; y: (parent.height - self.height) / 2; clicked => { root.new-persona(); } }
+                    IconBtn { icon: Icons.edit; tip: "Edit persona"; enabled: !busy; y: (parent.height - self.height) / 2; clicked => { root.edit-persona(); } }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start;
+                        opacity: busy ? 0.55 : 1;
+                        for c in chats: VerticalLayout {
+                            if c.id == "": Text {
+                                text: c.group;
+                                font-size: 11.5px;
+                                font-weight: 600;
+                                color: Theme.faint;
+                                wrap: word-wrap;
+                                height: self.preferred-height + 18px;
+                                vertical-alignment: bottom;
+                            }
+                            if c.id != "": Rectangle {
+                                height: 38px;
+                                border-radius: 10px;
+                                border-width: 1px;
+                                border-color: c.active ? Theme.ring : transparent;
+                                background: c.active ? Theme.tint : (cta.has-hover ? Theme.surface-2 : transparent);
+                                cta := TouchArea {
+                                    enabled: !busy;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open-chat(c.id); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 4px;
+                                    spacing: 2px;
+                                    Text { text: c.title; overflow: elide; vertical-alignment: center; font-size: 14px; color: Theme.text; horizontal-stretch: 1; }
+                                    if cta.has-hover || c.armed || touch: HorizontalLayout {
+                                        spacing: 2px;
+                                        IconBtn { icon: Icons.copy; tip: "Duplicate to another persona"; size: 28px; y: 5px; enabled: !busy; clicked => { root.dup-chat(c.id); } }
+                                        if !c.armed: IconBtn { icon: Icons.trash; tip: "Delete chat"; size: 28px; y: 5px; enabled: !busy; clicked => { root.delete-chat(c.id); } }
+                                        if c.armed: Mini { text: "Confirm?"; y: 6px; clicked => { root.delete-chat(c.id); } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            
+            }
+        }
+
+        // ---- model picker ----
+        if model-pop: Rectangle {
+            TouchArea { clicked => { model-pop = false; } }
+            Rectangle {
+                width: narrow ? root.width - 24px : 380px;
+                x: narrow ? 12px : max(12px, min(root.width - self.width - 12px, mpill.absolute-position.x - root.absolute-position.x + mpill.width - self.width));
+                y: header.height + 2px;
+                height: min(440px, root.height - 80px);
+                background: Theme.surface;
+                border-radius: 14px;
+                border-width: 1px;
+                border-color: Theme.line;
+                drop-shadow-blur: 30px;
+                drop-shadow-color: #00000050;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+                    FocusScope {
+                        height: mq.preferred-height;
+                        capture-key-pressed(e) => {
+                            if (e.text == Key.DownArrow) { root.model-key("down"); return accept; }
+                            if (e.text == Key.UpArrow) { root.model-key("up"); return accept; }
+                            if (e.text == Key.Return) { root.model-key("enter"); return accept; }
+                            return reject;
+                        }
+                        mq := LineEdit {
+                            width: parent.width;
+                            init => { self.focus(); }
+                            placeholder-text: "Search models…";
+                            text <=> model-query;
+                            edited(t) => { root.model-query-edited(t); }
+                        }
+                    }
+                    mlist := ScrollView {
+                        vertical-stretch: 1;
+                        // keep the highlighted row (32px each) in view
+                        property <int> hi: model-hi;
+                        changed hi => {
+                            if (hi * 32px + self.content-y < 0) { self.content-y = -hi * 32px; }
+                            if ((hi + 1) * 32px + self.content-y > self.visible-height) { self.content-y = self.visible-height - (hi + 1) * 32px; }
+                        }
+                        VerticalLayout {
+                            if model-rows.length == 0: Text { text: model-note; color: Theme.muted; wrap: word-wrap; font-size: 13px; }
+                            for r[i] in model-rows: Rectangle {
+                                height: 32px;
+                                border-radius: 8px;
+                                background: i == model-hi ? Theme.tint : (ta.has-hover ? Theme.surface-2 : transparent);
+                                accessible-role: list-item;
+                                accessible-label: r.id;
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    Text { text: r.id; overflow: elide; vertical-alignment: center; font-size: 13px; horizontal-stretch: 1; color: r.current ? Theme.accent-text : Theme.text; font-weight: r.current ? 600 : 400; }
+                                    if r.current: Icon { d: Icons.check; y: 7px; color: Theme.accent-text; }
+                                }
+                                ta := TouchArea { mouse-cursor: pointer; clicked => { root.pick-model(r.id); } }
+                            }
+                        }
+                    }
+                    if model-count != "": Text { text: model-count; font-size: 12px; color: Theme.faint; wrap: word-wrap; }
+                }
+            }
+        }
+
+        // ---- reasoning level panel ----
+        if side-open: Rectangle {
+            background: #05060a66;
+            TouchArea { clicked => { side-open = false; } }
+            Rectangle {
+                x: parent.width - self.width;
+                width: min(360px, root.width);
+                background: Theme.surface;
+                drop-shadow-blur: 30px;
+                drop-shadow-color: #00000060;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text { text: "Reasoning"; font-size: 18px; font-weight: 700; color: Theme.text; }
+                            Text { text: side-model; font-size: 13px; color: Theme.muted; overflow: elide; }
+                        }
+                        IconBtn { icon: Icons.x; tip: "Close"; clicked => { side-open = false; } }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 6px;
+                            for l in levels: Rectangle {
+                                border-radius: 12px;
+                                border-width: 1px;
+                                border-color: l.checked ? Theme.ring : Theme.line;
+                                background: l.checked ? Theme.tint : (lta.has-hover ? Theme.surface-2 : transparent);
+                                accessible-role: radio-button;
+                                accessible-label: l.name;
+                                accessible-checked: l.checked;
+                                accessible-action-default => { root.pick-level(l.value); }
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 2px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        alignment: start;
+                                        Text { text: l.name; font-weight: 600; color: Theme.text; }
+                                        if l.model-default: Text { text: "model default"; font-size: 11px; color: Theme.accent-text; vertical-alignment: center; }
+                                    }
+                                    Text { text: l.desc; font-size: 13px; color: Theme.muted; wrap: word-wrap; }
+                                }
+                                lta := TouchArea { mouse-cursor: pointer; clicked => { root.pick-level(l.value); } }
+                            }
+                        }
+                    }
+                    Text { text: side-note; font-size: 12px; color: Theme.faint; wrap: word-wrap; }
+                }
+            }
+        }
+
+        // ---- settings ----
+        if prefs: Modal {
+            card-width: 720px;
+            HorizontalLayout {
+                min-height: 460px;
+                if !narrow: Rectangle {
+                    width: 180px;
+                    background: Theme.surface-2;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 4px;
+                        alignment: start;
+                        Text { text: "Settings"; font-size: 18px; font-weight: 700; color: Theme.text; }
+                        Rectangle { height: 8px; }
+                        for t[i] in ["Appearance", "Profiles", "Search", "Replies"]: Rectangle {
+                            height: 34px;
+                            border-radius: 9px;
+                            background: pane == i ? Theme.tint : (tta.has-hover ? Theme.surface : transparent);
+                            accessible-role: tab;
+                            accessible-label: t;
+                            accessible-checked: pane == i;
+                            accessible-action-default => { pane = i; }
+                            Text { x: 10px; text: t; font-size: 14px; color: pane == i ? Theme.accent-text : Theme.text; font-weight: pane == i ? 600 : 400; }
+                            tta := TouchArea { mouse-cursor: pointer; clicked => { pane = i; } }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    padding: 20px;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        if narrow: ComboBox { model: ["Appearance", "Profiles", "Search", "Replies"]; current-index <=> pane; }
+                        Rectangle { horizontal-stretch: 1; }
+                        IconBtn { icon: Icons.x; tip: "Close settings"; clicked => { prefs = false; root.prefs-closed(); } }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            if pane == 0: VerticalLayout {
+                                spacing: 12px;
+                                Text { text: "Theme"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                                Text { text: "Accent colors for buttons, bubbles and highlights. Light or dark follows your system."; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                                for row in [0, 1]: HorizontalLayout {
+                                    spacing: 8px;
+                                    for t[i] in themes: Rectangle {
+                                        visible: (row == 0 && i < 4) || (row == 1 && i >= 4);
+                                        width: self.visible ? (min(480px, root.width - 80px) - 24px) / 4 : 0;
+                                        height: self.visible ? 74px : 0;
+                                        border-radius: 12px;
+                                        border-width: t.checked ? 2px : 1px;
+                                        border-color: t.checked ? Theme.ring : Theme.line;
+                                        accessible-role: radio-button;
+                                        accessible-label: t.name;
+                                        accessible-checked: t.checked;
+                                        accessible-action-default => { root.pick-theme(t.id); }
+                                        VerticalLayout {
+                                            padding: 8px;
+                                            spacing: 6px;
+                                            Rectangle { height: 30px; border-radius: 8px; background: @linear-gradient(135deg, t.a1 0%, t.a2 100%); }
+                                            Text { text: t.name; font-size: 12px; horizontal-alignment: center; color: Theme.text; }
+                                        }
+                                        TouchArea { mouse-cursor: pointer; clicked => { root.pick-theme(t.id); } }
+                                    }
+                                }
+                                Text { text: "Custom colors"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                                HorizontalLayout {
+                                    spacing: 16px;
+                                    Field {
+                                        label: "From";
+                                        ColorPicker { h <=> c1h; s <=> c1s; v <=> c1v; moved => { root.custom-moved(); } committed => { root.custom-committed(); } }
+                                    }
+                                    Field {
+                                        label: "To";
+                                        ColorPicker { h <=> c2h; s <=> c2s; v <=> c2v; moved => { root.custom-moved(); } committed => { root.custom-committed(); } }
+                                    }
+                                }
+                                Text { text: "Very light colors can make white text hard to read."; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                            }
+                            if pane == 1: VerticalLayout {
+                                spacing: 12px;
+                                Text { text: "Connection profiles"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                                Text { text: "Each profile is an endpoint, an API key and a model. Switch the active one from the header."; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                                if profiles.length == 0: Text { text: "No profiles yet."; color: Theme.muted; }
+                                for p in profiles: Rectangle {
+                                    border-radius: 12px;
+                                    border-width: 1px;
+                                    border-color: p.active ? Theme.ring : Theme.line;
+                                    background: p.active ? Theme.tint : transparent;
+                                    HorizontalLayout {
+                                        padding: 10px;
+                                        spacing: 8px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                alignment: start;
+                                                Text { text: p.name; font-weight: 600; color: Theme.text; overflow: elide; }
+                                                if p.active: Text { text: "Active"; font-size: 11px; color: Theme.accent-text; vertical-alignment: center; }
+                                            }
+                                            Text { text: p.sub; font-size: 12px; color: Theme.muted; overflow: elide; }
+                                        }
+                                        Btn { text: "Edit"; clicked => { root.edit-profile(p.id); } }
+                                    }
+                                }
+                                HorizontalLayout { alignment: start; Btn { text: "Add profile"; primary: true; enabled: !busy; clicked => { root.add-profile(); } } }
+                            }
+                            if pane == 2: VerticalLayout {
+                                spacing: 12px;
+                                Text { text: "Web search"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                                StyledText {
+                                    text: @markdown("Lets the model look things up on the web with [Linkup](https://www.linkup.so). The model decides when to search; its search queries are sent to Linkup with your key.");
+                                    default-color: Theme.muted;
+                                    default-font-size: 13px;
+                                    link-color: Theme.accent-text;
+                                    link-clicked(u) => { Chat.open-url(u); }
+                                }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        Text { text: "Let models search the web"; color: Theme.text; }
+                                        Text { text: "Needs a Linkup API key and a model that supports tools."; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+                                    }
+                                    Switch { checked <=> search-on; toggled => { root.search-toggled(self.checked); } }
+                                }
+                                Field {
+                                    label: "Linkup API key";
+                                    SecretEdit { text <=> search-key; shown <=> search-key-shown; placeholder: "Your Linkup API key"; edited => { root.search-key-edited(); } }
+                                }
+                                if search-note != "": Text { text: search-note; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                                if search-err != "": ErrText { text: search-err; }
+                                HorizontalLayout { alignment: end; Btn { text: "Save key"; primary: true; clicked => { root.search-save(); } } }
+                            }
+                            if pane == 3: VerticalLayout {
+                                spacing: 14px;
+                                Text { text: "How replies are shown"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                                Text { text: "Turning a format off also stops telling the model it can use it."; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                                for o in [
+                                    { key: "markdown", name: "Markdown", desc: "Headings, lists, tables, task lists and code blocks. Off shows replies as plain text.", sub: false },
+                                    { key: "html", name: "HTML", desc: "Raw HTML written in a reply can be previewed in a sandbox with internet access. Off shows it as code only.", sub: false },
+                                    { key: "css", name: "CSS", desc: "Style tags, stylesheets and inline styles inside HTML.", sub: true },
+                                    { key: "js", name: "JavaScript", desc: "Scripts inside HTML, such as charts and interactive demos.", sub: true },
+                                ]: HorizontalLayout {
+                                    spacing: 10px;
+                                    padding-left: o.sub ? 24px : 0;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        Text { text: o.name; color: Theme.text; }
+                                        Text { text: o.desc; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+                                    }
+                                    Switch {
+                                        enabled: !o.sub || r-html;
+                                        checked: o.key == "markdown" ? r-markdown : o.key == "html" ? r-html : o.key == "css" ? r-css : r-js;
+                                        toggled => { root.render-toggled(o.key, self.checked); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- profile dialog ----
+        if pdlg: Modal {
+            VerticalLayout {
+                padding: 22px;
+                spacing: 14px;
+                Text { text: pdlg-new ? "New profile" : "Profile settings"; font-size: 20px; font-weight: 700; color: Theme.text; }
+                Text { text: "Any OpenAI-compatible API works: OpenAI, OpenRouter, NanoGPT, Venice, Ollama, LM Studio…"; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                if pdlg-new: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for t[i] in templates: Chip { text: t.name; clicked => { root.p-template(i); } }
+                }
+                Field { label: "Profile name"; pn := LineEdit { text <=> p-name; placeholder-text: "My provider"; } }
+                Field { label: "Endpoint"; LineEdit { text <=> p-endpoint; placeholder-text: "https://api.openai.com/v1"; } }
+                Field {
+                    label: "API key";
+                    pk := SecretEdit { text <=> p-key; shown <=> p-key-shown; placeholder: "sk-…  (leave empty for local servers)"; edited => { root.p-key-edited(); } }
+                }
+                Field {
+                    label: "Reasoning request format";
+                    hint: "Auto uses OpenRouter style when your gateway's model list includes reasoning info.";
+                    ComboBox {
+                        model: ["Auto (recommended)", "OpenRouter style: reasoning {effort}", "OpenAI style: reasoning_effort", "DeepSeek / GLM / Kimi style: thinking switch"];
+                        current-index <=> p-format;
+                    }
+                }
+                if p-err != "": ErrText { text: p-err; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    if !pdlg-new: Btn { text: p-del-armed ? "Confirm delete" : "Delete profile"; danger: true; clicked => { root.p-delete(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Btn { text: "Cancel"; clicked => { pdlg = false; } }
+                    Btn { text: "Save"; primary: true; clicked => { root.p-save(); } }
+                }
+            }
+            init => { if (pdlg-new) { pn.focus(); } else { pk.focus-it(); } }
+        }
+
+        // ---- persona dialog ----
+        if psdlg: Modal {
+            VerticalLayout {
+                padding: 22px;
+                spacing: 14px;
+                Text { text: ps-new ? "New persona" : "Edit persona"; font-size: 20px; font-weight: 700; color: Theme.text; }
+                Field { label: "Persona name"; psn := LineEdit { text <=> ps-name; placeholder-text: "Pirate captain"; } }
+                Field { label: "What should the bot call you?"; LineEdit { text <=> ps-user; placeholder-text: "Your name"; } }
+                Field { label: "Bot's name"; LineEdit { text <=> ps-bot; placeholder-text: "Captain"; } }
+                Field {
+                    label: "Prompt";
+                    hint: "Write {{user}} and {{char}} to insert the two names.";
+                    TextEdit { text <=> ps-prompt; placeholder-text: "How the bot should behave…"; height: 120px; wrap: word-wrap; }
+                }
+                if ps-err != "": ErrText { text: ps-err; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    if ps-deletable: Btn { text: ps-del-armed ? "Confirm delete" : "Delete persona"; danger: true; clicked => { root.ps-delete(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Btn { text: "Cancel"; clicked => { psdlg = false; } }
+                    Btn { text: "Save"; primary: true; clicked => { root.ps-save(); } }
+                }
+            }
+            init => { psn.focus(); }
+        }
+
+        // ---- duplicate dialog ----
+        if dupdlg: Modal {
+            card-width: 420px;
+            VerticalLayout {
+                padding: 22px;
+                spacing: 14px;
+                Text { text: "Duplicate chat"; font-size: 20px; font-weight: 700; color: Theme.text; }
+                Text { text: dup-sub; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                Field { label: "Persona"; ComboBox { model: persona-names; current-index <=> dup-index; } }
+                if dup-err != "": ErrText { text: dup-err; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    Btn { text: "Cancel"; clicked => { dupdlg = false; } }
+                    Btn { text: "Duplicate"; primary: true; clicked => { root.dup-confirm(dup-index); } }
+                }
+            }
+        }
+
+        // ---- drop target, toasts ----
+        if dropping: Rectangle {
+            background: Theme.a1.with-alpha(0.12);
+            border-width: 2px;
+            border-color: Theme.a1;
+            border-radius: 16px;
+            Text { text: "Drop files to attach"; font-size: 20px; font-weight: 700; color: Theme.accent-text; }
+        }
+        Rectangle {
+            visible: err-shown;
+            y: 64px;
+            x: (root.width - self.width) / 2;
+            width: min(560px, root.width - 32px);
+            height: et.preferred-height + 22px;
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: Theme.err.with-alpha(0.35);
+            background: Theme.surface;
+            drop-shadow-blur: 20px;
+            drop-shadow-color: #00000040;
+            accessible-role: text;
+            accessible-label: err-text;
+            HorizontalLayout {
+                padding: 11px;
+                padding-left: 16px;
+                spacing: 10px;
+                Icon { d: Icons.alert; color: Theme.err; }
+                et := Text { text: err-text; color: Theme.err; font-size: 14px; wrap: word-wrap; horizontal-stretch: 1; }
+            }
+        }
+        Rectangle {
+            visible: toast-shown;
+            y: root.height - 130px;
+            x: (root.width - self.width) / 2;
+            width: tt.preferred-width + 32px;
+            height: 38px;
+            border-radius: 19px;
+            background: Theme.dark ? #ecedf2 : #1a1b22;
+            accessible-role: text;
+            accessible-label: toast-text;
+            tt := Text { text: toast-text; color: Theme.dark ? #1a1b22 : #ecedf2; font-size: 14px; }
+        }
+    }
+
+    init => { keys.focus(); }
+
+}

@@ -1,0 +1,32 @@
+# cargo-packager configuration for the Rust/Slint port of JAVC Chatbot.
+#
+# CI runs `cargo packager` from this directory (rust/) and selects the
+# formats per OS with `--formats`, so all three formats can live here:
+#   Linux:   --formats appimage,deb
+#   Windows: --formats nsis
+#
+# Docs: https://docs.crabnebula.dev/packager/
+
+name = "javc-chatbot"
+product-name = "JAVC Chatbot"
+identifier = "io.github.thedwz.javc-chatbot"
+version = "1.0.0"
+
+binaries = [{ path = "javc-chatbot", main = true }]
+icons = ["../build/icon.png"]
+out-dir = "../dist/rust"
+binaries-dir = "target/release" # relative to rust/, where CI runs this
+
+category = "Utility"
+description = "Chat with any OpenAI-compatible API"
+long-description = "JAVC Chatbot is a desktop client for OpenAI-compatible APIs with connection profiles, personas, streaming replies and a live reasoning view."
+license-file = "../LICENSE"
+homepage = "https://github.com/TheDWz/JAVC-Chatbot"
+
+formats = ["appimage", "deb", "nsis"]
+
+[deb]
+depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+
+[nsis]
+installer-mode = "currentUser"

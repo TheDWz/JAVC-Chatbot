@@ -1,0 +1,78 @@
+[package]
+name = "javc-chatbot"
+version = "1.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "JAVC Chatbot: a client for OpenAI-compatible APIs"
+authors = ["TheDWz"]
+
+# `cargo generate-rpm -o ../dist`, run from this folder after a release build (CI: .github/workflows/rust.yml)
+[package.metadata.generate-rpm]
+summary = "Chat with any OpenAI-compatible API"
+url = "https://github.com/TheDWz/JAVC-Chatbot"
+release = "1"
+assets = [
+    { source = "target/release/javc-chatbot", dest = "/usr/bin/javc-chatbot", mode = "755" },
+    { source = "packaging/javc-chatbot.desktop", dest = "/usr/share/applications/javc-chatbot.desktop", mode = "644" },
+    { source = "../build/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/javc-chatbot.png", mode = "644" },
+]
+[package.metadata.generate-rpm.requires]
+"webkit2gtk4.1" = "*"
+gtk3 = "*"
+
+[lib]
+name = "javc"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "javc-chatbot"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+getrandom = { version = "0.3", features = ["std"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+tokio-util = "0.7"
+url = "2"
+slint = "1.18"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+pdf-extract = "0.12"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+aes-gcm = "0.10"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+slint = { version = "1.18", features = ["unstable-winit-030"] } # winit's window events, for dropped files
+dirs = "6"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
+rfd = "0.16"
+arboard = { version = "3", features = ["wayland-data-control"] }
+open = "5"
+wry = "0.57"
+tao = "0.37"
+
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "1.18", features = ["backend-android-activity-06"] }
+jni = "0.21"
+
+[build-dependencies]
+slint-build = "1.18"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+# The UI toolkit and parsers are very slow unoptimized; optimizing only dependencies keeps our own code quick to rebuild.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Debug APKs: optimized (an unoptimized libjavc.so is huge and slow) but with debug assertions, which turn on the self-test.
+[profile.android-debug]
+inherits = "release"
+debug-assertions = true
+lto = false

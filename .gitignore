@@ -31,3 +31,6 @@ __pycache__/
 
 # Android web build (mobile/build.mjs); the Android project copies it into android/app/src/main/assets/public
 www/
+
+# Rust build output
+rust/target/

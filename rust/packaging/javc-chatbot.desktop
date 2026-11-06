@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=JAVC Chatbot
+Exec=javc-chatbot
+Icon=javc-chatbot
+Comment=Chat with any OpenAI-compatible API
+Categories=Utility;
+Terminal=false
