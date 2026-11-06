@@ -75,12 +75,13 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       - name: Build the debug APK (for the smoke test)
         run: node mobile/gradle.mjs assembleDebug
-      - uses: actions/upload-artifact@v4
+      # Unzipped: the download is the .apk itself, named after the file (archive: false takes exactly one file and ignores `name`).
+      - uses: actions/upload-artifact@v7
         with:
-          name: javc-chatbot-Android
           path: |
             dist/*.apk
             !dist/*-debug.apk
+          archive: false
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
