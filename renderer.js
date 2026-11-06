@@ -11,6 +11,8 @@ const ICON = {
   x: ['M18 6L6 18M6 6l12 12'],
   trash: ['M3 6h18', 'M8 6V4h8v2', 'M6 6l1 14h10l1-14'],
   expand: ['M15 3h6v6', 'M9 21H3v-6', 'M21 3l-7 7', 'M3 21l7-7'],
+  regen: ['M21 12a9 9 0 1 1-2.6-6.4L21 8', 'M21 3v5h-5'],
+  edit: ['M4 20h4L19 9l-4-4L4 16z', 'M13.5 6.5l4 4'],
   alert: ['M12 8v5', 'M12 16.5v.01', 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'],
 };
 // Accent colors are two CSS variables on <html>; every gradient, ring and tint in index.html derives from them.
@@ -61,9 +63,10 @@ async function copy(text) {
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
 function push(node) { $('log').querySelector('.empty')?.remove(); $('log').append(node); scrollDown(); return node; }
 
-function copyBtn(getText, label = 'Copy') {
-  const b = el('button', 'mini'); b.type = 'button'; b.append(svg(ICON.copy), label); b.onclick = () => copy(getText()); return b;
+function miniBtn(icon, label, onclick) {
+  const b = el('button', 'mini'); b.type = 'button'; b.append(svg(icon), label); b.onclick = onclick; return b;
 }
+const copyBtn = (getText, label = 'Copy') => miniBtn(ICON.copy, label, () => copy(getText()));
 
 // Text with `inline code`, built from DOM nodes only (replies are untrusted, never innerHTML).
 function inline(parent, text) {
@@ -258,11 +261,41 @@ function renderChips() {
   $('attachments').replaceChildren(...pending.map((a, i) => chip(a, () => { pending.splice(i, 1); renderChips(); })));
 }
 
-function addUser(text, atts = []) {
+function addUser(text, atts, m) {
   const row = el('div', 'row user'), body = el('div', 'ubody');
   for (const a of atts) body.append(chip(a));
-  if (text) { const b = el('div', 'bubble'); inline(b, text); body.append(b); }
-  row.append(body); return push(row);
+  let b = null;
+  if (text) { b = el('div', 'bubble'); inline(b, text); body.append(b); }
+  body.append(msgActions(m, body, b)); row.append(body); return push(row);
+}
+// Regenerate and Edit act on the message object, since a message's index changes when the chat is cut short.
+function msgActions(m, body, bubble) {
+  const a = el('div', 'actions');
+  a.append(miniBtn(ICON.regen, 'Regenerate', () => regenerate(m)), miniBtn(ICON.edit, 'Edit', () => editMsg(m, body, bubble, a)));
+  return a;
+}
+const rerender = () => { const top = $('scroll').scrollTop; renderChat(); $('scroll').scrollTop = top; };
+
+// Edit changes the message in place; later messages stay, and a later Regenerate uses the edited text.
+function editMsg(m, body, bubble, actions) {
+  if (busy) return toast('Wait for the reply to finish');
+  const user = m.role === 'user', box = el('div', 'edit'), ta = el('textarea'), bar = el('div', 'edit-bar');
+  const cancel = el('button', 'btn', 'Cancel'), save = el('button', 'btn primary', 'Save');
+  cancel.type = save.type = 'button'; ta.value = user ? m.text || '' : m.content; ta.setAttribute('aria-label', 'Edit message');
+  bar.append(cancel, save); box.append(ta, bar);
+  const hide = [bubble, actions].filter(Boolean);
+  const close = () => { box.remove(); for (const n of hide) n.style.display = ''; actions.querySelector('button:last-child').focus(); };
+  cancel.onclick = close;
+  ta.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  save.onclick = () => {
+    if (busy) return toast('Wait for the reply to finish'); // the box can stay open while a new message is sent
+    const text = ta.value.trim();
+    if (!text && !(user && m.files?.length)) return toast("A message can't be empty");
+    if (user) Object.assign(m, Lib.editUser(m, text)); else m.content = text;
+    chat.updated = Date.now(); persist(); rerender();
+  };
+  for (const n of hide) n.style.display = 'none';
+  actions.before(box); ta.focus();
 }
 const NO_REASONING = "This model didn't return any reasoning.";
 const nearBottom = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 40;
@@ -298,11 +331,11 @@ function addAssistant() {
   return {
     row,
     delta(d) { reasoning += d.reasoning || ''; content += d.content || ''; raf ||= requestAnimationFrame(flush); },
-    done(text, finalReasoning = reasoning) {
+    done(text, finalReasoning = reasoning, m) {
       cancelAnimationFrame(raf); raf = 0; row.classList.remove('thinking');
       render(b, text || '(The model returned no text.)');
       tb.classList.toggle('placeholder', !finalReasoning); tb.textContent = finalReasoning || NO_REASONING;
-      const actions = el('div', 'actions'); actions.append(copyBtn(() => text)); body.append(actions); scrollDown();
+      const actions = msgActions(m, body, b); actions.prepend(copyBtn(() => text)); body.append(actions); scrollDown();
     },
   };
 }
@@ -420,32 +453,57 @@ async function fetchModels() {
   finally { btn.disabled = false; btn.classList.remove('spin'); }
 }
 
-async function send() {
-  const text = $('input').value.trim();
-  if ((!text && !pending.length) || busy) return;
-  if (!state.activeId) return openProfileDialog(true);
-  if (!settings.model) return showError('Pick a model first: open the model picker (fetch models if the list is empty).');
-  const atts = pending; pending = []; renderChips();
-  $('input').value = '';
-  const userRow = addUser(text, atts);
-  chat.messages.push({ role: 'user', content: Lib.buildContent(text, atts), text, files: atts.map(({ name, size, kind }) => ({ name, size, kind })) });
+function ready() {
+  if (!state.activeId) { openProfileDialog(true); return false; }
+  if (!settings.model) { showError('Pick a model first: open the model picker (fetch models if the list is empty).'); return false; }
+  return true;
+}
+/** Streams a reply to the chat as it stands, adds it and returns it. On failure the reply row is removed, the error shown, and it rethrows. */
+async function generate() {
   const reply = addAssistant();
   setBusy(true);
   try {
     const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d), { search: toolsOk() });
-    chat.messages.push({ role: 'assistant', content: out.content, reasoning: out.reasoning }); // reasoning is display-only, never sent back
-    reply.done(out.content, out.reasoning);
+    const m = { role: 'assistant', content: out.content, reasoning: out.reasoning }; // reasoning is display-only, never sent back
+    chat.messages.push(m); reply.done(out.content, out.reasoning, m);
     chat.updated = Date.now();
+    if (out.error) showError('Reply was cut off: ' + out.error); else if (out.stopped) toast('Stopped');
+    return out;
+  } catch (e) {
+    reply.row.remove();
+    if (cleanErr(e) === 'Stopped') toast('Stopped'); else showError(cleanErr(e));
+    throw e;
+  } finally { setBusy(false); focusInput(); }
+}
+
+async function send() {
+  const text = $('input').value.trim();
+  if ((!text && !pending.length) || busy || !ready()) return;
+  const atts = pending; pending = []; renderChips();
+  $('input').value = '';
+  const m = { role: 'user', content: Lib.buildContent(text, atts), text, files: atts.map(({ name, size, kind }) => ({ name, size, kind })) };
+  chat.messages.push(m);
+  const userRow = addUser(text, atts, m);
+  try {
+    await generate();
     if (!chat.title) chat.title = (text || atts[0]?.name || 'New chat').replace(/\s+/g, ' ').slice(0, 40);
     persist();
-    if (out.error) showError('Reply was cut off: ' + out.error); else if (out.stopped) toast('Stopped');
-  } catch (e) {
+  } catch {
     // drop the failed turn and put the draft back in front of whatever was typed meanwhile
-    chat.messages.pop(); userRow.remove(); reply.row.remove();
+    chat.messages.pop(); userRow.remove();
     $('input').value = [text, $('input').value].filter(Boolean).join('\n');
     pending = [...atts, ...pending].slice(0, MAX_FILES); renderChips();
-    if (cleanErr(e) === 'Stopped') toast('Stopped'); else showError(cleanErr(e));
-  } finally { setBusy(false); focusInput(); }
+  }
+}
+
+// A user message gets a new reply; a reply is replaced. Everything after is dropped, unless the request fails
+// or the new reply is cut off by an error (a full reply shouldn't be lost to a broken connection).
+async function regenerate(m) {
+  const i = chat.messages.indexOf(m);
+  if (busy || i < 0 || !ready()) return;
+  const prev = chat.messages, restore = () => { chat.messages = prev; renderChat(); };
+  chat.messages = prev.slice(0, m.role === 'user' ? i + 1 : i); renderChat();
+  try { if ((await generate()).error) restore(); else persist(); } catch { restore(); }
 }
 
 // ---- Chat history ----
@@ -464,10 +522,10 @@ function renderChat() {
   if (!chat.messages.length) return showEmpty();
   $('log').replaceChildren();
   for (const m of chat.messages) {
-    if (m.role === 'assistant') { addAssistant().done(m.content, m.reasoning); continue; }
+    if (m.role === 'assistant') { addAssistant().done(m.content, m.reasoning, m); continue; }
     const urls = Array.isArray(m.content) ? m.content.filter((p) => p.type === 'image_url').map((p) => p.image_url.url) : [];
     let k = 0;
-    addUser(m.text || '', (m.files || []).map((f) => (f.kind === 'image' ? { ...f, url: urls[k++] } : f)));
+    addUser(m.text || '', (m.files || []).map((f) => (f.kind === 'image' ? { ...f, url: urls[k++] } : f)), m);
   }
 }
 function startNew() {
@@ -693,7 +751,7 @@ $('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
 };
 $('prefsclose').onclick = () => $('prefs').close();
 $('prefs').onclose = () => {
-  if (prefsDirty && !busy && chat.messages.length) { const top = $('scroll').scrollTop; renderChat(); $('scroll').scrollTop = top; }
+  if (prefsDirty && !busy && chat.messages.length) rerender();
   prefsDirty = false; // shortcut: a reply that is still streaming keeps its old look until the chat is reopened
 };
 

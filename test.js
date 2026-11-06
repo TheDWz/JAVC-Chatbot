@@ -340,6 +340,18 @@ test('Lib.buildContent inlines text files and turns images into parts', () => {
   assert.deepStrictEqual(parts, [{ type: 'text', text: 'See the attached image(s).' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }]);
 });
 
+test('Lib.editUser swaps the typed text and keeps inlined files and images', () => {
+  const file = { kind: 'text', name: 'a.txt', text: 'x' }, img = { kind: 'image', url: 'data:image/png;base64,AA' };
+  const sent = (text, atts) => ({ role: 'user', text, content: Lib.buildContent(text, atts), files: atts.map(({ name, kind }) => ({ name, kind })) });
+  for (const [from, atts] of [['hi', []], ['hi', [file]], ['', [file]], ['', [img]], ['hi', [img]], ['hi', [file, img]]]) {
+    for (const to of ['new text', '']) {
+      if (!to && !atts.length) continue;
+      const m = Lib.editUser(sent(from, atts), to);
+      assert.deepStrictEqual(m, sent(to, atts), `${JSON.stringify(from)} -> ${JSON.stringify(to)} with ${atts.map((a) => a.kind)}`);
+    }
+  }
+});
+
 test('Lib.matchModels needs every word, in any order, ignoring case', () => {
   const ids = ['openai/gpt-4o', 'anthropic/claude-3', 'meta/llama-3'];
   assert.deepStrictEqual(Lib.matchModels(ids, 'GPT 4o'), ['openai/gpt-4o']);

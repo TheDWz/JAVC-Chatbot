@@ -143,12 +143,24 @@
   }
 
   // Text files are inlined as fenced blocks; images become image_url parts.
+  const IMG_ONLY = 'See the attached image(s).';
   function buildContent(text, atts) {
     const body = [text, ...atts.filter((a) => a.kind === 'text').map((a) => `[File: ${a.name}]\n\`\`\`\n${a.text}\n\`\`\``)].filter(Boolean).join('\n\n');
     const imgs = atts.filter((a) => a.kind === 'image');
     return imgs.length
-      ? [{ type: 'text', text: body || 'See the attached image(s).' }, ...imgs.map((a) => ({ type: 'image_url', image_url: { url: a.url } }))]
+      ? [{ type: 'text', text: body || IMG_ONLY }, ...imgs.map((a) => ({ type: 'image_url', image_url: { url: a.url } }))]
       : body;
+  }
+
+  /**
+   * A sent user message with its typed text replaced. The inlined files and images stay: only their names are stored
+   * apart, so the content can't be rebuilt with buildContent. Relies on buildContent putting the typed text first.
+   */
+  function editUser(m, text) {
+    const arr = Array.isArray(m.content), body = arr ? m.content[0].text : m.content, old = m.text || '';
+    const files = old ? body.slice(old.length).replace(/^\n\n/, '') : arr && body === IMG_ONLY ? '' : body;
+    const next = [text, files].filter(Boolean).join('\n\n');
+    return { ...m, text, content: arr ? [{ type: 'text', text: next || IMG_ONLY }, ...m.content.slice(1)] : next };
   }
 
   // Every word must appear in the id, in any order, ignoring case.
@@ -157,5 +169,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
+  return { systemPrompt, requestMessages, buildContent, editUser, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
 });
