@@ -60,7 +60,7 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   try {
     const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
     const { model, extra, search, mcp } = api.requestArgs(s, opts);
-    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await mcpTools(e.sender, onDelta, ctl.signal) : undefined);
+    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: approver(e.sender), onDelta, signal: ctl.signal }) : undefined);
   } finally { running.delete(id); }
 });
 
@@ -79,7 +79,12 @@ const hub = Mcp.makeHub({
   spawn: async (command, args, env) => {
     const opts = { env: { ...process.env, PATH: await shellPath(), ...env }, stdio: /** @type {['pipe', 'pipe', 'pipe']} */ (['pipe', 'pipe', 'pipe']), windowsHide: true };
     // shortcut: Windows goes through cmd so npx.cmd and uvx.exe resolve; quoting covers spaces and quotes, revisit if a server's args still break
-    return win32 ? spawn([command, ...args].map(quoteWin).join(' '), { ...opts, shell: true }) : spawn(command, args, opts);
+    if (win32) return spawn([command, ...args].map(quoteWin).join(' '), { ...opts, shell: true });
+    // its own process group, so SIGTERM/SIGKILL also reach the server that npx/uvx start under them
+    // shortcut: on Windows only cmd.exe is killed; a server that ignores stdin closing outlives it, use taskkill /T if that bites
+    const child = spawn(command, args, { ...opts, detached: true });
+    child.kill = (sig) => { try { if (child.pid) process.kill(-child.pid, sig); return true; } catch { return false; } };
+    return child;
   },
 });
 const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
@@ -89,32 +94,18 @@ ipcMain.handle('mcp:status', async () => (await mcpReady()).status());
 ipcMain.handle('mcp:reload', async () => { await (await mcpReady()).reload(); return hub.status(); });
 const asking = new Map(); // approval id -> resolve, while the page shows the dialog
 ipcMain.handle('mcp:answer', (_e, id, answer) => asking.get(id)?.(answer));
-/** Asks the page whether a tool may run: 'once' | 'always' | 'deny'. "Always" is saved here. */
-function approver(sender) {
-  return async (info) => {
-    if (sender.isDestroyed()) return 'deny';
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    const answer = await new Promise((resolve) => {
-      const gone = () => resolve('deny');
-      asking.set(id, (a) => { sender.off('destroyed', gone); resolve(['once', 'always'].includes(a) ? a : 'deny'); });
-      sender.once('destroyed', gone);
-      sender.send('mcp:approve', id, info);
-    }).finally(() => asking.delete(id));
-    if (answer === 'always') await store.allowMcpTool(info.server, info.tool);
-    return answer;
-  };
-}
-/** The MCP tools for one reply, or undefined. Servers that don't start are left out with a note in the reply. */
-async function mcpTools(sender, onDelta, signal) {
-  const set = await (await mcpReady()).tools(signal);
-  for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
-  const allow = (await store.get()).mcp.allow;
-  const ask = approver(sender);
-  return Mcp.gated(set, {
-    allowed: (server, tool) => !!allow[server]?.includes(tool),
-    approve: async (info) => { const a = await ask(info); if (a === 'always') (allow[info.server] ||= []).push(info.tool); return a; }, // counts for the rest of this reply too
-  });
-}
+/** Asks the page whether a tool may run: 'once' | 'always' | 'deny'. A page that closes or crashes meanwhile denies. */
+const approver = (sender) => async (info) => {
+  if (sender.isDestroyed()) return 'deny';
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  return new Promise((resolve) => {
+    const done = (a) => { sender.off('destroyed', gone); sender.off('render-process-gone', gone); resolve(['once', 'always'].includes(a) ? a : 'deny'); };
+    const gone = () => done('deny');
+    asking.set(id, done);
+    sender.once('destroyed', gone); sender.once('render-process-gone', gone);
+    sender.send('mcp:approve', id, info);
+  }).finally(() => asking.delete(id));
+};
 let quitting = false;
 app.on('before-quit', (e) => { // stop the servers first; before-quit doesn't wait for promises by itself
   if (quitting) return;

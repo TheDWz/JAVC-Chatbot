@@ -55,7 +55,7 @@ window.api = {
       // Linkup goes through nativeFetch too
       const { model, extra, search, mcp } = api.requestArgs(s, opts);
       const delta = (/** @type {object} */ d) => onDelta?.(d);
-      return await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await mcpTools(delta, ctl.signal) : undefined);
+      return await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: (i) => approve(i), onDelta: delta, signal: ctl.signal }) : undefined);
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),
@@ -78,21 +78,6 @@ window.api = {
   /** fn({server, tool, args}) resolves to 'once' | 'always' | 'deny' before a tool runs; anything else, or an error, denies. */
   onToolApproval: (fn) => { approve = async (info) => { try { const a = await fn(info); return ['once', 'always'].includes(a) ? a : 'deny'; } catch { return 'deny'; } }; },
 };
-
-/** The MCP tools for one reply. Servers that don't start are left out with a note in the reply. */
-async function mcpTools(onDelta, signal) {
-  const set = await (await mcpReady()).tools(signal);
-  for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
-  const allow = (await store.get()).mcp.allow;
-  return Mcp.gated(set, {
-    allowed: (server, tool) => !!allow[server]?.includes(tool),
-    approve: async (info) => {
-      const a = await approve(info);
-      if (a === 'always') { await store.allowMcpTool(info.server, info.tool); (allow[info.server] ||= []).push(info.tool); } // counts for the rest of this reply too
-      return a;
-    },
-  });
-}
 
 // Back closes whatever is open (a dialog, the options panel, the history…); with nothing open, the app goes to the background.
 App.addListener('backButton', () => { if (!globalThis.closeTopLayer?.()) App.minimizeApp(); });
