@@ -27,6 +27,7 @@ export async function handleApi(req, res, requests) {
       { content: `<div id="probe" style="height:${RICH_HEIGHT}px;border-radius:12px;background:linear-gradient(135deg,#8b5cf6,#3b82f6);color:#fff;display:grid;place-items:center">Rich reply OK</div>\n` },
     ];
     for (const d of parts) { res.write(frame(d)); await sleep(150); }
+    res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 40, total_tokens: 60 } })}\n\n`);
     res.end('data: [DONE]\n\n');
   } else {
     res.writeHead(404, { 'content-type': 'application/json' });

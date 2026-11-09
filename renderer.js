@@ -405,6 +405,68 @@ $('reasoning').onclick = () => toggleSide(true);
 $('sideclose').onclick = $('scrim').onclick = () => toggleSide(false);
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('side').classList.contains('open')) toggleSide(false); });
 
+// ---- ⋯ menu and Stats for nerds (read from the stats saved on each reply) ----
+const closeMore = () => { $('morepop').hidden = true; $('more').setAttribute('aria-expanded', 'false'); };
+$('more').onclick = () => { const open = $('morepop').hidden; $('morepop').hidden = !open; $('more').setAttribute('aria-expanded', String(open)); if (open) $('statsbtn').focus(); };
+$('morewrap').onkeydown = (e) => { if (e.key === 'Escape' && !$('morepop').hidden) { e.stopPropagation(); closeMore(); $('more').focus(); } };
+document.addEventListener('mousedown', (e) => { if (!$('morepop').hidden && !$('morewrap').contains(e.target)) closeMore(); });
+$('statsbtn').onclick = () => { closeMore(); openStats(); };
+
+const fmtMs = (v) => (v == null ? ['—'] : v < 1000 ? [String(Math.round(v)), 'ms'] : [(v / 1000).toFixed(2), 's']);
+const fmtTps = (v, est) => (v == null ? ['—'] : [(est ? '~' : '') + v.toFixed(1), 'tok/s']);
+const fmtTok = (v) => (v == null ? ['—'] : [v.toLocaleString(), 'tokens']);
+function tile(label, [value, unit]) {
+  const t = el('div', 'tile'), b = el('b', null, value);
+  if (unit) b.append(el('i', null, unit));
+  t.append(el('small', null, label), b); return t;
+}
+const svgEl = (tag, attrs) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+/** One metric as a line from a zero baseline, one point per reply; hovering a point shows its value. */
+function lineChart(title, points, key, fmt) {
+  const box = el('div', 'chart'), pts = points.map((s, i) => ({ i, s, v: s[key] })).filter((p) => typeof p.v === 'number');
+  box.append(el('h4', null, title));
+  if (!pts.length) { box.append(el('p', 'sub', 'No data yet.')); return box; }
+  const W = 420, H = 116, L = 8, R = 8, T = 24, B = 18, max = Math.max(...pts.map((p) => p.v)) || 1, n = points.length;
+  const x = (i) => L + (n > 1 ? (i / (n - 1)) * (W - L - R) : (W - L - R) / 2), y = (v) => H - B - (v / max) * (H - T - B);
+  const s = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${title}, ${pts.length} replies, highest ${fmt(max).join(' ')}` });
+  const label = (tx, ty, text, anchor = 'start') => { const t = svgEl('text', { x: tx, y: ty, 'text-anchor': anchor }); t.textContent = text; return t; };
+  s.append(svgEl('line', { class: 'grid', x1: L, x2: W - R, y1: y(0), y2: y(0) }), svgEl('line', { class: 'grid', x1: L, x2: W - R, y1: y(max), y2: y(max) }),
+    label(L, T - 8, fmt(max).join(' ')), label(L, H - 3, 'Reply 1'), ...(n > 1 ? [label(W - R, H - 3, `Reply ${n}`, 'end')] : []),
+    svgEl('polyline', { class: 'ln', points: pts.map((p) => `${x(p.i)},${y(p.v)}`).join(' ') }));
+  for (const p of pts) {
+    const g = svgEl('g', {}), tip = svgEl('title', {});
+    tip.textContent = `Reply ${p.i + 1} · ${p.s.model}: ${fmt(p.v, p.s.est).join(' ')}`;
+    g.append(tip, svgEl('circle', { class: 'hit', cx: x(p.i), cy: y(p.v), r: 12 }), svgEl('circle', { class: 'pt', cx: x(p.i), cy: y(p.v), r: 4 }));
+    s.append(g);
+  }
+  box.append(s); return box;
+}
+function renderStats() {
+  const model = $('statsmodel').value, s = Lib.chatStats(chat.messages, model || undefined), last = s.last;
+  $('statscharts').replaceChildren();
+  if (!last) return $('statsbody').replaceChildren(el('p', 'statnote', 'No replies with stats yet. They are recorded for every new reply.'));
+  const avgEst = s.points.some((p) => p.est), tiles = el('div', 'tiles'), notes = [];
+  tiles.append(
+    tile('Last TTFT', fmtMs(last.ttft)), tile('Avg TTFT', fmtMs(s.avgTtft)),
+    tile('Last speed', fmtTps(last.tps, last.est)), tile('Avg speed', fmtTps(s.avgTps, avgEst)),
+    tile('Tokens used in this chat', fmtTok(s.used || null)), tile('Context size', fmtTok(s.context)),
+  );
+  notes.push(`Averages over ${s.points.length} repl${s.points.length === 1 ? 'y' : 'ies'}${model ? ` from ${model}` : ''}. Tokens used counts every reply and every regenerated version.`);
+  if (s.est) notes.push("~ Some replies came without token counts from the provider: their speed is estimated from the text length, and they're left out of the token totals.");
+  $('statsbody').replaceChildren(tiles, ...notes.map((t) => el('p', 'statnote', t)));
+  if ($('statschart').checked) $('statscharts').append(lineChart('Time to first token', s.points, 'ttft', fmtMs), lineChart('Tokens per second', s.points, 'tps', fmtTps));
+}
+function openStats() {
+  const { models } = Lib.chatStats(chat.messages), sel = $('statsmodel'), keep = sel.value;
+  sel.replaceChildren(new Option('All models', ''), ...models.map((m) => new Option(m, m)));
+  sel.value = models.includes(keep) ? keep : '';
+  $('statsfilter').hidden = models.length < 2; // the filter only matters once the chat has used more than one model
+  try { $('statschart').checked = localStorage.getItem('statsChart') === '1'; } catch {}
+  renderStats(); $('statsdlg').showModal();
+}
+$('statsmodel').onchange = renderStats;
+$('statschart').onchange = () => { try { localStorage.setItem('statsChart', $('statschart').checked ? '1' : '0'); } catch {} renderStats(); };
+
 // ---- Searchable model picker. The hidden <select id="model"> stays the source of truth; this is just a nicer way to choose from it. ----
 let modelHi = 0, modelShown = [];
 const MODEL_CAP = 200; // rendering hundreds of rows on every keystroke is slow; the count line tells the user to keep typing
@@ -486,8 +548,10 @@ async function generate(base) {
   const reply = addAssistant();
   setBusy(true);
   try {
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d), { search: toolsOk() });
-    const fields = { content: out.content, reasoning: out.reasoning }; // reasoning is display-only, never sent back
+    const model = settings.model, t0 = performance.now(); let t1 = 0;
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => { t1 ||= performance.now(); reply.delta(d); }, { search: toolsOk() });
+    const stats = Lib.replyStats({ model, t0, t1, t2: performance.now(), usage: out.usage, ctx: out.ctx, text: out.content + out.reasoning });
+    const fields = { content: out.content, reasoning: out.reasoning, stats }; // reasoning and stats are display-only, never sent back
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
     return out;
@@ -619,6 +683,7 @@ function closeTopLayer() {
   if (dlg) { dlg.close(); return true; }
   if ($('side').classList.contains('open')) { toggleSide(false); return true; }
   if (!$('modelpop').hidden) { closeModelPop(); return true; }
+  if (!$('morepop').hidden) { closeMore(); return true; }
   if (narrow() && !document.querySelector('.app').classList.contains('nohist')) { applyHist(false); return true; }
   return false;
 }

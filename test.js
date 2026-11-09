@@ -897,3 +897,62 @@ test('web search settings: off by default, key encrypted and never exposed, keep
   assert.strictEqual((await broken.load()).key, 'sk-1'); // model refresh and chats without search still work
   fs.rmSync(dir, { recursive: true });
 });
+
+// ---- Stats for nerds ----
+const usageFrame = (u) => `data: ${JSON.stringify({ choices: [], usage: u })}\n\n`;
+const U = (p, c) => ({ prompt_tokens: p, completion_tokens: c, total_tokens: p + c });
+
+test('chatStream asks for usage and keeps it from the stream and from plain JSON', async () => {
+  const seen = {};
+  const out = await chatStream('http://x', '', 'm', [], {}, () => {}, sse(frames([{ content: 'hi' }]).replace('data: [DONE]', usageFrame(U(10, 5)) + 'data: [DONE]'), seen));
+  assert.deepStrictEqual(out, { content: 'hi', reasoning: '', usage: U(10, 5) });
+  assert.deepStrictEqual(JSON.parse(seen.opts.body).stream_options, { include_usage: true });
+  const json = JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: U(3, 2) });
+  assert.deepStrictEqual((await chatStream('http://x', '', 'm', [], {}, () => {}, sse(json, {}, 'application/json'))).usage, U(3, 2));
+});
+
+test('chatStream retries without stream_options when the server rejects it, and not for other errors', async () => {
+  const bodies = [];
+  const strict = async (url, opts) => {
+    const b = JSON.parse(opts.body); bodies.push(b);
+    return b.stream_options ? { ok: false, status: 400, text: async () => '{"error":"Unrecognized field: stream_options"}' } : sse(frames([{ content: 'ok' }]))(url, opts);
+  };
+  assert.strictEqual((await chatStream('http://strict', '', 'm', [], {}, () => {}, strict)).content, 'ok');
+  await chatStream('http://strict', '', 'm', [], {}, () => {}, strict); // remembered: the next reply asks once, without the field
+  assert.deepStrictEqual(bodies.map((b) => 'stream_options' in b), [true, false, false]);
+  let calls = 0;
+  await assert.rejects(chatStream('http://x', '', 'm', [], {}, () => {}, async (...a) => { calls++; return fake(400, { error: 'bad level' })(...a); }), /HTTP 400/);
+  assert.strictEqual(calls, 1);
+});
+
+test('web search: usage adds up over rounds, ctx is the last round', async () => {
+  const call = toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]);
+  const withUsage = (f, u) => f.replace('data: [DONE]', usageFrame(u) + 'data: [DONE]');
+  const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch([withUsage(call, U(10, 2)), withUsage(frames([{ content: 'done' }]), U(30, 5))], linkupOk([])), undefined, { key: 'lk' });
+  assert.deepStrictEqual(out.usage, U(40, 7)); assert.strictEqual(out.ctx, 35);
+});
+
+test('replyStats: timings and tokens from usage, or an estimate without it', () => {
+  assert.deepStrictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 400, t2: 2400, usage: U(100, 50), text: 'x' }),
+    { model: 'a', ttft: 400, tps: 25, out: 50, total: 150, ctx: 150 });
+  assert.deepStrictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 1000, t2: 2000, ctx: 99, usage: U(10, 20), text: '' }).ctx, 99);
+  const est = Lib.replyStats({ model: 'a', t0: 0, t1: 100, t2: 1100, text: 'x'.repeat(40) });
+  assert.deepStrictEqual([est.out, est.tps, est.total, est.est], [10, 10, null, true]);
+  assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 500, t2: 500, usage: U(1, 1), text: '' }).tps, null); // arrived in one piece
+  assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 0, t2: 500, text: '' }).ttft, null); // no text at all
+});
+
+test('chatStats: filtered averages, last reply, tokens used over every version, context size', () => {
+  const st = (model, ttft, tps, total) => ({ model, ttft, tps, out: 1, total, ctx: total });
+  let b = { role: 'assistant', content: 'one', stats: st('b', 300, 30, 100) };
+  b = Lib.addVersion(b, { content: 'two', stats: st('b', 500, 50, 200) }); // regenerated: both versions used tokens
+  const msgs = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a', stats: st('a', 100, 10, 50) }, { role: 'user', content: 'q' }, b,
+    { role: 'assistant', content: 'old reply, saved before stats existed' }];
+  const all = Lib.chatStats(msgs);
+  assert.deepStrictEqual([all.models, all.avgTtft, all.avgTps, all.used, all.context, all.last.ttft, all.points.length, all.est], [['a', 'b'], 300, 30, 350, 200, 500, 2, false]);
+  const onlyA = Lib.chatStats(msgs, 'a');
+  assert.deepStrictEqual([onlyA.avgTtft, onlyA.avgTps, onlyA.last.model, onlyA.used], [100, 10, 'b', 350]); // last and totals ignore the filter
+  assert.deepStrictEqual(Lib.showVersion(b, 0).stats.ttft, 300); // each version keeps its own stats
+  const none = Lib.chatStats([]);
+  assert.deepStrictEqual([none.last, none.avgTtft, none.used], [null, null, 0]);
+});
