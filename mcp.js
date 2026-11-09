@@ -277,7 +277,13 @@ async function connect(entry, { spawn, fetchFn, token, signal, started }) {
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const randomText = () => b64url(crypto.getRandomValues(new Uint8Array(32)));
 const sha256 = async (text) => b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))));
-const sameUrl = (a, b) => { try { return new URL(a).href.replace(/\/$/, '') === new URL(b).href.replace(/\/$/, ''); } catch { return false; } };
+/** Whether sign-in details for `resource` cover server `url`: the same origin, and the url's path at or under the resource's (the MCP SDK's rule). */
+const covers = (resource, url) => {
+  try {
+    const r = new URL(resource), u = new URL(url), dir = (p) => (p.endsWith('/') ? p : p + '/');
+    return r.origin === u.origin && dir(u.pathname).startsWith(dir(r.pathname));
+  } catch { return false; }
+};
 
 /** GETs JSON, or null when the address doesn't have it (404 and the like). */
 async function getJson(fetchFn, url) {
@@ -318,7 +324,7 @@ async function discover(entry, fetchFn) {
     if ((prm = await getJson(fetchFn, url))) break;
   }
   if (!prm || !Array.isArray(prm.authorization_servers) || !prm.authorization_servers.length) throw new Error("This server doesn't say how to sign in (no OAuth protected-resource metadata).");
-  if (!sameUrl(prm.resource, entry.url)) throw new Error(`The server's sign-in details are for ${prm.resource}, not ${entry.url}, so the app won't use them.`); // RFC 9728
+  if (!covers(prm.resource, entry.url)) throw new Error(`The server's sign-in details are for ${prm.resource}, not ${entry.url}, so the app won't use them.`); // RFC 9728
   const as = new URL(prm.authorization_servers[0]), asPath = as.pathname.replace(/\/$/, '');
   const tries = asPath
     ? [`${as.origin}/.well-known/oauth-authorization-server${asPath}`, `${as.origin}/.well-known/openid-configuration${asPath}`, `${as.origin}${asPath}/.well-known/openid-configuration`]

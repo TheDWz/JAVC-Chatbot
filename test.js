@@ -1352,8 +1352,8 @@ const oauthWorld = (o = {}) => {
       const b = Object.fromEntries(new URLSearchParams(opt.body)); seen.tokens.push(b);
       if (b.grant_type === 'authorization_code') {
         const challenge = nodeCrypto.createHash('sha256').update(b.code_verifier || '').digest('base64url');
-        if (b.code !== 'the-code' || b.client_id !== codeFor.clientId || b.redirect_uri !== codeFor.redirect || b.resource !== base + '/mcp' || challenge !== codeFor.challenge) return json(400, { error: 'invalid_grant', error_description: 'bad exchange' });
-      } else if (o.refuseRefresh || b.refresh_token !== 'r' + issued || b.resource !== base + '/mcp') return json(400, { error: 'invalid_grant' });
+        if (b.code !== 'the-code' || b.client_id !== codeFor.clientId || b.redirect_uri !== codeFor.redirect || b.resource !== (o.resource || base + '/mcp') || challenge !== codeFor.challenge) return json(400, { error: 'invalid_grant', error_description: 'bad exchange' });
+      } else if (o.refuseRefresh || b.refresh_token !== 'r' + issued || b.resource !== (o.resource || base + '/mcp')) return json(400, { error: 'invalid_grant' });
       issued++; seen.valid = 'a' + issued;
       return json(200, { access_token: 'a' + issued, refresh_token: 'r' + issued, expires_in: 3600, token_type: 'Bearer' });
     }
@@ -1417,6 +1417,7 @@ test('mcp sign-in: answers that do not match, other servers, no PKCE and refusal
     [{ back: { code: null, error: 'access_denied', error_description: 'You said no' } }, /Sign-in was refused: You said no/],
     [{ noS256: true }, /doesn't support PKCE/],
     [{ resource: 'https://other.example/mcp' }, /are for https:\/\/other\.example\/mcp, not https:\/\/srv\.example\/mcp/],
+    [{ resource: 'https://srv.example/mc' }, /are for https:\/\/srv\.example\/mc,/], // a sibling path, not a parent
     [{ noRegistration: true }, /doesn't let new apps register/],
   ];
   for (const [opts, err] of cases) {
@@ -1424,6 +1425,9 @@ test('mcp sign-in: answers that do not match, other servers, no PKCE and refusal
     await assert.rejects(w.hub.signIn('rh', w.ways), err);
     assert.strictEqual(w.mem.rh, undefined);
   }
+  const parent = oauthWorld({ resource: 'https://srv.example/' }); // details for the whole origin cover /mcp, and that resource is what's asked for
+  await parent.hub.signIn('rh', parent.ways);
+  assert.strictEqual(parent.seen.auth.resource, 'https://srv.example/');
   const slow = oauthWorld(); // the browser never comes back
   await assert.rejects(Mcp.signIn({ url: slow.base + '/mcp', headers: {} }, { fetchFn: slow.f, openUrl: () => {}, listen: slow.ways.listen, timeoutMs: 10 }), /Sign-in timed out/);
 });
