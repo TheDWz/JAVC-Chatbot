@@ -1,3 +1,5 @@
+// shortcut: elements by id come back as any, so their own properties (value, checked, showModal…) need no casts; give it per-id types if that hides real bugs
+/** @type {(id: string) => any} */
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const svgEl = (tag, attrs = {}) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
