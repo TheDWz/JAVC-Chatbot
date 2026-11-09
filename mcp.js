@@ -97,6 +97,14 @@ function rpc(send) {
   };
 }
 
+/** `p`, unless `signal` aborts first; then it rejects with Stopped and `p` carries on by itself. */
+const until = (p, signal) => (!signal ? p : new Promise((resolve, reject) => {
+  const stop = () => reject(new Error('Stopped'));
+  if (signal.aborted) return stop();
+  signal.addEventListener('abort', stop, { once: true });
+  p.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+}));
+
 const lastLines = (s) => s.trim().split('\n').slice(-6).join('\n');
 
 /**
@@ -136,17 +144,19 @@ async function stdioTransport(spawn, entry, onMessage, onDead) {
   };
 }
 
-/** Starts a server and does the initialize handshake. Resolves to {request, close, version}.
+/** Starts a server and does the initialize handshake. Resolves to {request, close, version}. `started(transport)` gets
+ * the transport as soon as it exists, so the server can be stopped before the handshake ends.
  * @param {{type: string, command?: string, args?: string[], env?: object}} entry
- * @param {{spawn?: Function, signal?: AbortSignal}} deps
+ * @param {{spawn?: Function, signal?: AbortSignal, started?: (t: {close: () => Promise<void>}) => void}} deps
  */
-async function connect(entry, { spawn, signal }) {
+async function connect(entry, { spawn, signal, started }) {
   let r = null, deadErr = null;
   const onDead = (e) => { deadErr ||= e; r?.fail(e); };
   if (entry.type !== 'stdio') throw new Error('Remote (url) servers are coming in a later update.');
   if (!spawn) throw new Error('Only the desktop app can run local servers.');
   const t = await stdioTransport(spawn, entry, (m) => r.receive(m), onDead);
   r = rpc(t.send);
+  started?.(t);
   if (deadErr) r.fail(deadErr);
   try {
     const init = await r.request('initialize', { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: 'JAVC Chatbot', version } }, signal, CONNECT_MS);
@@ -199,18 +209,25 @@ function toolNames(list) {
  */
 function makeHub({ spawn }) {
   let servers = {};
-  const conns = new Map(); // name -> {key, conn: Promise<{conn, tools}>}
+  const conns = new Map(); // name -> {key, conn: Promise<{conn, tools}>, stop: () => Promise<void>}
 
-  const drop = (name) => { const c = conns.get(name); conns.delete(name); c?.conn.then((x) => x.conn.close(), () => {}); };
+  /** Stops a server, even one still starting (its transport is closed right away, or as soon as it exists). */
+  const drop = (name) => { const c = conns.get(name); conns.delete(name); return c ? c.stop() : Promise.resolve(); };
   /** The server's connection and tool list, started on first use; a failed start is forgotten so the next use tries again. */
   function open(name) {
     const entry = servers[name], key = JSON.stringify(entry);
     let c = conns.get(name);
     if (!c || c.key !== key) {
       if (c) drop(name);
-      c = { key, conn: connect(entry, { spawn }).then(async (conn) => {
-        try { return { conn, tools: await listTools(conn) }; } catch (e) { await conn.close(); throw e; }
-      }) };
+      let transport = null, stopped = false;
+      const started = (t) => { transport = t; if (stopped) t.close(); };
+      c = {
+        key,
+        conn: connect(entry, { spawn, started }).then(async (conn) => {
+          try { return { conn, tools: await listTools(conn) }; } catch (e) { await conn.close(); throw e; }
+        }),
+        stop: async () => { stopped = true; await transport?.close(); },
+      };
       conns.set(name, c);
       const mine = c;
       c.conn.catch(() => { if (conns.get(name) === mine) conns.delete(name); });
@@ -235,17 +252,18 @@ function makeHub({ spawn }) {
       }));
     },
     /** Restarts every server (the Reload button). */
-    async reload() { for (const name of [...conns.keys()]) drop(name); },
+    async reload() { await Promise.all([...conns.keys()].map(drop)); },
     /**
      * The tools of every server that starts, for one reply: {defs, has, label, info, run, failed}. Servers that fail are
-     * left out and listed in `failed` ({name, error}).
+     * left out and listed in `failed` ({name, error}). Rejects with Stopped if `signal` aborts while servers start.
+     * @param {AbortSignal} [signal]
      */
-    async tools() {
+    async tools(signal) {
       const failed = [], list = [];
       await Promise.all(Object.keys(servers).map(async (name) => {
         if (local(name) && !spawn) return;
-        try { for (const t of (await open(name)).tools) list.push({ server: name, tool: t.name, def: t }); }
-        catch (e) { failed.push({ name, error: e.message }); }
+        try { for (const t of (await until(open(name), signal)).tools) list.push({ server: name, tool: t.name, def: t }); }
+        catch (e) { if (signal?.aborted) throw e; failed.push({ name, error: e.message }); } // Stop while a server starts: it keeps starting for next time
       }));
       list.sort((a, b) => (a.server + '\0' + a.tool < b.server + '\0' + b.tool ? -1 : 1)); // the same order every time
       const byName = new Map(toolNames(list).map((n, i) => [n, list[i]]));
@@ -267,7 +285,7 @@ function makeHub({ spawn }) {
       };
     },
     /** Stops every server. */
-    async closeAll() { const all = [...conns.keys()]; const closing = all.map((n) => conns.get(n).conn.then((x) => x.conn.close(), () => {})); conns.clear(); await Promise.all(closing); },
+    async closeAll() { await Promise.all([...conns.keys()].map(drop)); },
   };
 }
 

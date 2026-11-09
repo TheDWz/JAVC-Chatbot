@@ -55,7 +55,7 @@ window.api = {
       // Linkup goes through nativeFetch too
       const { model, extra, search, mcp } = api.requestArgs(s, opts);
       const delta = (/** @type {object} */ d) => onDelta?.(d);
-      return await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await mcpTools(delta) : undefined);
+      return await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await mcpTools(delta, ctl.signal) : undefined);
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),
@@ -80,8 +80,8 @@ window.api = {
 };
 
 /** The MCP tools for one reply. Servers that don't start are left out with a note in the reply. */
-async function mcpTools(onDelta) {
-  const set = await (await mcpReady()).tools();
+async function mcpTools(onDelta, signal) {
+  const set = await (await mcpReady()).tools(signal);
   for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
   const allow = (await store.get()).mcp.allow;
   return Mcp.gated(set, {

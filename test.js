@@ -1234,3 +1234,14 @@ test('mcp settings: off by default, config encrypted and never exposed, bad past
   assert.deepStrictEqual(v.mcp, { enabled: false, hasConfig: false, servers: [], allow: {} });
   fs.rmSync(dir, { recursive: true });
 });
+
+test('mcp hub: Stop while a server is still starting ends the wait at once; the server keeps starting for next time', async () => {
+  const hub = Mcp.makeHub({ spawn: nodeSpawn });
+  hub.configure({ mute: { type: 'stdio', command: process.execPath, args: ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0))'], env: {} } }); // never answers initialize
+  try {
+    const ctl = new AbortController(), t0 = Date.now();
+    setTimeout(() => ctl.abort(), 50);
+    await assert.rejects(hub.tools(ctl.signal), /Stopped/);
+    assert.ok(Date.now() - t0 < 2000);
+  } finally { await hub.closeAll(); }
+});

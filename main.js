@@ -60,7 +60,7 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   try {
     const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
     const { model, extra, search, mcp } = api.requestArgs(s, opts);
-    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await mcpTools(e.sender, onDelta) : undefined);
+    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await mcpTools(e.sender, onDelta, ctl.signal) : undefined);
   } finally { running.delete(id); }
 });
 
@@ -105,8 +105,8 @@ function approver(sender) {
   };
 }
 /** The MCP tools for one reply, or undefined. Servers that don't start are left out with a note in the reply. */
-async function mcpTools(sender, onDelta) {
-  const set = await (await mcpReady()).tools();
+async function mcpTools(sender, onDelta, signal) {
+  const set = await (await mcpReady()).tools(signal);
   for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
   const allow = (await store.get()).mcp.allow;
   const ask = approver(sender);
