@@ -50,7 +50,7 @@ module.exports = ({ io, crypto }) => {
     const st = profiles.migrate(raw);
     let changed = text !== null && raw.version !== 2; // persist a migrated file right away so profile ids stay stable
     if (await crypto.available()) { // upgrade leftover plaintext keys now that a keyring is available
-      for (const p of [...st.profiles, st.search, st.mcp]) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
+      for (const p of [...st.profiles, st.search, st.mcp, ...Object.values(st.mcp.auth)]) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
     }
     if (changed) await write(st);
     return st;
@@ -102,7 +102,7 @@ module.exports = ({ io, crypto }) => {
     mcpServers: serial(async () => { const m = (await read()).mcp; return m.enabled && hasKey(m) ? parseConfig(await keyOf(m, 'MCP servers')) : {}; }),
     /**
      * Saves {enabled, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
-     * A server whose entry changed, or that is gone, loses its "Always allow" tools.
+     * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in.
      */
     saveMcp: serial(async (p) => {
       const st = await read();
@@ -110,12 +110,27 @@ module.exports = ({ io, crypto }) => {
       if (typeof p.config === 'string') {
         const next = parseConfig(p.config);
         let prev = {}; try { prev = parseConfig(await keyOf(st.mcp, 'MCP servers')); } catch {} // unreadable: treat every server as new
-        for (const name of Object.keys(st.mcp.allow)) if (JSON.stringify(prev[name]) !== JSON.stringify(next[name]) || !next[name]) delete st.mcp.allow[name];
+        for (const name of new Set([...Object.keys(st.mcp.allow), ...Object.keys(st.mcp.auth)])) {
+          if (!next[name] || JSON.stringify(prev[name]) !== JSON.stringify(next[name])) { delete st.mcp.allow[name]; delete st.mcp.auth[name]; }
+        }
         delete st.mcp.keyEnc; delete st.mcp.keyPlain;
         if (p.config.trim()) Object.assign(st.mcp, await encKey(p.config.trim()));
         st.mcp.names = Object.keys(next);
       }
       return commit(st);
+    }),
+    /** A url server's sign-in tokens (see mcp.js), or null when there are none or they can't be read. */
+    mcpTokens: serial(async (name) => {
+      const rec = (await read()).mcp.auth[name];
+      if (!rec) return null;
+      try { return JSON.parse(await keyOf(rec, 'sign-in')); } catch { return null; } // unreadable: the server shows as needing sign-in again
+    }),
+    /** Saves a url server's sign-in tokens; null forgets them. */
+    saveMcpTokens: serial(async (name, tokens) => {
+      const st = await read();
+      if (tokens) { if (st.mcp.names.includes(name)) st.mcp.auth[name] = await encKey(JSON.stringify(tokens)); }
+      else delete st.mcp.auth[name];
+      await write(st);
     }),
     /** Remembers "Always allow" for one server's tool. */
     allowMcpTool: serial(async (server, tool) => {

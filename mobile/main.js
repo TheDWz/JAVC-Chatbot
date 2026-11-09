@@ -15,7 +15,15 @@ const store = makeStore({ io: makeNativeDisk(Javc), crypto: makeNativeCrypto(Jav
 const chats = makeChats(makeNativeDisk(Javc, 'chats'));
 
 // MCP: no local (command) servers on a phone, so those report 'desktop-only'; url servers go through nativeFetch, which has no CORS
-const hub = Mcp.makeHub({ fetchFn: nativeFetch });
+const hub = Mcp.makeHub({ fetchFn: nativeFetch, auth: { get: (name) => store.mcpTokens(name), save: (name, tokens) => store.saveMcpTokens(name, tokens) } });
+// Sign-in: the browser comes back to the app through this address (an intent filter in AndroidManifest.xml), which Capacitor reports as appUrlOpen
+const REDIRECT = 'io.github.thedwz.javcchatbot:/oauth';
+let returned = null; // resolves the sign-in that is waiting for the browser
+App.addListener('appUrlOpen', ({ url }) => { if (url.startsWith(REDIRECT)) returned?.(url); });
+const signInWays = {
+  openUrl: (url) => Javc.openUrl({ url }),
+  listen: async () => ({ uri: REDIRECT, next: new Promise((r) => { returned = r; }), close: () => { returned = null; } }),
+};
 const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
 /** @type {(info: object) => Promise<string>} */
 let approve = async () => 'deny'; // until the page registers its dialog
@@ -75,6 +83,8 @@ window.api = {
   saveMcp: async (p) => { const v = await store.saveMcp(p); await mcpReady(); return v; },
   mcpStatus: async () => (await mcpReady()).status(),
   reloadMcp: async () => { await (await mcpReady()).reload(); return hub.status(); },
+  mcpSignIn: async (name) => { await (await mcpReady()).signIn(name, signInWays); return hub.status(); },
+  mcpSignOut: async (name) => { await (await mcpReady()).signOut(name); return hub.status(); },
   /** fn({server, tool, args}) resolves to 'once' | 'always' | 'deny' before a tool runs; anything else, or an error, denies. */
   onToolApproval: (fn) => { approve = async (info) => { try { const a = await fn(info); return ['once', 'always'].includes(a) ? a : 'deny'; } catch { return 'deny'; } }; },
 };
@@ -82,7 +92,7 @@ window.api = {
 /** The MCP tools for one reply. Servers that don't start are left out with a note in the reply. */
 async function mcpTools(onDelta, signal) {
   const set = await (await mcpReady()).tools(signal);
-  for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
+  for (const f of set.failed) onDelta({ reasoning: f.auth ? `MCP server "${f.name}" needs you to sign in (Settings → Tools).\n` : `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
   const allow = (await store.get()).mcp.allow;
   return Mcp.gated(set, {
     allowed: (server, tool) => !!allow[server]?.includes(tool),

@@ -188,22 +188,29 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
 /**
  * A remote server over Streamable HTTP: each message is a POST, answered with JSON or an event stream. Keeps the
  * session id the server gives, and sends the negotiated protocol version once it's known.
- * A 401 throws an error with `auth: true` and the server's `resourceMetadata` URL; a 404 on an open session throws
- * one with `expired: true`, so the caller can start a new session.
+ * With `token` ({get, refresh}, from a sign-in) it sends the access token, and on a 401 refreshes it once and tries again.
+ * A 401 after that throws an error with `auth: true` and the server's `resourceMetadata` URL; a 404 on an open session
+ * throws one with `expired: true`, so the caller can start a new session.
  */
-function httpTransport(entry, fetchFn, onMessage) {
-  let session = '', proto = '';
+function httpTransport(entry, fetchFn, onMessage, token) {
+  let session = '', proto = '', bearer = '';
   const host = new URL(entry.url).host;
   const headers = () => ({
     'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
-    ...(proto && { 'MCP-Protocol-Version': proto }), ...(session && { 'Mcp-Session-Id': session }), ...entry.headers,
+    ...(proto && { 'MCP-Protocol-Version': proto }), ...(session && { 'Mcp-Session-Id': session }),
+    ...(bearer && { Authorization: 'Bearer ' + bearer }), ...entry.headers,
   });
   return {
     setVersion(v) { proto = v; },
     async send(m, signal) {
       let res;
-      try { res = await fetchFn(entry.url, { method: 'POST', headers: headers(), body: JSON.stringify(m), signal }); }
-      catch (e) { throw signal?.aborted ? new Error('Stopped') : new Error(`Couldn't reach ${host}: ${e.message}`, { cause: e }); }
+      for (let retried = false; ; retried = true) {
+        if (token) bearer = await token.get();
+        try { res = await fetchFn(entry.url, { method: 'POST', headers: headers(), body: JSON.stringify(m), signal }); }
+        catch (e) { throw signal?.aborted ? new Error('Stopped') : new Error(`Couldn't reach ${host}: ${e.message}`, { cause: e }); }
+        if (res.status !== 401 || retried || !bearer || !(await token.refresh())) break;
+        res.body?.cancel().catch(() => {}); // the token was refused: refreshed, so send it again
+      }
       if (res.status === 401) {
         const meta = /resource_metadata="([^"]+)"/.exec(res.headers.get('www-authenticate') || '')?.[1] || '';
         res.body?.cancel().catch(() => {});
@@ -244,13 +251,13 @@ function httpTransport(entry, fetchFn, onMessage) {
 /** Starts a server and does the initialize handshake. Resolves to {request, close, version}. `started(transport)` gets
  * the transport as soon as it exists, so the server can be stopped before the handshake ends.
  * @param {{type: string, command?: string, args?: string[], env?: object}} entry
- * @param {{spawn?: Function, fetchFn?: Function, signal?: AbortSignal, started?: (t: {close: () => Promise<void>}) => void}} deps
+ * @param {{spawn?: Function, fetchFn?: Function, token?: {get(): Promise<string>, refresh(): Promise<boolean>}, signal?: AbortSignal, started?: (t: {close: () => Promise<void>}) => void}} deps
  */
-async function connect(entry, { spawn, fetchFn, signal, started }) {
+async function connect(entry, { spawn, fetchFn, token, signal, started }) {
   let r = null, deadErr = null;
   const onDead = (e) => { deadErr ||= e; r?.fail(e); };
   let t;
-  if (entry.type === 'http') t = httpTransport(entry, fetchFn, (m) => r.receive(m));
+  if (entry.type === 'http') t = httpTransport(entry, fetchFn, (m) => r.receive(m), token);
   else if (!spawn) throw new Error('Only the desktop app can run local servers.');
   else t = await stdioTransport(spawn, entry, (m) => r.receive(m), onDead);
   r = rpc(t.send);
@@ -263,6 +270,116 @@ async function connect(entry, { spawn, fetchFn, signal, started }) {
     await r.notify('notifications/initialized'); // before any other request, which over HTTP could otherwise overtake it
     return { request: r.request, close: t.close, version: init.protocolVersion };
   } catch (e) { await t.close(); throw e; }
+}
+
+// ---- Sign-in (OAuth 2.1 as the MCP spec asks: discovery, dynamic client registration, PKCE, resource indicators) ----
+
+const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const randomText = () => b64url(crypto.getRandomValues(new Uint8Array(32)));
+const sha256 = async (text) => b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))));
+const sameUrl = (a, b) => { try { return new URL(a).href.replace(/\/$/, '') === new URL(b).href.replace(/\/$/, ''); } catch { return false; } };
+
+/** GETs JSON, or null when the address doesn't have it (404 and the like). */
+async function getJson(fetchFn, url) {
+  let res;
+  try { res = await fetchFn(url, { method: 'GET', headers: { Accept: 'application/json' } }); }
+  catch (e) { throw new Error(`Couldn't reach ${new URL(url).host}: ${e.message}`, { cause: e }); }
+  if (!res.ok) { res.body?.cancel().catch(() => {}); return null; }
+  try { return JSON.parse(await res.text()); } catch { return null; }
+}
+
+/** POSTs a form or JSON and returns the JSON answer; an OAuth error answer throws its description. */
+async function postFor(fetchFn, url, body, json = false) {
+  let res;
+  try {
+    res = await fetchFn(url, { method: 'POST', headers: { 'Content-Type': json ? 'application/json' : 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: json ? JSON.stringify(body) : new URLSearchParams(body).toString() });
+  } catch (e) { throw new Error(`Couldn't reach ${new URL(url).host}: ${e.message}`, { cause: e }); }
+  const text = await res.text();
+  let j = null; try { j = JSON.parse(text); } catch {}
+  if (!res.ok) throw new Error(`${new URL(url).host} said: ${j?.error_description || j?.error || `HTTP ${res.status} ${text.slice(0, 200)}`}`);
+  if (!isObj(j)) throw new Error(`${new URL(url).host} didn't answer with JSON`);
+  return j;
+}
+
+/** Where to find a server's OAuth details: the 401's resource_metadata, else the well-known addresses. */
+async function discover(entry, fetchFn) {
+  const u = new URL(entry.url), path = u.pathname.replace(/\/$/, '');
+  let hinted = '', scope = '';
+  try { // an unauthenticated request: its 401 says where the metadata is
+    const res = await fetchFn(entry.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...entry.headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: 'JAVC Chatbot', version } } }) });
+    const h = res.headers.get('www-authenticate') || '';
+    hinted = /resource_metadata="([^"]+)"/.exec(h)?.[1] || ''; scope = /scope="([^"]+)"/.exec(h)?.[1] || '';
+    res.body?.cancel().catch(() => {});
+  } catch {}
+  let prm = null;
+  for (const url of [hinted, path && `${u.origin}/.well-known/oauth-protected-resource${path}`, `${u.origin}/.well-known/oauth-protected-resource`].filter(Boolean)) {
+    if ((prm = await getJson(fetchFn, url))) break;
+  }
+  if (!prm || !Array.isArray(prm.authorization_servers) || !prm.authorization_servers.length) throw new Error("This server doesn't say how to sign in (no OAuth protected-resource metadata).");
+  if (!sameUrl(prm.resource, entry.url)) throw new Error(`The server's sign-in details are for ${prm.resource}, not ${entry.url}, so the app won't use them.`); // RFC 9728
+  const as = new URL(prm.authorization_servers[0]), asPath = as.pathname.replace(/\/$/, '');
+  const tries = asPath
+    ? [`${as.origin}/.well-known/oauth-authorization-server${asPath}`, `${as.origin}/.well-known/openid-configuration${asPath}`, `${as.origin}${asPath}/.well-known/openid-configuration`]
+    : [`${as.origin}/.well-known/oauth-authorization-server`, `${as.origin}/.well-known/openid-configuration`];
+  let meta = null;
+  for (const url of tries) if ((meta = await getJson(fetchFn, url))) break;
+  if (!meta?.authorization_endpoint || !meta.token_endpoint) throw new Error(`Couldn't read the sign-in server's details at ${as.origin}.`);
+  if (!meta.code_challenge_methods_supported?.includes('S256')) throw new Error("The sign-in server doesn't support PKCE (S256), so the app won't sign in to it.");
+  return { resource: prm.resource, scope: scope || (Array.isArray(prm.scopes_supported) ? prm.scopes_supported.join(' ') : ''), meta };
+}
+
+/**
+ * Signs in to a url server and resolves to its tokens: {url, resource, issuer, tokenEndpoint, clientId, clientSecret?,
+ * accessToken, refreshToken, expiresAt}. `listen()` starts catching the redirect and resolves to {uri, next, close}:
+ * `next` resolves to the URL the browser was sent back to. `openUrl` shows the sign-in page in the browser.
+ * shortcut: registers with dynamic client registration only; add client ID metadata documents or a pre-registered id when a server offers no registration_endpoint
+ * @param {{url: string, headers?: object}} entry
+ * @param {{fetchFn: Function, openUrl: (url: string) => any, listen: () => Promise<{uri: string, next: Promise<string>, close: () => void}>, timeoutMs?: number}} deps
+ */
+async function signIn(entry, { fetchFn, openUrl, listen, timeoutMs = 300000 }) {
+  const { resource, scope, meta } = await discover(entry, fetchFn);
+  if (!meta.registration_endpoint) throw new Error("The sign-in server doesn't let new apps register, so this app can't sign in to it yet.");
+  const catcher = await listen();
+  try {
+    const reg = await postFor(fetchFn, meta.registration_endpoint, {
+      client_name: 'JAVC Chatbot', redirect_uris: [catcher.uri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
+      token_endpoint_auth_method: 'none', application_type: 'native', ...(scope && { scope }),
+    }, true);
+    if (typeof reg.client_id !== 'string' || !reg.client_id) throw new Error('The sign-in server registered the app without a client id.');
+    const verifier = randomText(), state = randomText();
+    const auth = new URL(meta.authorization_endpoint);
+    for (const [k, v] of Object.entries({ response_type: 'code', client_id: reg.client_id, redirect_uri: catcher.uri, code_challenge: await sha256(verifier),
+      code_challenge_method: 'S256', state, resource, ...(scope && { scope }) })) auth.searchParams.set(k, v);
+    await openUrl(auth.href);
+    let timer;
+    const back = new URL(await Promise.race([catcher.next, new Promise((_, no) => { timer = setTimeout(() => no(new Error('Sign-in timed out. Try again.')), timeoutMs); })]).finally(() => clearTimeout(timer)));
+    const q = back.searchParams;
+    if (q.get('state') !== state) throw new Error("The sign-in answer didn't match this sign-in, so it was ignored.");
+    if ((q.has('iss') || meta.authorization_response_iss_parameter_supported) && q.get('iss') !== meta.issuer) throw new Error('The sign-in answer came from a different server than expected, so it was ignored.'); // RFC 9207
+    if (q.get('error')) throw new Error('Sign-in was refused: ' + (q.get('error_description') || q.get('error')));
+    if (!q.get('code')) throw new Error('The sign-in answer had no code.');
+    const tok = await postFor(fetchFn, meta.token_endpoint, { grant_type: 'authorization_code', code: q.get('code'), redirect_uri: catcher.uri, client_id: reg.client_id,
+      code_verifier: verifier, resource, ...(reg.client_secret && { client_secret: reg.client_secret }) });
+    return tokensFrom(tok, { url: entry.url, resource, issuer: meta.issuer || '', tokenEndpoint: meta.token_endpoint, clientId: reg.client_id, ...(reg.client_secret && { clientSecret: reg.client_secret }) });
+  } finally { catcher.close(); }
+}
+
+/** @typedef {{url: string, resource: string, issuer: string, tokenEndpoint: string, clientId: string, clientSecret?: string, accessToken: string, refreshToken: string, expiresAt: number}} Tokens */
+
+/** A token answer as what's saved. @returns {Tokens} */
+function tokensFrom(tok, base) {
+  if (typeof tok.access_token !== 'string' || !tok.access_token) throw new Error('The sign-in server gave no access token.');
+  return { ...base, accessToken: tok.access_token, refreshToken: typeof tok.refresh_token === 'string' ? tok.refresh_token : base.refreshToken || '',
+    expiresAt: Number.isFinite(tok.expires_in) ? Date.now() + tok.expires_in * 1000 : 0 };
+}
+
+/** New tokens from a refresh token; throws when the server refuses. */
+async function refreshTokens(t, fetchFn) {
+  const tok = await postFor(fetchFn, t.tokenEndpoint, { grant_type: 'refresh_token', refresh_token: t.refreshToken, client_id: t.clientId, resource: t.resource,
+    ...(t.clientSecret && { client_secret: t.clientSecret }) });
+  return tokensFrom(tok, t);
 }
 
 /** All of a server's tools, following nextCursor. */
@@ -304,10 +421,34 @@ function toolNames(list) {
 
 /**
  * The servers, connected lazily and kept running. `spawn` is the desktop's; without it local servers report 'desktop-only'.
- * @param {{spawn?: (command: string, args: string[], env: object) => any, fetchFn?: Function}} deps `fetchFn` is for url servers (fetch by default).
+ * @param {{spawn?: (command: string, args: string[], env: object) => any, fetchFn?: Function, auth?: {get(name: string): Promise<Tokens|null>, save(name: string, tokens: Tokens|null): Promise<void>}}} deps
+ *   `fetchFn` is for url servers (fetch by default). `auth` keeps their sign-in tokens.
  */
-function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts) }) {
+function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts), auth }) {
   let servers = {};
+  /** A url server's saved tokens, or null; ones saved for another address don't count. */
+  const tokensOf = async (name) => { const t = await auth?.get(name); return t && t.url === servers[name]?.url ? t : null; };
+  /** {get, refresh} for a server's access token: refreshed when it's about to expire, or when the server refuses it (one refresh at a time). */
+  function tokenFor(name) {
+    let busy = null;
+    const refresh = () => (busy ??= (async () => {
+      try {
+        const t = await tokensOf(name);
+        if (!t?.refreshToken) return null;
+        const next = await refreshTokens(t, fetchFn).catch(() => null);
+        if (next) await auth.save(name, next);
+        return next;
+      } finally { busy = null; }
+    })());
+    return {
+      async get() {
+        const t = await tokensOf(name);
+        if (t?.expiresAt && t.expiresAt < Date.now() + 60000 && t.refreshToken) return (await refresh())?.accessToken || '';
+        return t?.accessToken || '';
+      },
+      refresh: async () => !!(await refresh()),
+    };
+  }
   const conns = new Map(); // name -> {key, conn: Promise<{conn, tools}>, stop: () => Promise<void>}
 
   /** Stops a server, even one still starting (its transport is closed right away, or as soon as it exists). */
@@ -322,7 +463,7 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts) }) {
       const started = (t) => { transport = t; if (stopped) t.close(); };
       c = {
         key,
-        conn: connect(entry, { spawn, fetchFn, started }).then(async (conn) => {
+        conn: connect(entry, { spawn, fetchFn, token: entry.type === 'http' && auth ? tokenFor(name) : undefined, started }).then(async (conn) => {
           try { return { conn, tools: await listTools(conn) }; } catch (e) { await conn.close(); throw e; }
         }),
         stop: async () => { stopped = true; await transport?.close(); },
@@ -345,9 +486,10 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts) }) {
     async status() {
       return Promise.all(Object.keys(servers).map(async (name) => {
         const type = servers[name].type;
-        if (local(name) && !spawn) return { name, type, state: 'desktop-only', tools: 0, error: '' };
-        try { return { name, type, state: 'ok', tools: (await open(name)).tools.length, error: '' }; }
-        catch (e) { return { name, type, state: e.auth ? 'auth' : 'error', tools: 0, error: e.message }; }
+        if (local(name) && !spawn) return { name, type, state: 'desktop-only', tools: 0, error: '', signedIn: false };
+        const signedIn = type === 'http' && !!(await tokensOf(name));
+        try { return { name, type, state: 'ok', tools: (await open(name)).tools.length, error: '', signedIn }; }
+        catch (e) { return { name, type, state: e.auth ? 'auth' : 'error', tools: 0, error: e.message, signedIn }; }
       }));
     },
     /** Restarts every server (the Reload button). */
@@ -362,7 +504,7 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts) }) {
       await Promise.all(Object.keys(servers).map(async (name) => {
         if (local(name) && !spawn) return;
         try { for (const t of (await until(open(name), signal)).tools) list.push({ server: name, tool: t.name, def: t }); }
-        catch (e) { if (signal?.aborted) throw e; failed.push({ name, error: e.message }); } // Stop while a server starts: it keeps starting for next time
+        catch (e) { if (signal?.aborted) throw e; failed.push({ name, error: e.message, auth: !!e.auth }); } // Stop while a server starts: it keeps starting for next time
       }));
       list.sort((a, b) => (a.server + '\0' + a.tool < b.server + '\0' + b.tool ? -1 : 1)); // the same order every time
       const byName = new Map(toolNames(list).map((n, i) => [n, list[i]]));
@@ -386,6 +528,19 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts) }) {
     },
     /** Stops every server. */
     async closeAll() { await Promise.all([...conns.keys()].map(drop)); },
+    /**
+     * Signs in to url server `name` (see signIn for `ways`), saves the tokens and reconnects it.
+     * @param {string} name
+     * @param {{openUrl: (url: string) => any, listen: () => Promise<{uri: string, next: Promise<string>, close: () => void}>}} ways
+     */
+    async signIn(name, ways) {
+      const entry = servers[name];
+      if (entry?.type !== 'http') throw new Error('Only servers with a "url" have a sign-in.');
+      await auth.save(name, await signIn(entry, { fetchFn, ...ways }));
+      await drop(name);
+    },
+    /** Forgets a server's sign-in and reconnects it without one. */
+    async signOut(name) { await auth.save(name, null); await drop(name); },
   };
 }
 
@@ -410,4 +565,4 @@ function gated(set, { allowed, approve }) {
   };
 }
 
-module.exports = { parseConfig, makeHub, gated, resultText, toolNames, DECLINED };
+module.exports = { parseConfig, makeHub, gated, resultText, toolNames, signIn, DECLINED };

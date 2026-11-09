@@ -25,6 +25,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- MCP sign-in: the browser comes back to io.github.thedwz.javcchatbot:/oauth (a reverse-domain scheme, as OAuth asks of apps) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="io.github.thedwz.javcchatbot" android:path="/oauth" />
+            </intent-filter>
+
         </activity>
 
         <provider

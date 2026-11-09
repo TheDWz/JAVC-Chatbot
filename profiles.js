@@ -52,10 +52,12 @@ function finishState(state, raw) {
   const render = Object.fromEntries(Lib.RENDER_KEYS.map((k) => [k, typeof r[k] === 'boolean' ? r[k] : !(richOff && k !== 'markdown')]));
   const search = { enabled: raw?.search?.enabled === true, ...(raw?.search && typeof raw.search === 'object' ? keyOf(raw.search) : {}) }; // web search: {enabled, keyEnc|keyPlain}
   // MCP servers: {enabled, keyEnc|keyPlain, names, allow}. The pasted config sits in the key fields, encrypted like a key, since env and headers often hold tokens.
-  // `names` is a plain copy of its server names for the window; `allow` is {server: [tool]} for "Always allow".
+  // `names` is a plain copy of its server names for the window; `allow` is {server: [tool]} for "Always allow";
+  // `auth` is {server: {keyEnc|keyPlain}}, each a url server's sign-in tokens as JSON, encrypted like a key.
   const m = raw?.mcp && typeof raw.mcp === 'object' ? raw.mcp : {};
   const allow = Object.fromEntries(Object.entries(m.allow && typeof m.allow === 'object' ? m.allow : {}).filter(([, v]) => Array.isArray(v)).map(([k, v]) => [k, v.filter((t) => typeof t === 'string')]));
-  const mcp = { enabled: m.enabled === true, ...keyOf(m), names: Array.isArray(m.names) ? m.names.filter((n) => typeof n === 'string') : [], allow };
+  const auth = Object.fromEntries(Object.entries(m.auth && typeof m.auth === 'object' ? m.auth : {}).filter(([, v]) => v && typeof v === 'object' && hasKey(v)).map(([k, v]) => [k, keyOf(v)]));
+  const mcp = { enabled: m.enabled === true, ...keyOf(m), names: Array.isArray(m.names) ? m.names.filter((n) => typeof n === 'string') : [], allow, auth };
   const summarizer = cleanSummarizer(raw?.summarizer) || { profileId: '', model: '' }, contextLimit = cleanContextLimit(raw?.contextLimit) || { on: false, tokens: Lib.DEFAULT_CTX };
   return { ...state, search, mcp, summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
 }

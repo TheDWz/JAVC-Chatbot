@@ -1127,7 +1127,7 @@ test('mcp hub: a real local server lists its tools over pages, runs them, surviv
   const hub = Mcp.makeHub({ spawn: nodeSpawn });
   hub.configure({ ed: testServer() });
   try {
-    assert.deepStrictEqual(await hub.status(), [{ name: 'ed', type: 'stdio', state: 'ok', tools: 3, error: '' }]);
+    assert.deepStrictEqual(await hub.status(), [{ name: 'ed', type: 'stdio', state: 'ok', tools: 3, error: '', signedIn: false }]);
     const set = await hub.tools();
     assert.deepStrictEqual(set.defs.map((d) => d.function.name), ['mcp__ed__crash', 'mcp__ed__echo', 'mcp__ed__slow']);
     assert.deepStrictEqual(set.defs[1].function.parameters, { type: 'object', properties: { t: { type: 'string' } } }); // $schema dropped
@@ -1153,7 +1153,7 @@ test('mcp hub: unknown protocol versions, missing commands and local servers wit
   } finally { await hub.closeAll(); }
   const phone = Mcp.makeHub({});
   phone.configure({ ed: testServer() });
-  assert.deepStrictEqual(await phone.status(), [{ name: 'ed', type: 'stdio', state: 'desktop-only', tools: 0, error: '' }]);
+  assert.deepStrictEqual(await phone.status(), [{ name: 'ed', type: 'stdio', state: 'desktop-only', tools: 0, error: '', signedIn: false }]);
   assert.deepStrictEqual((await phone.tools()).defs, []);
 });
 
@@ -1284,7 +1284,7 @@ const remote = { rh: { type: 'http', url: 'https://x.example/mcp', headers: { 'X
 test('mcp http: session and version headers, JSON and event-stream answers, ping answered, an ended session is started again', async () => {
   const { f, log, state } = mcpHttp(), hub = Mcp.makeHub({ fetchFn: f }); // no spawn, as on a phone: url servers still work
   hub.configure(remote);
-  assert.deepStrictEqual(await hub.status(), [{ name: 'rh', type: 'http', state: 'ok', tools: 1, error: '' }]);
+  assert.deepStrictEqual(await hub.status(), [{ name: 'rh', type: 'http', state: 'ok', tools: 1, error: '', signedIn: false }]);
   const set = await hub.tools();
   assert.strictEqual(await set.run('mcp__rh__quote', { n: 1 }), 'AAPL 1');
   const [init, initialized, list] = log;
@@ -1324,4 +1324,120 @@ test('mcp http: a stream closed before the answer is resumed from its last event
   const silent = Mcp.makeHub({ fetchFn: mcpHttp({ drop: 'silent' }).f });
   silent.configure(remote);
   await assert.rejects((await silent.tools()).run('mcp__rh__quote', { n: 1 }), /closed the stream without answering/);
+});
+
+// ---- MCP sign-in (OAuth) ----
+const nodeCrypto = require('node:crypto');
+// A fake world: an MCP server that wants a bearer token, its sign-in server (with a path, like Robinhood's), and a browser that approves at once.
+const oauthWorld = (o = {}) => {
+  const base = 'https://srv.example', as = 'https://auth.example/tenant', seen = { regs: [], tokens: [], auth: null, valid: '' };
+  let codeFor = null, issued = 0, back;
+  const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const f = async (url, opt = {}) => {
+    const u = new URL(url), h = opt.headers || {};
+    if (u.href === base + '/mcp') {
+      if (!seen.valid || h.Authorization !== 'Bearer ' + seen.valid) return new Response('no', { status: 401, headers: { 'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp", scope="read"` } });
+      const m = JSON.parse(opt.body);
+      if (m.id === undefined) return new Response(null, { status: 202 });
+      return json(200, { jsonrpc: '2.0', id: m.id, result: m.method === 'initialize' ? { protocolVersion: '2025-11-25', capabilities: {} }
+        : m.method === 'tools/list' ? { tools: [{ name: 'quote', inputSchema: { type: 'object' } }] } : { content: [{ type: 'text', text: 'quoted with ' + seen.valid }] } });
+    }
+    if (u.href === base + '/.well-known/oauth-protected-resource/mcp') return json(200, { resource: o.resource || base + '/mcp', authorization_servers: [as], scopes_supported: ['ignored'] });
+    if (u.href === 'https://auth.example/.well-known/oauth-authorization-server/tenant') {
+      return json(200, { issuer: as, authorization_endpoint: as + '/authorize', token_endpoint: as + '/token', ...(!o.noRegistration && { registration_endpoint: as + '/register' }),
+        code_challenge_methods_supported: o.noS256 ? ['plain'] : ['S256'], authorization_response_iss_parameter_supported: true });
+    }
+    if (u.href === as + '/register') { const b = JSON.parse(opt.body); seen.regs.push(b); return json(201, { client_id: 'cid-' + seen.regs.length, ...b }); }
+    if (u.href === as + '/token') {
+      const b = Object.fromEntries(new URLSearchParams(opt.body)); seen.tokens.push(b);
+      if (b.grant_type === 'authorization_code') {
+        const challenge = nodeCrypto.createHash('sha256').update(b.code_verifier || '').digest('base64url');
+        if (b.code !== 'the-code' || b.client_id !== codeFor.clientId || b.redirect_uri !== codeFor.redirect || b.resource !== base + '/mcp' || challenge !== codeFor.challenge) return json(400, { error: 'invalid_grant', error_description: 'bad exchange' });
+      } else if (o.refuseRefresh || b.refresh_token !== 'r' + issued || b.resource !== base + '/mcp') return json(400, { error: 'invalid_grant' });
+      issued++; seen.valid = 'a' + issued;
+      return json(200, { access_token: 'a' + issued, refresh_token: 'r' + issued, expires_in: 3600, token_type: 'Bearer' });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  const ways = {
+    listen: async () => ({ uri: 'http://127.0.0.1:5555/callback', next: new Promise((r) => { back = r; }), close: () => {} }),
+    openUrl: (url) => {
+      const q = new URL(url).searchParams; seen.auth = Object.fromEntries(q);
+      codeFor = { challenge: q.get('code_challenge'), clientId: q.get('client_id'), redirect: q.get('redirect_uri') };
+      const r = new URL(q.get('redirect_uri'));
+      for (const [k, v] of Object.entries({ code: 'the-code', state: q.get('state'), iss: as, ...o.back })) if (v !== null) r.searchParams.set(k, v);
+      back(r.href);
+    },
+  };
+  const mem = {}, auth = { get: async (n) => mem[n] || null, save: async (n, t) => { if (t) mem[n] = t; else delete mem[n]; } };
+  const hub = Mcp.makeHub({ fetchFn: f, auth });
+  hub.configure({ rh: { type: 'http', url: base + '/mcp', headers: {} } });
+  return { hub, ways, seen, mem, base, as, f };
+};
+
+test('mcp sign-in: discovery, registration, PKCE and the token exchange; the token is then used for every request', async () => {
+  const w = oauthWorld();
+  assert.strictEqual((await w.hub.status())[0].state, 'auth');
+  await w.hub.signIn('rh', w.ways);
+  assert.deepStrictEqual(await w.hub.status(), [{ name: 'rh', type: 'http', state: 'ok', tools: 1, error: '', signedIn: true }]);
+  const [reg] = w.seen.regs;
+  assert.deepStrictEqual(reg.redirect_uris, ['http://127.0.0.1:5555/callback']);
+  assert.strictEqual(reg.token_endpoint_auth_method, 'none'); assert.strictEqual(reg.application_type, 'native');
+  assert.deepStrictEqual({ ...w.seen.auth, state: '', code_challenge: '' }, { response_type: 'code', client_id: 'cid-1', redirect_uri: 'http://127.0.0.1:5555/callback',
+    code_challenge: '', code_challenge_method: 'S256', state: '', resource: 'https://srv.example/mcp', scope: 'read' }); // the 401's scope wins over scopes_supported
+  assert.ok(w.seen.auth.state.length >= 40 && w.seen.auth.code_challenge.length === 43);
+  assert.strictEqual(w.mem.rh.accessToken, 'a1'); assert.strictEqual(w.mem.rh.clientId, 'cid-1'); assert.strictEqual(w.mem.rh.url, 'https://srv.example/mcp');
+  assert.strictEqual(await (await w.hub.tools()).run('mcp__rh__quote', {}), 'quoted with a1');
+  await w.hub.closeAll();
+});
+
+test('mcp sign-in: an expired or refused token is refreshed once; a refused refresh means sign in again; sign out forgets it', async () => {
+  const w = oauthWorld();
+  await w.hub.signIn('rh', w.ways);
+  const set = await w.hub.tools();
+  w.seen.valid = 'revoked'; // the server stops taking a1: refreshed on the 401, and the call is sent again
+  assert.strictEqual(await set.run('mcp__rh__quote', {}), 'quoted with a2');
+  w.mem.rh.expiresAt = Date.now() - 1; // expired: refreshed before it's sent
+  assert.strictEqual(await set.run('mcp__rh__quote', {}), 'quoted with a3');
+  assert.deepStrictEqual(w.seen.tokens.slice(1).map((t) => [t.grant_type, t.refresh_token, t.client_id, t.resource]),
+    [['refresh_token', 'r1', 'cid-1', 'https://srv.example/mcp'], ['refresh_token', 'r2', 'cid-1', 'https://srv.example/mcp']]);
+  await w.hub.signOut('rh');
+  assert.strictEqual(w.mem.rh, undefined); assert.strictEqual((await w.hub.status())[0].state, 'auth');
+  const refused = oauthWorld({ refuseRefresh: true });
+  await refused.hub.signIn('rh', refused.ways);
+  refused.seen.valid = 'revoked'; await refused.hub.reload();
+  assert.deepStrictEqual((await refused.hub.status()).map((s) => [s.state, s.signedIn]), [['auth', true]]);
+  await w.hub.closeAll(); await refused.hub.closeAll();
+});
+
+test('mcp sign-in: answers that do not match, other servers, no PKCE and refusals are all rejected', async () => {
+  const cases = [
+    [{ back: { state: 'someone-else' } }, /didn't match this sign-in/],
+    [{ back: { iss: 'https://evil.example' } }, /different server than expected/],
+    [{ back: { code: null, error: 'access_denied', error_description: 'You said no' } }, /Sign-in was refused: You said no/],
+    [{ noS256: true }, /doesn't support PKCE/],
+    [{ resource: 'https://other.example/mcp' }, /are for https:\/\/other\.example\/mcp, not https:\/\/srv\.example\/mcp/],
+    [{ noRegistration: true }, /doesn't let new apps register/],
+  ];
+  for (const [opts, err] of cases) {
+    const w = oauthWorld(opts);
+    await assert.rejects(w.hub.signIn('rh', w.ways), err);
+    assert.strictEqual(w.mem.rh, undefined);
+  }
+  const slow = oauthWorld(); // the browser never comes back
+  await assert.rejects(Mcp.signIn({ url: slow.base + '/mcp', headers: {} }, { fetchFn: slow.f, openUrl: () => {}, listen: slow.ways.listen, timeoutMs: 10 }), /Sign-in timed out/);
+});
+
+test('mcp sign-in settings: tokens are encrypted, kept per server, and dropped when that server changes or is removed', async () => {
+  const { dir, file, store } = tmpStore();
+  await store.saveMcp({ enabled: true, config: JSON.stringify({ mcpServers: { rh: { url: 'https://x.example/mcp' }, gh: { url: 'https://g.example/mcp' } } }) });
+  const t = { url: 'https://x.example/mcp', accessToken: 'secret-access', refreshToken: 'secret-refresh' };
+  await store.saveMcpTokens('rh', t); await store.saveMcpTokens('gh', { ...t, url: 'https://g.example/mcp' }); await store.saveMcpTokens('ghost', t);
+  assert.deepStrictEqual(await store.mcpTokens('rh'), t); assert.strictEqual(await store.mcpTokens('ghost'), null);
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('secret-'));
+  assert.ok(!JSON.stringify(await store.get()).includes('secret-'));
+  await store.saveMcp({ config: JSON.stringify({ mcpServers: { rh: { url: 'https://y.example/mcp' }, gh: { url: 'https://g.example/mcp' } } }) });
+  assert.strictEqual(await store.mcpTokens('rh'), null); assert.ok(await store.mcpTokens('gh')); // rh now points elsewhere
+  await store.saveMcpTokens('gh', null); assert.strictEqual(await store.mcpTokens('gh'), null);
+  fs.rmSync(dir, { recursive: true });
 });

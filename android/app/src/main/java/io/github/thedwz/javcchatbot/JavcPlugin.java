@@ -1,8 +1,10 @@
 package io.github.thedwz.javcchatbot;
 
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.net.Uri;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -403,6 +405,26 @@ public class JavcPlugin extends Plugin {
                 call.resolve();
             } catch (Exception e) {
                 call.reject(message(e));
+            }
+        });
+    }
+
+    // ---- Browser ----
+
+    /** Opens {url} (http or https only) in the browser, for MCP sign-in pages. */
+    @PluginMethod
+    public void openUrl(PluginCall call) {
+        String url = call.getString("url", "");
+        if (!url.startsWith("https://") && !url.startsWith("http://")) {
+            call.reject("Only web addresses can be opened");
+            return;
+        }
+        onMain(() -> {
+            try {
+                getActivity().startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                call.resolve();
+            } catch (ActivityNotFoundException e) {
+                call.reject("There's no browser to open the sign-in page");
             }
         });
     }

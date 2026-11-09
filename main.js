@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
 const { createHash } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
+const http = require('node:http');
 const path = require('node:path');
 const api = require('./api');
 const Lib = require('./lib');
@@ -81,12 +82,30 @@ const hub = Mcp.makeHub({
     // shortcut: Windows goes through cmd so npx.cmd and uvx.exe resolve; quoting covers spaces and quotes, revisit if a server's args still break
     return win32 ? spawn([command, ...args].map(quoteWin).join(' '), { ...opts, shell: true }) : spawn(command, args, opts);
   },
+  auth: { get: (name) => store.mcpTokens(name), save: (name, tokens) => store.saveMcpTokens(name, tokens) },
 });
+/** Catches the browser's return from a sign-in on a one-time page on 127.0.0.1 (a loopback redirect, as OAuth asks of desktop apps). */
+const listen = () => new Promise((resolve, reject) => {
+  let got; const next = new Promise((r) => { got = r; });
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url || '/', 'http://127.0.0.1');
+    if (u.pathname !== '/callback') { res.writeHead(404); res.end(); return; }
+    const ok = u.searchParams.has('code');
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(`<!doctype html><meta charset="utf-8"><title>JAVC Chatbot</title><body style="font:16px system-ui;margin:3em;text-align:center">${ok ? 'Signed in. You can close this tab and go back to JAVC Chatbot.' : "Sign-in didn't finish. Go back to JAVC Chatbot to see why."}</body>`);
+    got(new URL(req.url || '/', `http://127.0.0.1:${/** @type {any} */ (srv.address()).port}`).href);
+  });
+  srv.on('error', reject);
+  srv.listen(0, '127.0.0.1', () => resolve({ uri: `http://127.0.0.1:${/** @type {any} */ (srv.address()).port}/callback`, next, close: () => srv.close() }));
+});
+const openUrl = (url) => { if (!/^https?:/i.test(url)) throw new Error("The sign-in page isn't a web address"); return shell.openExternal(url); };
 const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
 ipcMain.handle('mcp:config', () => store.mcpConfig());
 ipcMain.handle('mcp:save', async (_e, p) => { const v = await store.saveMcp(p); await mcpReady(); return v; });
 ipcMain.handle('mcp:status', async () => (await mcpReady()).status());
 ipcMain.handle('mcp:reload', async () => { await (await mcpReady()).reload(); return hub.status(); });
+ipcMain.handle('mcp:signin', async (_e, name) => { await (await mcpReady()).signIn(name, { openUrl, listen }); return hub.status(); });
+ipcMain.handle('mcp:signout', async (_e, name) => { await (await mcpReady()).signOut(name); return hub.status(); });
 const asking = new Map(); // approval id -> resolve, while the page shows the dialog
 ipcMain.handle('mcp:answer', (_e, id, answer) => asking.get(id)?.(answer));
 /** Asks the page whether a tool may run: 'once' | 'always' | 'deny'. "Always" is saved here. */
@@ -107,7 +126,7 @@ function approver(sender) {
 /** The MCP tools for one reply, or undefined. Servers that don't start are left out with a note in the reply. */
 async function mcpTools(sender, onDelta, signal) {
   const set = await (await mcpReady()).tools(signal);
-  for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
+  for (const f of set.failed) onDelta({ reasoning: f.auth ? `MCP server "${f.name}" needs you to sign in (Settings → Tools).\n` : `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
   const allow = (await store.get()).mcp.allow;
   const ask = approver(sender);
   return Mcp.gated(set, {
