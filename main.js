@@ -83,7 +83,8 @@ app.whenReady().then(() => {
   });
   win.setMenu(null);
   protocol.handle('chatbot-sandbox', (req) => {
-    const rec = richDocs.get(new URL(req.url).pathname.slice(1));
+    const id = new URL(req.url).pathname.slice(1), rec = richDocs.get(id);
+    if (rec) { richDocs.delete(id); richDocs.set(id, rec); } // showing a page counts as using it, as on Android
     return rec
       ? new Response(rec.doc, { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': rec.csp } })
       : new Response('Not found', { status: 404 });

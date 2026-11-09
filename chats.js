@@ -65,13 +65,11 @@ module.exports = (io) => {
       if (text === null) throw new Error('This chat no longer exists');
       return JSON.parse(text);
     }),
-    /** Writes the chat, then its index entry; returns the chat list (as `list` does), so the page needn't ask again. */
+    /** Writes the chat, then its index entry. */
     save: serial(async (chat) => {
       const f = file(chat.id);
       await io.write(f, JSON.stringify(chat));
-      const ix = [...(await index()).filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title, updated: chat.updated, personaId: chat.personaId }];
-      await io.write(INDEX, JSON.stringify(ix));
-      return sorted(ix);
+      await io.write(INDEX, JSON.stringify([...(await index()).filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title, updated: chat.updated, personaId: chat.personaId }]));
     }),
     /** Deletes the chat, then its index entry. */
     remove: serial(async (id) => {

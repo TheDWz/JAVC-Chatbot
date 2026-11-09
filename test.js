@@ -65,8 +65,7 @@ const tmpChats = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chat
 test('chat store keeps chats separate, sorted, deletable, and rejects bad ids', async () => {
   const { dir, store } = tmpChats();
   await store.save({ id: 'a1', title: 'A', updated: 1, messages: [{ role: 'user', content: 'alpha' }] });
-  const saved = await store.save({ id: 'b2', title: 'B', updated: 2, messages: [{ role: 'user', content: 'beta' }] });
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(saved)), await store.list()); // save returns the list (undefined fields aside), so the page needn't ask again
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [{ role: 'user', content: 'beta' }] });
   assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2', 'a1']);
   assert.deepStrictEqual((await store.load('a1')).messages, [{ role: 'user', content: 'alpha' }]);
   await store.remove('a1');

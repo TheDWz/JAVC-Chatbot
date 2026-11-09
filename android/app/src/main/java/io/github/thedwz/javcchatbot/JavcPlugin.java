@@ -24,6 +24,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
+import java.math.BigInteger;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -367,9 +368,7 @@ public class JavcPlugin extends Plugin {
         }
         String id;
         try { // the same page gets the same id, so re-renders reuse it instead of filling the store with copies
-            StringBuilder hex = new StringBuilder(64);
-            for (byte b : MessageDigest.getInstance("SHA-256").digest((csp + "\n" + html).getBytes(StandardCharsets.UTF_8))) hex.append(String.format("%02x", b));
-            id = hex.toString();
+            id = String.format("%064x", new BigInteger(1, MessageDigest.getInstance("SHA-256").digest((csp + "\n" + html).getBytes(StandardCharsets.UTF_8))));
         } catch (Exception e) {
             call.reject(message(e));
             return;
