@@ -24,11 +24,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
+import java.math.BigInteger;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -39,7 +41,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -339,8 +340,8 @@ public class JavcPlugin extends Plugin {
     static final String SANDBOX_HOST = "javc-sandbox.invalid"; // must match SANDBOX in mobile/build.mjs
     private static final int SANDBOX_MAX = 2_100_000; // the page limits the model's HTML to 2,000,000 characters
     private static final String SANDBOX_CSP = "sandbox allow-scripts"; // every page gets at least this; Lib.richDoc adds the CSS/JS-off rules
-    private static final Map<String, String[]> docs = Collections.synchronizedMap( // id -> {html, csp}
-        new LinkedHashMap<String, String[]>(16, 0.75f, false) {
+    private static final Map<String, String[]> docs = Collections.synchronizedMap( // id -> {html, csp}, least recently used first
+        new LinkedHashMap<String, String[]>(16, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, String[]> eldest) {
                 return size() > 300;
@@ -365,7 +366,13 @@ public class JavcPlugin extends Plugin {
             call.reject("Invalid sandbox policy");
             return;
         }
-        String id = UUID.randomUUID().toString();
+        String id;
+        try { // the same page gets the same id, so re-renders reuse it instead of filling the store with copies
+            id = String.format("%064x", new BigInteger(1, MessageDigest.getInstance("SHA-256").digest((csp + "\n" + html).getBytes(StandardCharsets.UTF_8))));
+        } catch (Exception e) {
+            call.reject(message(e));
+            return;
+        }
         docs.put(id, new String[] { html, csp });
         JSObject r = new JSObject();
         r.put("url", "https://" + SANDBOX_HOST + "/doc/" + id);

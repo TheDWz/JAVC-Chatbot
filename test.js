@@ -211,6 +211,7 @@ test('disk: missing files read as null, names cannot leave the folder, writes le
   assert.strictEqual(await d.read('nope.json'), null);
   assert.deepStrictEqual(await d.list(), []); // folder not created yet
   await d.write('a.json', 'x'); assert.strictEqual(await d.read('a.json'), 'x');
+  if (process.platform !== 'win32') assert.strictEqual(fs.statSync(path.join(dir, 'sub', 'a.json')).mode & 0o777, 0o600); // owner-only
   await d.rename('a.json', 'b.json'); assert.deepStrictEqual(await d.list(), ['b.json']);
   await d.remove('b.json'); await d.remove('b.json'); // removing twice is fine
   for (const bad of ['../x', 'a/b', 'a\\b', '..', '']) await assert.rejects(d.read(bad), /Invalid file name/);
