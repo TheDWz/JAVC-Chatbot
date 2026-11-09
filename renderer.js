@@ -431,18 +431,18 @@ function lineChart(title, points, key, fmt) {
   const s = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${title}, ${pts.length} replies, highest ${fmt(max).join(' ')}` });
   const label = (tx, ty, text, anchor = 'start') => { const t = svgEl('text', { x: tx, y: ty, 'text-anchor': anchor }); t.textContent = text; return t; };
   s.append(svgEl('line', { class: 'grid', x1: L, x2: W - R, y1: y(0), y2: y(0) }), svgEl('line', { class: 'grid', x1: L, x2: W - R, y1: y(max), y2: y(max) }),
-    label(L, T - 8, fmt(max).join(' ')), label(L, H - 3, 'Reply 1'), ...(n > 1 ? [label(W - R, H - 3, `Reply ${n}`, 'end')] : []),
+    label(L, T - 8, fmt(max).join(' ')), label(L, H - 3, `Reply ${points[0].n}`), ...(n > 1 ? [label(W - R, H - 3, `Reply ${points[n - 1].n}`, 'end')] : []),
     svgEl('polyline', { class: 'ln', points: pts.map((p) => `${x(p.i)},${y(p.v)}`).join(' ') }));
   for (const p of pts) {
     const g = svgEl('g', {}), tip = svgEl('title', {});
-    tip.textContent = `Reply ${p.i + 1} · ${p.s.model}: ${fmt(p.v, p.s.est).join(' ')}`;
+    tip.textContent = `Reply ${p.s.n} · ${p.s.model}: ${fmt(p.v, p.s.est).join(' ')}`;
     g.append(tip, svgEl('circle', { class: 'hit', cx: x(p.i), cy: y(p.v), r: 12 }), svgEl('circle', { class: 'pt', cx: x(p.i), cy: y(p.v), r: 4 }));
     s.append(g);
   }
   box.append(s); return box;
 }
 function renderStats() {
-  const model = $('statsmodel').value, s = Lib.chatStats(chat.messages, model || undefined), last = s.last;
+  const model = $('statsmodel').value, s = Lib.chatStats(chat, model || undefined), last = s.last;
   $('statscharts').replaceChildren();
   if (!last) return $('statsbody').replaceChildren(el('p', 'statnote', 'No replies with stats yet. They are recorded for every new reply.'));
   const avgEst = s.points.some((p) => p.est), tiles = el('div', 'tiles'), notes = [];
@@ -451,13 +451,14 @@ function renderStats() {
     tile('Last speed', fmtTps(last.tps, last.est)), tile('Avg speed', fmtTps(s.avgTps, avgEst)),
     tile('Tokens used in this chat', fmtTok(s.used || null)), tile('Context size', fmtTok(s.context)),
   );
-  notes.push(`Averages over ${s.points.length} repl${s.points.length === 1 ? 'y' : 'ies'}${model ? ` from ${model}` : ''}. Tokens used counts every reply and every regenerated version.`);
-  if (s.est) notes.push("~ Some replies came without token counts from the provider: their speed is estimated from the text length, and they're left out of the token totals.");
+  notes.push(`Averages over ${s.points.length} repl${s.points.length === 1 ? 'y' : 'ies'}${model ? ` from ${model}` : ''}. Tokens used counts every reply, including ones regenerated or edited away.`);
+  if (s.est || s.noTotal) notes.push('Some replies have no token counts, because the provider didn\'t send them or the reply was stopped early.'
+    + (s.est ? ' Their speed (marked ~) is estimated from the text length.' : '') + ' They aren\'t in the token totals.');
   $('statsbody').replaceChildren(tiles, ...notes.map((t) => el('p', 'statnote', t)));
   if ($('statschart').checked) $('statscharts').append(lineChart('Time to first token', s.points, 'ttft', fmtMs), lineChart('Tokens per second', s.points, 'tps', fmtTps));
 }
 function openStats() {
-  const { models } = Lib.chatStats(chat.messages), sel = $('statsmodel'), keep = sel.value;
+  const { models } = Lib.chatStats(chat), sel = $('statsmodel'), keep = sel.value;
   sel.replaceChildren(new Option('All models', ''), ...models.map((m) => new Option(m, m)));
   sel.value = models.includes(keep) ? keep : '';
   $('statsfilter').hidden = models.length < 2; // the filter only matters once the chat has used more than one model
@@ -548,9 +549,18 @@ async function generate(base) {
   const reply = addAssistant();
   setBusy(true);
   try {
-    const model = settings.model, t0 = performance.now(); let t1 = 0;
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => { t1 ||= performance.now(); reply.delta(d); }, { search: toolsOk() });
-    const stats = Lib.replyStats({ model, t0, t1, t2: performance.now(), usage: out.usage, ctx: out.ctx, text: out.content + out.reasoning });
+    // Timing for Stats for nerds: t1 is the model's first text, and time spent waiting on web searches after it is left out of the speed.
+    const model = settings.model, t0 = performance.now(); let t1 = 0, paused = 0, pauseAt = 0, sawReasoning = false;
+    const onDelta = (d) => {
+      const now = performance.now();
+      if (d.note) { if (t1) pauseAt ||= now; }
+      else { if (pauseAt) { paused += now - pauseAt; pauseAt = 0; } t1 ||= now; sawReasoning ||= !!d.reasoning; }
+      reply.delta(d);
+    };
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), onDelta, { search: toolsOk() });
+    const t2 = performance.now(); if (pauseAt) paused += t2 - pauseAt;
+    const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, text: out.content + out.reasoning, sawReasoning });
+    chat.used = (chat.used || 0) + (stats.total || 0); // a running total: it stays when this reply is later replaced or dropped
     const fields = { content: out.content, reasoning: out.reasoning, stats }; // reasoning and stats are display-only, never sent back
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
@@ -589,7 +599,7 @@ async function regenerate(m) {
   if (busy) return toast('Wait for the reply to finish');
   const i = chat.messages.indexOf(m);
   if (i < 0 || !ready()) return;
-  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; rerender(top); };
+  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; rerender(top); persist(); }; // saved for chat.used: the attempt may have used tokens
   const t = m.role === 'user' ? i + 1 : i, base = prev[t]?.role === 'assistant' ? prev[t] : undefined;
   chat.messages = prev.slice(0, t); renderChat();
   let out;

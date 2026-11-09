@@ -911,18 +911,29 @@ test('chatStream asks for usage and keeps it from the stream and from plain JSON
   assert.deepStrictEqual((await chatStream('http://x', '', 'm', [], {}, () => {}, sse(json, {}, 'application/json'))).usage, U(3, 2));
 });
 
-test('chatStream retries without stream_options when the server rejects it, and not for other errors', async () => {
+test('chatStream retries without stream_options on a 400/422, even when the error does not name it, and remembers only a retry that works', async () => {
   const bodies = [];
-  const strict = async (url, opts) => {
+  const strict = async (url, opts) => { // rejects the field with a generic message, as some proxies do
     const b = JSON.parse(opts.body); bodies.push(b);
-    return b.stream_options ? { ok: false, status: 400, text: async () => '{"error":"Unrecognized field: stream_options"}' } : sse(frames([{ content: 'ok' }]))(url, opts);
+    return b.stream_options ? { ok: false, status: 422, text: async () => '{"error":"Invalid request body"}' } : sse(frames([{ content: 'ok' }]))(url, opts);
   };
   assert.strictEqual((await chatStream('http://strict', '', 'm', [], {}, () => {}, strict)).content, 'ok');
   await chatStream('http://strict', '', 'm', [], {}, () => {}, strict); // remembered: the next reply asks once, without the field
   assert.deepStrictEqual(bodies.map((b) => 'stream_options' in b), [true, false, false]);
-  let calls = 0;
-  await assert.rejects(chatStream('http://x', '', 'm', [], {}, () => {}, async (...a) => { calls++; return fake(400, { error: 'bad level' })(...a); }), /HTTP 400/);
-  assert.strictEqual(calls, 1);
+  // A real error fails on the retry too: it is reported, and the endpoint keeps asking for usage
+  const sent = [], bad = async (url, opts) => { sent.push('stream_options' in JSON.parse(opts.body)); return fake(400, { error: 'bad level' })(url, opts); };
+  await assert.rejects(chatStream('http://bad', '', 'm', [], {}, () => {}, bad), /HTTP 400: .*bad level/);
+  await assert.rejects(chatStream('http://bad', '', 'm', [], {}, () => {}, bad), /HTTP 400/);
+  assert.deepStrictEqual(sent, [true, false, true, false]);
+  const auth = []; // other errors are not retried
+  await assert.rejects(chatStream('http://auth', '', 'm', [], {}, () => {}, async (...a) => { auth.push(1); return fake(401, { error: 'bad key' })(...a); }), /HTTP 401/);
+  assert.strictEqual(auth.length, 1);
+});
+
+test('web search: the search note is marked, so stats can tell it from the model', async () => {
+  const call = toolFrames([[{ index: 0, id: 'c', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]), deltas = [];
+  await chatStream('http://x', 'k', 'm', [], {}, (d) => deltas.push(d), searchFetch([call, frames([{ content: 'done' }])], linkupOk([])), undefined, { key: 'lk' });
+  assert.deepStrictEqual(deltas.map((d) => !!d.note), [true, false]);
 });
 
 test('web search: usage adds up over rounds, ctx is the last round', async () => {
@@ -940,19 +951,32 @@ test('replyStats: timings and tokens from usage, or an estimate without it', () 
   assert.deepStrictEqual([est.out, est.tps, est.total, est.est], [10, 10, null, true]);
   assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 500, t2: 500, usage: U(1, 1), text: '' }).tps, null); // arrived in one piece
   assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 0, t2: 500, text: '' }).ttft, null); // no text at all
+  const zero = Lib.replyStats({ model: 'a', t0: 0, t1: 0, t2: 500, usage: U(50, 0), text: '' }); // a real count of 0 is not an estimate
+  assert.deepStrictEqual([zero.out, zero.est, zero.total], [0, undefined, 50]);
 });
 
-test('chatStats: filtered averages, last reply, tokens used over every version, context size', () => {
-  const st = (model, ttft, tps, total) => ({ model, ttft, tps, out: 1, total, ctx: total });
+test('replyStats: hidden reasoning tokens and web-search waits are left out of the speed', () => {
+  const hidden = { ...U(10, 2100), completion_tokens_details: { reasoning_tokens: 2000 } }; // thought for 20 s unseen, then 100 tokens in 2 s
+  assert.strictEqual(Lib.replyStats({ model: 'o', t0: 0, t1: 20000, t2: 22000, usage: hidden, text: '', sawReasoning: false }).tps, 50);
+  assert.strictEqual(Lib.replyStats({ model: 'o', t0: 0, t1: 1000, t2: 22000, usage: hidden, text: '', sawReasoning: true }).tps, 100); // streamed: it counts
+  assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 1000, t2: 5000, paused: 3000, usage: U(10, 100), text: '' }).tps, 100); // 3 s waiting on a search
+});
+
+test('chatStats: filtered averages, reply numbers, last reply, running token total, context size', () => {
+  const st = (model, ttft, tps, total, more) => ({ model, ttft, tps, out: 1, total, ctx: total, ...more });
   let b = { role: 'assistant', content: 'one', stats: st('b', 300, 30, 100) };
-  b = Lib.addVersion(b, { content: 'two', stats: st('b', 500, 50, 200) }); // regenerated: both versions used tokens
-  const msgs = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a', stats: st('a', 100, 10, 50) }, { role: 'user', content: 'q' }, b,
-    { role: 'assistant', content: 'old reply, saved before stats existed' }];
-  const all = Lib.chatStats(msgs);
-  assert.deepStrictEqual([all.models, all.avgTtft, all.avgTps, all.used, all.context, all.last.ttft, all.points.length, all.est], [['a', 'b'], 300, 30, 350, 200, 500, 2, false]);
-  const onlyA = Lib.chatStats(msgs, 'a');
-  assert.deepStrictEqual([onlyA.avgTtft, onlyA.avgTps, onlyA.last.model, onlyA.used], [100, 10, 'b', 350]); // last and totals ignore the filter
+  b = Lib.addVersion(b, { content: 'two', stats: st('b', 500, 50, 200) });
+  const msgs = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'old reply, saved before stats existed' }, { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'a', stats: st('a', 100, 10, 50) }, { role: 'user', content: 'q' }, b];
+  const chat = { messages: msgs, used: 1234 }; // the running total, which includes replies no longer in the chat
+  const all = Lib.chatStats(chat);
+  assert.deepStrictEqual([all.models, all.avgTtft, all.avgTps, all.used, all.context, all.last.ttft, all.points.map((p) => p.n), all.est, all.noTotal],
+    [['a', 'b'], 300, 30, 1234, 200, 500, [2, 3], false, false]);
+  const onlyB = Lib.chatStats(chat, 'b');
+  assert.deepStrictEqual([onlyB.avgTtft, onlyB.points.map((p) => p.n), onlyB.last.model, onlyB.used], [500, [3], 'b', 1234]); // numbered as in the chat
   assert.deepStrictEqual(Lib.showVersion(b, 0).stats.ttft, 300); // each version keeps its own stats
-  const none = Lib.chatStats([]);
+  const stopped = Lib.chatStats({ messages: [{ role: 'assistant', stats: st('a', 1, 1, null, { est: true }) }, { role: 'assistant', stats: st('a', 1, 1, null) }] });
+  assert.deepStrictEqual([stopped.est, stopped.noTotal, stopped.used], [true, true, 0]);
+  const none = Lib.chatStats({ messages: [] });
   assert.deepStrictEqual([none.last, none.avgTtft, none.used], [null, null, 0]);
 });

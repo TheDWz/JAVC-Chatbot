@@ -120,10 +120,11 @@ async function linkupSearch(key, q, fetchFn = fetch, signal) {
 const NO_USAGE = new Set(); // endpoints that rejected stream_options, for as long as the app runs
 async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, calls) {
   const req = (usage) => call(endpoint, key, '/chat/completions', { model, messages, ...extra, stream: true, ...(usage && { stream_options: { include_usage: true } }) }, fetchFn, signal);
-  // include_usage gets token counts for Stats for nerds; a strict server that rejects the field is asked again without it, and remembered
-  const res = await req(!NO_USAGE.has(endpoint)).catch((e) => {
-    if (NO_USAGE.has(endpoint) || !/^HTTP 4\d\d:[\s\S]*stream_options/.test(e.message)) throw e;
-    NO_USAGE.add(endpoint); return req(false);
+  // include_usage gets token counts for Stats for nerds. Strict servers reject unknown fields without always naming them, so any
+  // 400/422 is asked once more without it; the endpoint is remembered only when that works, so a real error never sticks.
+  const res = await req(!NO_USAGE.has(endpoint)).catch(async (e) => {
+    if (NO_USAGE.has(endpoint) || !/^HTTP (400|422):/.test(e.message)) throw e;
+    const r = await req(false); NO_USAGE.add(endpoint); return r;
   });
 
   const out = { content: '', reasoning: '' };
@@ -218,7 +219,7 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
       else {
         searches++;
         const note = `Searching the web: ${q}\n`;
-        add(note, ''); onDelta({ reasoning: note, content: '' });
+        add(note, ''); onDelta({ reasoning: note, content: '', note: true }); // note: our own text, so stats don't time it as the model's
         try { result = await linkupSearch(search.key, q, fetchFn, signal); }
         catch (e) {
           if (signal?.aborted) { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped'); }
