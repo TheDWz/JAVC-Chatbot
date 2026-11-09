@@ -8,7 +8,7 @@ const NULL_BODY = new Set([204, 205, 304]);
 
 /**
  * fetch() through the plugin: no CORS, http:// works for local servers, and the body streams in as it arrives.
- * @param {object} plugin The native plugin: httpStart, httpAbort and "http" events ({id, type: data|end|error}).
+ * @param {import('@capacitor/core').Plugin & {httpStart(req: object): Promise<{status: number, headers: object}>, httpAbort(req: object): Promise<void>}} plugin The native plugin: httpStart, httpAbort and "http" events ({id, type: data|end|error}).
  * @returns {(url: string, opts?: object) => Promise<Response>} A fetch that returns a real Response, so api.js uses it exactly like the desktop's.
  */
 function makeNativeFetch(plugin) {
@@ -22,7 +22,7 @@ function makeNativeFetch(plugin) {
   });
 
   /** Starts the request; resolves once the status and headers arrive, and aborts through `opts.signal` like fetch. */
-  return async function nativeFetch(url, opts = {}) {
+  return async function nativeFetch(url, /** @type {{signal?: AbortSignal, method?: string, headers?: object, body?: (string|null)}} */ opts = {}) {
     await listening;
     const signal = opts.signal;
     if (signal?.aborted) throw abortError();
@@ -50,7 +50,7 @@ function makeNativeFetch(plugin) {
     } catch (e) {
       open.delete(id); done();
       if (signal?.aborted) throw abortError();
-      throw new TypeError(e?.message || 'Network error'); // like fetch: a request that never got an answer is a TypeError
+      throw new TypeError(e?.message || 'Network error', { cause: e }); // like fetch: a request that never got an answer is a TypeError
     }
     const headers = new Headers();
     for (const [k, v] of Object.entries(head.headers || {})) { try { headers.append(k, v); } catch {} } // skip anything Headers refuses
@@ -61,7 +61,7 @@ function makeNativeFetch(plugin) {
 
 /**
  * The `io` that store.js and chats.js expect (see disk.js), inside the app's private files folder.
- * @param {object} plugin The native plugin (fsRead, fsWrite, fsRemove, fsList, fsRename).
+ * @param {{fsRead(p: object): Promise<{exists: boolean, text?: string}>, fsWrite(p: object): Promise<void>, fsRemove(p: object): Promise<void>, fsList(p: object): Promise<{names: string[]}>, fsRename(p: object): Promise<void>}} plugin The native plugin (fsRead, fsWrite, fsRemove, fsList, fsRename).
  * @param {string} [dir] A subfolder, such as 'chats'.
  */
 function makeNativeDisk(plugin, dir = '') {

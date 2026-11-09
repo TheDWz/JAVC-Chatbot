@@ -1,4 +1,12 @@
 // Minimal OpenAI-compatible client. fetchFn is injectable for tests.
+/**
+ * @param {string} endpoint
+ * @param {string} key
+ * @param {string} path
+ * @param {object} [body]
+ * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
+ * @param {AbortSignal} [signal]
+ */
 async function call(endpoint, key, path, body, fetchFn = fetch, signal) {
   let res;
   try {
@@ -36,6 +44,11 @@ const noTools = (m) => Array.isArray(m.supported_parameters) && !m.supported_par
 const ctxOf = (m) => [m.context_length, m.top_provider?.context_length, m.model_spec?.availableContextTokens, m.context_window, m.max_context_length, m.max_model_len]
   .find((v) => Number.isInteger(v) && v > 0) || 0;
 
+/**
+ * @param {string} endpoint
+ * @param {string} key
+ * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
+ */
 async function listModelsDetailed(endpoint, key, fetchFn) {
   // NanoGPT only lists context lengths when asked; other servers never see the extra parameter
   const path = /nano-gpt\.com/i.test(endpoint) ? '/models?detailed=true' : '/models';
@@ -54,7 +67,7 @@ function resolveFormat(format, endpoint, meta) {
   return THINKING_SWITCH.test(endpoint) ? 'thinking' : 'openai';
 }
 
-function reasoningParams(endpoint, effort, { format, meta } = {}) {
+function reasoningParams(endpoint, effort, /** @type {{format?: string, meta?: boolean}} */ { format, meta } = {}) {
   if (!effort) return {};
   const f = resolveFormat(format, endpoint, meta);
   if (f === 'openrouter') return { reasoning: { effort } };
@@ -66,7 +79,10 @@ function reasoningParams(endpoint, effort, { format, meta } = {}) {
   return { reasoning_effort: effort };
 }
 
-/** What one chat or summary request sends: the model, the extra params and the search config ({key}). A summary goes to its own profile and model, with no reasoning level and no search. */
+/** What one chat or summary request sends: the model, the extra params and the search config ({key}). A summary goes to its own profile and model, with no reasoning level and no search.
+ * @param {{model?: string, endpoint?: string, effort?: string, format?: string, meta?: boolean, search?: {key: string}}} s
+ * @param {{summary?: {profileId: string, model?: string}, search?: boolean}} [opts]
+ */
 function requestArgs(s, opts) {
   const sum = opts?.summary;
   return { model: sum?.model || s.model, extra: sum ? {} : reasoningParams(s.endpoint, s.effort, s), search: !sum && opts?.search ? s.search : null };
@@ -111,6 +127,12 @@ const SEARCH_TOOL = { type: 'function', function: {
 } };
 const SEARCH_ROUNDS = 4; // Linkup requests (and tool rounds) per reply; after that the model must answer
 
+/**
+ * @param {string} key
+ * @param {string} q
+ * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
+ * @param {AbortSignal} [signal]
+ */
 async function linkupSearch(key, q, fetchFn = fetch, signal) {
   let res;
   try {
@@ -130,6 +152,17 @@ async function linkupSearch(key, q, fetchFn = fetch, signal) {
 // If the stream breaks or is stopped after some text arrived, the partial reply is returned with `error` or `stopped` set.
 // Tool calls the model makes are pushed onto `calls` as {id, type, function:{name, arguments}}.
 const NO_USAGE = new Set(); // endpoints that rejected stream_options, for as long as the app runs
+/**
+ * @param {string} endpoint
+ * @param {string} key
+ * @param {string} model
+ * @param {object[]} messages
+ * @param {object} extra
+ * @param {(d: {reasoning: string, content: string, note?: boolean}) => void} [onDelta]
+ * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
+ * @param {AbortSignal} [signal]
+ * @param {{id: string, type: string, function: {name: string, arguments: string}}[]} [calls]
+ */
 async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, calls) {
   const req = (usage) => call(endpoint, key, '/chat/completions', { model, messages, ...extra, stream: true, ...(usage && { stream_options: { include_usage: true } }) }, fetchFn, signal);
   // include_usage gets token counts for Stats for nerds. Strict servers reject unknown fields without always naming them, so any
@@ -202,9 +235,20 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
 // Streams a reply. Without `search` ({key}) this is a single request. With it, the model may call web_search up to SEARCH_ROUNDS times
 // before answering; text and reasoning from every round are joined. shortcut: the tool exchange stays inside this call and isn't saved
 // with the chat, so later turns see only the final answer, not the raw search results.
+/**
+ * @param {string} endpoint
+ * @param {string} key
+ * @param {string} model
+ * @param {object[]} messages
+ * @param {object} [extra]
+ * @param {(d: {reasoning: string, content: string, note?: boolean}) => void} [onDelta]
+ * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
+ * @param {AbortSignal} [signal]
+ * @param {{key: string}} [search]
+ */
 async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search) {
   if (!search) return streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []);
-  const total = { content: '', reasoning: '' }, msgs = [...messages];
+  const total = { content: '', reasoning: '' }, msgs = /** @type {object[]} */ ([...messages]);
   let searches = 0; // Linkup requests so far in this reply, across rounds and parallel calls
   const add = (r, c) => { total.reasoning += r; total.content += c; };
   // every round is billed, so token counts add up; the last round's total is the context size
@@ -235,7 +279,7 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
         add(note, ''); onDelta({ reasoning: note, content: '', note: true }); // note: our own text, so stats don't time it as the model's
         try { result = await linkupSearch(search.key, q, fetchFn, signal); }
         catch (e) {
-          if (signal?.aborted) { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped'); }
+          if (signal?.aborted) { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped', { cause: e }); }
           result = 'Search failed: ' + e.message; // the model can still answer without it
         }
       }

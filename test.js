@@ -235,7 +235,7 @@ test('chatStream abort: partial reply is marked stopped, no reply throws Stopped
   const run = chatStream('http://x', '', 'm', [], {}, () => ctl.abort(), slow, ctl.signal);
   assert.deepStrictEqual(await run, { content: 'part', reasoning: '', stopped: true });
   const pre = new AbortController(); pre.abort();
-  const never = async (url, opts) => { throw new Error('fetch failed'); };
+  const never = async () => { throw new Error('fetch failed'); };
   await assert.rejects(chatStream('http://x', '', 'm', [], {}, () => {}, never, pre.signal), /Stopped/);
 });
 
@@ -247,7 +247,7 @@ test('a non-JSON reply gets a friendly error', async () => {
 // ---- settings store ----
 const makeStore = require('./store');
 const rot = { available: () => true, enc: (t) => Buffer.from(t).toString('base64'), dec: (b) => Buffer.from(b, 'base64').toString() };
-const tmpStore = (crypto = rot) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'set-')); const file = path.join(dir, 'settings.json'); return { dir, file, store: makeStore({ io: makeDisk(dir), crypto }) }; };
+const tmpStore = (/** @type {import('./store').KeyCrypto} */ crypto = rot) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'set-')); const file = path.join(dir, 'settings.json'); return { dir, file, store: makeStore({ io: makeDisk(dir), crypto }) }; };
 
 test('store: a damaged settings file is quarantined, not overwritten', async () => {
   const { dir, file, store } = tmpStore();
@@ -295,7 +295,7 @@ test('store: undecryptable key is a clear error, plaintext keys upgrade, patch n
 });
 
 test('store: no keyring stores the key in the private file; async crypto works too', async () => {
-  const { dir, file, store } = tmpStore({ available: () => false });
+  const { dir, file, store } = tmpStore({ ...rot, available: () => false });
   await store.saveProfile({ name: 'P', endpoint: 'http://x', key: 'sk-1' });
   assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).profiles[0].keyPlain, 'sk-1');
   const later = makeStore({ io: makeDisk(dir), crypto: { available: async () => true, enc: async (t) => rot.enc(t), dec: async (b) => rot.dec(b) } });
@@ -343,8 +343,10 @@ test('Lib.buildContent inlines text files and turns images into parts', () => {
 
 test('Lib.editUser swaps the typed text and keeps inlined files and images', () => {
   const file = { kind: 'text', name: 'a.txt', text: 'x' }, img = { kind: 'image', url: 'data:image/png;base64,AA' };
+  /** @type {[string, {kind: string}[]][]} */
+  const cases = [['hi', []], ['hi', [file]], ['', [file]], ['', [img]], ['hi', [img]], ['hi', [file, img]]];
   const sent = (text, atts) => ({ role: 'user', text, content: Lib.buildContent(text, atts), files: atts.map(({ name, kind }) => ({ name, kind })) });
-  for (const [from, atts] of [['hi', []], ['hi', [file]], ['', [file]], ['', [img]], ['hi', [img]], ['hi', [file, img]]]) {
+  for (const [from, atts] of cases) {
     for (const to of ['new text', '']) {
       if (!to && !atts.length) continue;
       const m = Lib.editUser(sent(from, atts), to);
@@ -466,7 +468,7 @@ test('Lib.requestMessages adds the display hint only when given render settings,
   const chat = { messages: [{ role: 'user', content: 'hi', text: 'x' }] }, all = { markdown: true, html: true, css: true, js: true };
   assert.deepStrictEqual(Lib.requestMessages(chat, undefined, {}), [{ role: 'user', content: 'hi' }]);
   assert.deepStrictEqual(Lib.requestMessages(chat, undefined, { render: all })[0], { role: 'system', content: Lib.renderHint(all) });
-  const sys = Lib.requestMessages(chat, { user: '', bot: 'B', prompt: 'p' }, { render: all })[0].content;
+  const sys = /** @type {{content: string}} */ (Lib.requestMessages(chat, { user: '', bot: 'B', prompt: 'p' }, { render: all })[0]).content;
   assert.ok(sys.startsWith('You are B.') && sys.endsWith(Lib.renderHint(all)));
 });
 
@@ -554,6 +556,7 @@ const { makeNativeFetch, makeNativeDisk, makeNativeCrypto } = require('./mobile/
 // respond(req, send) returns the head ({status, headers}) or throws; send(ev) emits an "http" event for this request.
 function fakeHttp(respond) {
   const listeners = [], aborted = [], seen = [];
+  /** @type {any} */
   const plugin = {
     addListener: async (name, fn) => { assert.strictEqual(name, 'http'); listeners.push(fn); return { remove() {} }; },
     httpStart: async (req) => { seen.push(req); return respond(req, (ev) => setTimeout(() => listeners.forEach((l) => l({ id: req.id, ...ev })), 0)); },
@@ -750,7 +753,7 @@ test('migrateLegacy: an item that cannot move does not hold back the others, and
   fs.mkdirSync(path.join(from, 'chats'), { recursive: true });
   fs.writeFileSync(path.join(from, 'settings.json'), '{"old":1}'); fs.writeFileSync(path.join(from, 'chats', 'a.json'), '{}');
   const rename = fs.renameSync; // settings.json is locked this time
-  fs.renameSync = (a, b) => { if (a.endsWith('settings.json')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return rename(a, b); };
+  fs.renameSync = (/** @type {string} */ a, b) => { if (a.endsWith('settings.json')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return rename(a, b); };
   try { assert.throws(() => migrateLegacy(from, to), (e) => e instanceof AggregateError && /Moved chats/.test(e.message)); }
   finally { fs.renameSync = rename; }
   assert.ok(fs.existsSync(path.join(to, 'chats', 'a.json'))); // the chats still moved
@@ -1007,14 +1010,14 @@ test('Lib.contextTokens: the latest reply\'s prompt count plus an estimate, neve
   const big = 'x'.repeat(400); // 100 tokens
   assert.strictEqual(Lib.contextTokens({ messages: [{ role: 'user', content: big }, { role: 'user', content: [{ type: 'text', text: big }, { type: 'image_url', image_url: { url: 'd' } }] }] }), 1200);
   // without a server count the system message counts too: the persona prompt, the render hint and any summary
-  const persona = { prompt: big }, sys = Lib.requestMessages({ messages: [] }, persona, { render: {} })[0].content;
+  const persona = { prompt: big }, sys = /** @type {{content: string}} */ (Lib.requestMessages({ messages: [] }, persona, { render: {} })[0]).content;
   assert.strictEqual(Lib.contextTokens({ messages: [{ role: 'user', content: big }] }, persona, { render: {} }), 100 + Math.ceil(sys.length / 4));
   // the reply's ctx (its total, with reasoning and search results) is not used: its prompt count plus the reply's own text is
   const msgs = [...turn(1, { content: big, stats: { ctx: 50000, prompt: 900 } }), { role: 'user', content: big }];
   assert.strictEqual(Lib.contextTokens({ messages: msgs }), 1100);
   // summarized after reply 1: its count measured the old context, so the summary and the kept messages are estimated instead
   const sumd = { messages: msgs, summary: { text: big, upto: 2, at: 3 } };
-  assert.strictEqual(Lib.contextTokens(sumd), Math.ceil(Lib.requestMessages(sumd, null)[0].content.length / 4) + 100);
+  assert.strictEqual(Lib.contextTokens(sumd), Math.ceil(/** @type {{content: string}} */ (Lib.requestMessages(sumd, null)[0]).content.length / 4) + 100);
   const later = [...msgs, { role: 'assistant', content: 'a', stats: { prompt: 300 } }, { role: 'user', content: big }];
   assert.strictEqual(Lib.contextTokens({ messages: later, summary: { text: big, upto: 2, at: 3 } }), 401);
 });

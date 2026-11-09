@@ -1,5 +1,7 @@
 // Settings + profiles on disk. File access (`io`, see disk.js) and key encryption (`crypto`) are injected,
 // so the same code runs on the desktop (Node fs + Electron safeStorage), on Android, and in the tests.
+/** @typedef {import('./disk').DiskIo} DiskIo */
+/** @typedef {{available(): (boolean|Promise<boolean>), enc(text: string): (string|Promise<string>), dec(data: string): (string|Promise<string>)}} KeyCrypto */
 const profiles = require('./profiles');
 const { THINKING_SWITCH } = require('./api');
 const Lib = require('./lib');
@@ -9,7 +11,7 @@ const hasKey = (o) => !!(o.keyEnc || o.keyPlain);
 
 /**
  * The settings store: profiles, personas and display settings in settings.json.
- * @param {{io: object, crypto: object}} deps `io` is the data folder (see disk.js). `crypto` is
+ * @param {{io: DiskIo, crypto: KeyCrypto}} deps `io` is the data folder (see disk.js). `crypto` is
  *   { available(): boolean, enc(text): base64, dec(base64): text (throws when it can't) }; each may return a promise.
  */
 module.exports = ({ io, crypto }) => {
@@ -74,7 +76,7 @@ module.exports = ({ io, crypto }) => {
     takeNotice() { const n = notice; notice = ''; return n; },
     get: serial(async () => withFlags(await read())),
     /** Flat view of profile `profileId` (the active one when it's not given or no longer exists), used by chat and model fetching. */
-    load: serial(async ({ search: wantSearch = false, profileId } = {}) => {
+    load: serial(async ({ search: wantSearch = false, profileId } = /** @type {{search?: boolean, profileId?: string}} */ ({})) => {
       const st = await read(), p = st.profiles.find((x) => x.id === profileId) || st.profiles.find((x) => x.id === st.activeId);
       if (!p) throw new Error('No profile yet. Use the new-profile button to add one.');
       // the search key is only decrypted when the caller will search, so a locked keyring can't break model refresh or chats without search
@@ -121,7 +123,7 @@ module.exports = ({ io, crypto }) => {
     /** Creates or updates a persona and makes it the selected one. A `summarizer` turns on its own summary model; without one it uses the default. */
     savePersona: serial(async (p) => {
       const st = await read(), s = (v) => String(v ?? '').trim(), sum = profiles.cleanSummarizer(p.summarizer);
-      const rec = { user: s(p.user), bot: s(p.bot), prompt: s(p.prompt), ...(sum && { summarizer: sum }) };
+      const rec = /** @type {{user: string, bot: string, prompt: string, summarizer?: {profileId: string, model: string}, name?: string}} */ ({ user: s(p.user), bot: s(p.bot), prompt: s(p.prompt), ...(sum && { summarizer: sum }) });
       rec.name = s(p.name) || rec.bot || 'Persona';
       const id = st.personas.some((x) => x.id === p.id) ? p.id : 'ps-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       st.personas = st.personas.some((x) => x.id === id) ? st.personas.map((x) => (x.id === id ? { id, ...rec } : x)) : [...st.personas, { id, ...rec }];

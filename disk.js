@@ -6,8 +6,9 @@ const path = require('node:path');
 /**
  * File access rooted at one folder, with flat file names.
  * @param {string} root The folder.
- * @returns {{read(name): Promise<string|null>, write(name, text): Promise<void>, remove(name): Promise<void>, list(): Promise<string[]>, rename(from, to): Promise<void>}}
- *   `read` gives null for a missing file; `write` is atomic (never a half-written or empty file) and owner-only; `remove` of a missing file is fine; `list` of a missing folder is [].
+ * @returns {DiskIo} `read` gives null for a missing file; `write` is atomic (never a half-written or empty file) and
+ *   owner-only; `remove` of a missing file is fine; `list` of a missing folder is [].
+ * @typedef {{read(name: string): Promise<string|null>, write(name: string, text: string): Promise<void>, remove(name: string): Promise<void>, list(): Promise<string[]>, rename(from: string, to: string): Promise<void>}} DiskIo
  */
 function makeDisk(root) {
   /** The full path of `name`, which must be a plain file name (no folders, no `..`). */

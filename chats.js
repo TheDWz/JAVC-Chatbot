@@ -4,7 +4,7 @@
 
 /**
  * The chat history store.
- * @param {object} io The chats folder: { read, write, remove, list } as in disk.js.
+ * @param {import('./disk').DiskIo} io The chats folder: { read, write, remove, list } as in disk.js.
  */
 module.exports = (io) => {
   /** The file name of chat `id`; rejects anything that isn't a plain id, so a name can never point outside the folder. */
