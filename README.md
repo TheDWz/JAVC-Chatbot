@@ -63,7 +63,7 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 3. **Chat.** Press <kbd>Enter</kbd> to send and <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line. Drag files onto the window to attach them.
    On Android, <kbd>Enter</kbd> starts a new line and the send button sends; attach files with the paperclip. A local server on your computer is reached by its network address (for example `http://192.168.1.20:11434/v1` for Ollama started with `OLLAMA_HOST=0.0.0.0`), not `localhost`.
 
-Click the assistant's avatar on any reply to open its reasoning. The sliders button sets the reasoning level. The gear opens **Settings**: pick a theme, manage connection profiles, set up web search, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
+Click the assistant's avatar on any reply to open its reasoning. The brain button next to the paperclip sets the reasoning level, and **⋯ → Stats for nerds** shows time to first token, tokens per second and token counts for the chat. The gear opens **Settings**: pick a theme, manage connection profiles, set up web search, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
 
 ## Privacy & security
 

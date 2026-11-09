@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-const svg = (paths) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24');
-  for (const d of paths) { const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', d); s.append(p); } return s; };
+const svgEl = (tag, attrs = {}) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const svg = (paths) => { const s = svgEl('svg', { viewBox: '0 0 24 24' }); s.append(...paths.map((d) => svgEl('path', { d }))); return s; };
 const ICON = {
   // App mark, printed by build/mkicon.py (same strokes as build/icon.svg, at 24px). Keep in sync with .mark in index.html.
   logo: ['M15.08 12.87C13.77 15.67 10.44 16.88 7.63 15.58C4.83 14.27 3.62 10.94 4.92 8.13C6.23 5.33 9.56 4.12 12.37 5.42',
@@ -405,6 +405,68 @@ $('reasoning').onclick = () => toggleSide(true);
 $('sideclose').onclick = $('scrim').onclick = () => toggleSide(false);
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('side').classList.contains('open')) toggleSide(false); });
 
+// ---- ⋯ menu and Stats for nerds (read from the stats saved on each reply) ----
+const closeMore = () => { $('morepop').hidden = true; $('more').setAttribute('aria-expanded', 'false'); };
+$('more').onclick = () => { const open = $('morepop').hidden; $('morepop').hidden = !open; $('more').setAttribute('aria-expanded', String(open)); if (open) $('statsbtn').focus(); };
+$('morewrap').onkeydown = (e) => { if (e.key === 'Escape' && !$('morepop').hidden) { e.stopPropagation(); closeMore(); $('more').focus(); } };
+document.addEventListener('mousedown', (e) => { if (!$('morepop').hidden && !$('morewrap').contains(e.target)) closeMore(); });
+$('statsbtn').onclick = () => { closeMore(); openStats(); };
+
+const fmtMs = (v) => (v == null ? ['—'] : v < 1000 ? [String(Math.round(v)), 'ms'] : [(v / 1000).toFixed(2), 's']);
+const fmtTps = (v, est) => (v == null ? ['—'] : [(est ? '~' : '') + v.toFixed(1), 'tok/s']);
+const fmtTok = (v) => (v == null ? ['—'] : [v.toLocaleString(), 'tokens']);
+function tile(label, [value, unit]) {
+  const t = el('div', 'tile'), b = el('b', null, value);
+  if (unit) b.append(el('i', null, unit));
+  t.append(el('small', null, label), b); return t;
+}
+/** One metric as a line from a zero baseline, one point per reply; hovering a point shows its value. */
+function lineChart(title, points, key, fmt) {
+  const box = el('div', 'chart'), pts = points.map((s, i) => ({ i, s, v: s[key] })).filter((p) => typeof p.v === 'number');
+  box.append(el('h4', null, title));
+  if (!pts.length) { box.append(el('p', 'sub', 'No data yet.')); return box; }
+  const W = 420, H = 116, L = 8, R = 8, T = 24, B = 18, max = Math.max(...pts.map((p) => p.v)) || 1, n = points.length;
+  const x = (i) => L + (n > 1 ? (i / (n - 1)) * (W - L - R) : (W - L - R) / 2), y = (v) => H - B - (v / max) * (H - T - B);
+  const s = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${title}, ${pts.length} replies, highest ${fmt(max).join(' ')}` });
+  const label = (tx, ty, text, anchor = 'start') => { const t = svgEl('text', { x: tx, y: ty, 'text-anchor': anchor }); t.textContent = text; return t; };
+  s.append(svgEl('line', { class: 'grid', x1: L, x2: W - R, y1: y(0), y2: y(0) }), svgEl('line', { class: 'grid', x1: L, x2: W - R, y1: y(max), y2: y(max) }),
+    label(L, T - 8, fmt(max).join(' ')), label(L, H - 3, `Reply ${points[0].n}`), ...(n > 1 ? [label(W - R, H - 3, `Reply ${points[n - 1].n}`, 'end')] : []),
+    svgEl('polyline', { class: 'ln', points: pts.map((p) => `${x(p.i)},${y(p.v)}`).join(' ') }));
+  for (const p of pts) {
+    const g = svgEl('g'), tip = svgEl('title');
+    tip.textContent = `Reply ${p.s.n} · ${p.s.model}: ${fmt(p.v, p.s.est).join(' ')}`;
+    g.append(tip, svgEl('circle', { class: 'hit', cx: x(p.i), cy: y(p.v), r: 12 }), svgEl('circle', { class: 'pt', cx: x(p.i), cy: y(p.v), r: 4 }));
+    s.append(g);
+  }
+  box.append(s); return box;
+}
+function renderStats() {
+  const model = $('statsmodel').value, s = Lib.chatStats(chat, model || undefined), last = s.last;
+  $('statscharts').replaceChildren();
+  if (!last) return $('statsbody').replaceChildren(el('p', 'statnote', 'No replies with stats yet. They are recorded for every new reply.'));
+  const avgEst = s.points.some((p) => p.est), tiles = el('div', 'tiles'), notes = [];
+  tiles.append(
+    tile('Last TTFT', fmtMs(last.ttft)), tile('Avg TTFT', fmtMs(s.avgTtft)),
+    tile('Last speed', fmtTps(last.tps, last.est)), tile('Avg speed', fmtTps(s.avgTps, avgEst)),
+    tile('Tokens used in this chat', fmtTok(s.used || null)), tile('Context size', fmtTok(s.context)),
+  );
+  notes.push(`Averages over ${s.points.length} repl${s.points.length === 1 ? 'y' : 'ies'}${model ? ` from ${model}` : ''}. Tokens used counts every reply, including ones regenerated or edited away.`);
+  if (s.est || s.noTotal) notes.push('Some replies have no token counts, because the provider didn\'t send them or the reply was stopped early.'
+    + (s.est ? ' Their speed (marked ~) is estimated from the text length.' : '') + ' They aren\'t in the token totals.');
+  $('statsbody').replaceChildren(tiles, ...notes.map((t) => el('p', 'statnote', t)));
+  if ($('statschart').checked) $('statscharts').append(lineChart('Time to first token', s.points, 'ttft', fmtMs), lineChart('Tokens per second', s.points, 'tps', fmtTps));
+}
+function openStats() {
+  const { models } = Lib.chatStats(chat), sel = $('statsmodel'), keep = sel.value;
+  sel.replaceChildren(new Option('All models', ''), ...models.map((m) => new Option(m, m)));
+  sel.value = models.includes(keep) ? keep : '';
+  $('statsfilter').hidden = models.length < 2; // the filter only matters once the chat has used more than one model
+  try { $('statschart').checked = localStorage.getItem('statsChart') === '1'; } catch {}
+  renderStats(); $('statsdlg').showModal();
+}
+$('statsmodel').onchange = renderStats;
+$('statschart').onchange = () => { try { localStorage.setItem('statsChart', $('statschart').checked ? '1' : '0'); } catch {} renderStats(); };
+
 // ---- Searchable model picker. The hidden <select id="model"> stays the source of truth; this is just a nicer way to choose from it. ----
 let modelHi = 0, modelShown = [];
 const MODEL_CAP = 200; // rendering hundreds of rows on every keystroke is slow; the count line tells the user to keep typing
@@ -486,8 +548,19 @@ async function generate(base) {
   const reply = addAssistant();
   setBusy(true);
   try {
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), (d) => reply.delta(d), { search: toolsOk() });
-    const fields = { content: out.content, reasoning: out.reasoning }; // reasoning is display-only, never sent back
+    // Timing for Stats for nerds: t1 is the model's first text, and time spent waiting on web searches after it is left out of the speed.
+    const model = settings.model, t0 = performance.now(); let t1 = 0, paused = 0, pauseAt = 0, sawReasoning = false;
+    const onDelta = (d) => {
+      const now = performance.now();
+      if (d.note) { if (t1) pauseAt ||= now; }
+      else { if (pauseAt) { paused += now - pauseAt; pauseAt = 0; } t1 ||= now; sawReasoning ||= !!d.reasoning; }
+      reply.delta(d);
+    };
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), onDelta, { search: toolsOk() });
+    const t2 = performance.now(); if (pauseAt) paused += t2 - pauseAt;
+    const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, text: out.content + out.reasoning, sawReasoning });
+    chat.used = (chat.used || 0) + (stats.total || 0); // a running total: it stays when this reply is later replaced or dropped
+    const fields = { content: out.content, reasoning: out.reasoning, stats }; // reasoning and stats are display-only, never sent back
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
     return out;
@@ -525,7 +598,7 @@ async function regenerate(m) {
   if (busy) return toast('Wait for the reply to finish');
   const i = chat.messages.indexOf(m);
   if (i < 0 || !ready()) return;
-  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; rerender(top); };
+  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; rerender(top); persist(); }; // saved for chat.used: the attempt may have used tokens
   const t = m.role === 'user' ? i + 1 : i, base = prev[t]?.role === 'assistant' ? prev[t] : undefined;
   chat.messages = prev.slice(0, t); renderChat();
   let out;
@@ -619,6 +692,7 @@ function closeTopLayer() {
   if (dlg) { dlg.close(); return true; }
   if ($('side').classList.contains('open')) { toggleSide(false); return true; }
   if (!$('modelpop').hidden) { closeModelPop(); return true; }
+  if (!$('morepop').hidden) { closeMore(); return true; }
   if (narrow() && !document.querySelector('.app').classList.contains('nohist')) { applyHist(false); return true; }
   return false;
 }

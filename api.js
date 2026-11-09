@@ -117,8 +117,15 @@ async function linkupSearch(key, q, fetchFn = fetch, signal) {
 // One streamed request. onDelta({reasoning, content}) fires as text arrives; resolves to the full {content, reasoning}.
 // If the stream breaks or is stopped after some text arrived, the partial reply is returned with `error` or `stopped` set.
 // Tool calls the model makes are pushed onto `calls` as {id, type, function:{name, arguments}}.
+const NO_USAGE = new Set(); // endpoints that rejected stream_options, for as long as the app runs
 async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, calls) {
-  const res = await call(endpoint, key, '/chat/completions', { model, messages, ...extra, stream: true }, fetchFn, signal);
+  const req = (usage) => call(endpoint, key, '/chat/completions', { model, messages, ...extra, stream: true, ...(usage && { stream_options: { include_usage: true } }) }, fetchFn, signal);
+  // include_usage gets token counts for Stats for nerds. Strict servers reject unknown fields without always naming them, so any
+  // 400/422 is asked once more without it; the endpoint is remembered only when that works, so a real error never sticks.
+  const res = await req(!NO_USAGE.has(endpoint)).catch(async (e) => {
+    if (NO_USAGE.has(endpoint) || !/^HTTP (400|422):/.test(e.message)) throw e;
+    const r = await req(false); NO_USAGE.add(endpoint); return r;
+  });
 
   const out = { content: '', reasoning: '' };
   const split = thinkSplitter();
@@ -136,6 +143,7 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
     const m = json.choices?.[0]?.message || {};
     emit(pickReasoning(m), m.content || '', true);
     for (const c of m.tool_calls || []) calls.push({ id: c.id, type: 'function', function: { name: c.function?.name || '', arguments: c.function?.arguments || '' } });
+    if (json.usage) out.usage = json.usage;
     return out;
   }
 
@@ -147,6 +155,7 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
     if (data === '[DONE]') return true;
     let j; try { j = JSON.parse(data); } catch { return false; }
     if (j.error) throw new Error('Stream error: ' + (j.error.message || JSON.stringify(j.error)));
+    if (j.usage) out.usage = j.usage; // usually its own last chunk, with empty choices
     const d = j.choices?.[0]?.delta || {};
     emit(pickReasoning(d), d.content);
     for (const t of d.tool_calls || []) {
@@ -186,12 +195,19 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
   const total = { content: '', reasoning: '' }, msgs = [...messages];
   let searches = 0; // Linkup requests so far in this reply, across rounds and parallel calls
   const add = (r, c) => { total.reasoning += r; total.content += c; };
+  // every round is billed, so token counts add up; the last round's total is the context size
+  const addUsage = (u) => {
+    if (!u) return;
+    const s = (total.usage ||= { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+    for (const k in s) s[k] += u[k] || 0;
+    total.ctx = u.total_tokens;
+  };
   for (let round = 0; ; round++) {
     const final = round >= SEARCH_ROUNDS, calls = [];
     // tools stay in the request on the last round (tool_choice none): some backends reject tool messages when no tools are defined
     const out = await streamOnce(endpoint, key, model, msgs, { ...extra, tools: [SEARCH_TOOL], tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
       .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
-    add(out.reasoning, out.content);
+    add(out.reasoning, out.content); addUsage(out.usage);
     if (out.error || out.stopped || final || !calls.length) return { ...total, ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) };
     // Thinking-mode providers (DeepSeek, GLM, Kimi) reject the follow-up with a 400 unless the round's reasoning goes back with its tool calls
     msgs.push({ role: 'assistant', content: out.content, tool_calls: calls, ...(THINKING_SWITCH.test(endpoint) && out.reasoning && { reasoning_content: out.reasoning }) });
@@ -203,7 +219,7 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
       else {
         searches++;
         const note = `Searching the web: ${q}\n`;
-        add(note, ''); onDelta({ reasoning: note, content: '' });
+        add(note, ''); onDelta({ reasoning: note, content: '', note: true }); // note: our own text, so stats don't time it as the model's
         try { result = await linkupSearch(search.key, q, fetchFn, signal); }
         catch (e) {
           if (signal?.aborted) { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped'); }

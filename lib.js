@@ -166,7 +166,7 @@
   // Message versions: each edit or regenerate adds one. The message's own fields always hold the version shown, so
   // requests and rendering never look at `versions`. A user version is only its typed text: the attachments (possibly
   // megabytes of image data) are stored once, on the message, and editUser puts them back around the text.
-  const VKEYS = ['content', 'reasoning'];
+  const VKEYS = ['content', 'reasoning', 'stats'];
   const pickVersion = (m) => (m.role === 'user' ? { text: m.text || '' } : Object.fromEntries(VKEYS.filter((k) => m[k] !== undefined).map((k) => [k, m[k]])));
   /** A copy of message `m` showing version `v` (clamped to the versions it has). */
   function showVersion(m, v) {
@@ -183,11 +183,44 @@
     return showVersion({ ...m, versions }, versions.length - 1);
   }
 
+  // ---- Stats for nerds: saved on each reply (and each of its versions), never sent to the model ----
+  /**
+   * One reply's stats from its timings (ms, from performance.now()) and the server's token counts.
+   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: object, ctx?: number, text: string, sawReasoning?: boolean}} r
+   *   t0 request sent, t1 the model's first text (0 = none), t2 reply finished, paused time spent waiting on web searches after t1;
+   *   text is the reply plus its reasoning; sawReasoning says whether any reasoning text was streamed.
+   * @returns {{model, ttft, tps, out, total, ctx, est}} Without usage, `out` is guessed from the length (about 4 characters a token) and `est` is set.
+   */
+  function replyStats({ model, t0, t1, t2, paused = 0, usage, ctx, text, sawReasoning = true }) {
+    const est = usage?.completion_tokens == null, out = est ? Math.round((text || '').length / 4) : usage.completion_tokens;
+    // Hidden reasoning (o-series, GPT-5) is counted but never streamed: it happens before t1, so it isn't part of the speed.
+    const shown = out - (!est && !sawReasoning ? usage.completion_tokens_details?.reasoning_tokens || 0 : 0);
+    const gen = (t2 - (t1 || t2) - paused) / 1000; // a reply that arrives in one piece has no measurable speed
+    return {
+      model, ttft: t1 ? Math.round(t1 - t0) : null, tps: gen > 0.05 && shown > 0 ? Math.round((shown / gen) * 10) / 10 : null,
+      out, total: usage?.total_tokens ?? null, ctx: ctx ?? usage?.total_tokens ?? null, ...(est && { est: true }),
+    };
+  }
+  const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  /**
+   * A chat's stats. Averages and `points` (oldest first, each with `n`, its reply number in the chat) count only `model` when given;
+   * `last` and the token totals always cover the whole chat. `used` is the chat's running total (chat.used), which never goes down,
+   * since replies that were regenerated, edited away or dropped used tokens too.
+   */
+  function chatStats(chat, model) {
+    const all = chat.messages.filter((m) => m.role === 'assistant').flatMap((m, i) => (m.stats ? [{ ...m.stats, n: i + 1 }] : []));
+    const points = model ? all.filter((s) => s.model === model) : all, num = (k) => points.map((s) => s[k]).filter((v) => typeof v === 'number');
+    return {
+      last: all.at(-1) || null, points, models: [...new Set(all.map((s) => s.model))], avgTtft: avg(num('ttft')), avgTps: avg(num('tps')),
+      used: chat.used || 0, context: all.at(-1)?.ctx ?? null, est: all.some((s) => s.est), noTotal: all.some((s) => s.total == null),
+    };
+  }
+
   // Every word must appear in the id, in any order, ignoring case.
   function matchModels(ids, query) {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, editUser, addVersion, showVersion, matchModels, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
+  return { systemPrompt, requestMessages, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
 });

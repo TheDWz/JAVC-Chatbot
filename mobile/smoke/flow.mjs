@@ -111,6 +111,17 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   await page.click('.row.assistant [title="Previous version"]');
   await page.waitForFunction(() => document.querySelector('.row.assistant .vcount')?.textContent === '1/2', null, { timeout: 10_000 });
 
+  log('Stats for nerds opens from the ⋯ menu, with the token counts the stream sent');
+  await page.click('#more');
+  await page.click('#statsbtn');
+  await page.waitForSelector('#statsdlg[open]');
+  const stats = await page.textContent('#statsbody'); // the mock sends 60 tokens a reply: two versions used 120, the context is 60
+  check(stats.includes('120') && stats.includes('60') && stats.includes('tok/s'), `stats show tokens and speed (got ${JSON.stringify(stats.slice(0, 200))})`);
+  await page.check('#statschart');
+  check((await page.$$('#statscharts svg')).length === 2, 'the chart switch draws both charts');
+  await back();
+  await page.waitForFunction(() => !document.querySelector('#statsdlg').open, null, { timeout: 10_000 });
+
   log('Edit adds a version of the user message and keeps the reply');
   await page.click('.row.user .mini:has-text("Edit")');
   await page.fill('.row.user .edit textarea', 'Say hello again');
