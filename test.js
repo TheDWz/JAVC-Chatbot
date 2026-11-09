@@ -1109,6 +1109,7 @@ let buf = '', cancelled = [];
 process.stdin.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) on(JSON.parse(l)); } });
 process.stdin.on('end', () => process.exit(0));
 function on(m) {
+  if (m.method === 'initialize' && process.env.BIG) return process.stdout.write('x'.repeat(33 * 1024 * 1024)); // no line break, ever
   if (m.method === 'initialize') return out({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: process.env.PV || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 't', version: '1' } } });
   if (m.method === 'notifications/cancelled') return cancelled.push(m.params.requestId);
   if (m.method === 'tools/list') return out({ jsonrpc: '2.0', id: m.id, result: m.params?.cursor
@@ -1138,7 +1139,7 @@ test('mcp hub: a real local server lists its tools over pages, runs them, surviv
     await assert.rejects(slow, /Stopped/);
     assert.match(await set.run('mcp__ed__echo', { t: 'again' }), /^echo:again cancelled:\d+$/); // still running, and it was told
     await assert.rejects(set.run('mcp__ed__crash', {}), /exit code 3[\s\S]*Traceback: boom/);
-    assert.strictEqual((await hub.status())[0].state, 'ok'); // the next use starts it again
+    assert.strictEqual(await set.run('mcp__ed__echo', { t: 'back' }), 'echo:back cancelled:'); // the next use starts a new process, which heard of no cancel
   } finally { await hub.closeAll(); }
 });
 
@@ -1169,6 +1170,38 @@ test('mcp hub: a changed or removed server is stopped', async () => {
   h.configure({}); await exited(seen[1]);
 });
 
+test('mcp hub: a reply refuses calls to a server changed or removed meanwhile; a server that floods stdout is stopped', async () => {
+  const hub = Mcp.makeHub({ spawn: nodeSpawn });
+  hub.configure({ ed: testServer() });
+  try {
+    const set = await hub.tools();
+    hub.configure({ ed: testServer({ X: '1' }) });
+    await assert.rejects(set.run('mcp__ed__echo', { t: 'x' }), /"ed" was changed or removed/);
+    hub.configure({});
+    await assert.rejects(set.run('mcp__ed__echo', { t: 'x' }), /"ed" was changed or removed/);
+    hub.configure({ big: testServer({ BIG: '1' }) });
+    assert.match((await hub.status())[0].error, /larger than 32 MB/);
+  } finally { await hub.closeAll(); }
+});
+
+test('mcp replyTools: notes for servers that fail and a config that cannot be read; "always" is saved', async () => {
+  const notes = [], saved = [];
+  const onDelta = (d) => notes.push(d.reasoning);
+  const store = (servers) => ({ mcpForReply: async () => ({ servers, allow: {} }), allowMcpTool: async (s, t) => { saved.push(s + '/' + t); } });
+  const hub = Mcp.makeHub({ spawn: nodeSpawn });
+  const locked = { mcpForReply: async () => { throw new Error("Couldn't read the saved MCP servers"); }, allowMcpTool: async () => {} };
+  assert.strictEqual(await Mcp.replyTools(hub, locked, { approve: async () => 'deny', onDelta }), undefined);
+  assert.match(notes.pop(), /MCP tools are off for this reply: Couldn't read/);
+  try {
+    let asked = 0;
+    const tools = await Mcp.replyTools(hub, store({ ed: testServer(), gone: { type: 'stdio', command: 'no-such-command-javc', args: [], env: {} } }), { approve: async () => { asked++; return 'always'; }, onDelta });
+    assert.match(notes.pop(), /"gone" didn't start/);
+    assert.strictEqual(await tools.call('mcp__ed__echo', '{"t":"a"}'), 'echo:a cancelled:');
+    assert.strictEqual(await tools.call('mcp__ed__echo', '{"t":"b"}'), 'echo:b cancelled:');
+    assert.strictEqual(asked, 1); assert.deepStrictEqual(saved, ['ed/echo']);
+  } finally { await hub.closeAll(); }
+});
+
 const fakeSet = (ran = []) => ({
   defs: [{ type: 'function', function: { name: 'mcp__ed__echo', description: 'Echo', parameters: { type: 'object' } } }], failed: [],
   has: (n) => n === 'mcp__ed__echo', label: () => 'ed › echo', info: (n) => (n === 'mcp__ed__echo' ? { server: 'ed', tool: 'echo' } : undefined),
@@ -1184,6 +1217,9 @@ test('mcp gated: every call is put to the user unless always allowed; bad argume
   assert.match(await deny.call('mcp__nope', '{}'), /no tool called "mcp__nope"/);
   const ok = Mcp.gated(fakeSet(ran), { allowed: (s, t) => s === 'ed' && t === 'echo', approve: async () => { throw new Error('not asked'); } });
   assert.strictEqual(await ok.call('mcp__ed__echo', ''), 'echoed undefined'); // empty arguments are {}
+  const ctl = new AbortController(), waiting = Mcp.gated(fakeSet(ran), { allowed: () => false, approve: () => new Promise(() => {}) }).call('mcp__ed__echo', '{}', ctl.signal);
+  ctl.abort();
+  await assert.rejects(waiting, /Stopped/); // Stop ends a reply even while it waits for an answer
 });
 
 test('chatStream with MCP tools: calls run between rounds with a note; search and MCP share a round; rounds are capped', async () => {
