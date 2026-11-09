@@ -136,10 +136,53 @@
   }
   const themeColors = (t) => THEMES.find((x) => x.id === t?.id) || (t?.id === 'custom' && cleanTheme(t)) || THEMES[0];
 
+  // ---- Summaries: once a chat nears the model's context limit, its oldest messages go out as one summary. chat.summary = {text, upto, at}:
+  // it stands for messages[0..upto), and `at` is how many messages the chat had when it was written. The messages themselves stay on screen. ----
+  // shortcut: summarize at 80% of the limit and keep the last 4 messages word for word; tune if summaries come too early or too late
+  const SUMMARY_AT = 0.8, KEEP = 4, IMG_TOKENS = 1000;
+  /** The chat's summary, or null when there is none or an edit or regenerate left the chat shorter than it. */
+  const summaryOf = (chat) => (chat.summary && chat.summary.upto <= chat.messages.length ? chat.summary : null);
+  const textOf = (c) => (Array.isArray(c) ? c.filter((p) => p.type === 'text').map((p) => p.text).join('\n') : c || '');
+  const imagesIn = (c) => (Array.isArray(c) ? c.filter((p) => p.type === 'image_url').length : 0);
+  /** A rough token count for a message: about 4 characters a token, and a flat amount per image. */
+  const tokensOf = (m) => Math.ceil(textOf(m.content).length / 4) + imagesIn(m.content) * IMG_TOKENS;
+
   // Chat isolation: only this chat's messages go out, stripped of display-only fields (text, files, reasoning).
+  // A summary joins the one system message (some providers reject a second one) and replaces the messages it covers.
   function requestMessages(chat, persona, { render } = {}) {
-    const msgs = chat.messages.map(({ role, content }) => ({ role, content })), sys = [systemPrompt(persona), render && renderHint(render)].filter(Boolean).join('\n\n');
+    const s = summaryOf(chat), msgs = chat.messages.slice(s ? s.upto : 0).map(({ role, content }) => ({ role, content }));
+    const sys = [systemPrompt(persona), render && renderHint(render), s && 'Summary of the earlier conversation:\n' + s.text].filter(Boolean).join('\n\n');
     return sys ? [{ role: 'system', content: sys }, ...msgs] : msgs;
+  }
+
+  /**
+   * About how many tokens the chat's next request holds: the server's own count from the latest reply, plus an estimate for what came after it.
+   * Replies written before the summary measured the old, longer context, so they don't count; without a usable reply it's all estimated.
+   */
+  function contextTokens(chat) {
+    const s = summaryOf(chat), ms = chat.messages, from = s ? s.upto : 0, start = s ? Math.max(s.upto, s.at) : 0;
+    const i = ms.findLastIndex((m, k) => k >= start && m.role === 'assistant' && m.stats?.ctx);
+    const base = i >= 0 ? ms[i].stats.ctx : Math.ceil((s?.text.length || 0) / 4);
+    return ms.slice(i >= 0 ? i + 1 : from).reduce((n, m) => n + tokensOf(m), base);
+  }
+  /** Where a new summary should end: a user message that leaves the last KEEP messages as they are and adds something new. -1 when there is none. */
+  function summaryCut(chat) {
+    const from = summaryOf(chat)?.upto || 0, ms = chat.messages;
+    for (let i = ms.length - KEEP; i > from; i--) if (ms[i].role === 'user') return i;
+    return -1;
+  }
+  /** The cut to summarize at when the chat is over SUMMARY_AT of `limit` tokens, else -1. */
+  const summaryDue = (chat, limit) => (contextTokens(chat) > SUMMARY_AT * limit ? summaryCut(chat) : -1);
+  /** The request that folds messages up to `cut` into the chat's summary. shortcut: sent in one piece, so a gap bigger than the summarizer's own context fails (and the chat is sent unsummarized); chunk it if that happens. */
+  function summaryRequest(chat, persona, cut) {
+    const s = summaryOf(chat), user = persona?.user || 'User', bot = persona?.bot || 'Assistant';
+    const lines = chat.messages.slice(s ? s.upto : 0, cut)
+      .map((m) => `${m.role === 'user' ? user : bot}: ${[textOf(m.content), ...Array(imagesIn(m.content)).fill('[image]')].filter(Boolean).join(' ')}`);
+    return [
+      { role: 'system', content: 'You summarize conversations so they can go on after the older messages are dropped. Write a concise summary in plain text and in the third person. '
+        + 'Keep every fact, name, decision, preference and open task the rest of the conversation may need. Reply with the summary only.' },
+      { role: 'user', content: [s && `Summary so far:\n${s.text}`, `Conversation to add:\n\n${lines.join('\n\n')}`].filter(Boolean).join('\n\n') },
+    ];
   }
 
   // Text files are inlined as fenced blocks; images become image_url parts.
@@ -222,5 +265,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
+  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
 });

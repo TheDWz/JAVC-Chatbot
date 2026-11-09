@@ -73,9 +73,9 @@ module.exports = ({ io, crypto }) => {
     /** The one-time message about a damaged settings file, if there is one; cleared once taken. */
     takeNotice() { const n = notice; notice = ''; return n; },
     get: serial(async () => withFlags(await read())),
-    /** Flat view of the active profile, used by chat and model fetching. */
-    load: serial(async ({ search: wantSearch = false } = {}) => {
-      const st = await read(), p = st.profiles.find((x) => x.id === st.activeId);
+    /** Flat view of profile `profileId` (the active one when it's not given or no longer exists), used by chat and model fetching. */
+    load: serial(async ({ search: wantSearch = false, profileId } = {}) => {
+      const st = await read(), p = st.profiles.find((x) => x.id === profileId) || st.profiles.find((x) => x.id === st.activeId);
       if (!p) throw new Error('No profile yet. Use the new-profile button to add one.');
       // the search key is only decrypted when the caller will search, so a locked keyring can't break model refresh or chats without search
       const search = wantSearch && st.search.enabled && hasKey(st.search) ? { key: await keyOf(st.search, 'search key') } : null;
@@ -95,15 +95,18 @@ module.exports = ({ io, crypto }) => {
     }),
     /** The API key of profile `id`, or '' for an unknown profile. */
     key: serial(async (id) => { const p = (await read()).profiles.find((x) => x.id === id); return p ? keyOf(p) : ''; }),
-    /** Applies a partial change: {effort, personaId, render, theme} are global; {model, meta} belong to the active profile. Invalid values are ignored. */
+    /** Applies a partial change: {effort, personaId, render, theme, summarizer, contextLimit} are global; {model, meta, noTools, ctx} belong to the active profile. Invalid values are ignored. */
     patch: serial(async (patch) => {
       let st = await read();
       if (st.personas.some((p) => p.id === patch.personaId)) st.personaId = patch.personaId;
       if (patch.effort !== undefined) st.effort = patch.effort || '';
       if (patch.render && typeof patch.render === 'object') for (const k of Lib.RENDER_KEYS) if (typeof patch.render[k] === 'boolean') st.render = { ...st.render, [k]: patch.render[k] };
       const theme = Lib.cleanTheme(patch.theme); if (theme) st.theme = theme;
+      const sum = profiles.cleanSummarizer(patch.summarizer); if (sum) st.summarizer = sum;
+      const lim = profiles.cleanContextLimit(patch.contextLimit); if (lim) st.contextLimit = lim;
       const own = {}; for (const k of ['model', 'meta']) if (patch[k] !== undefined) own[k] = patch[k];
       if (typeof patch.noTools === 'boolean') own.noTools = patch.noTools; // whether the profile's current model is known to lack tool support
+      if (Number.isInteger(patch.ctx) && patch.ctx >= 0) own.ctx = patch.ctx; // the current model's context limit from its list; 0 = the list gives none
       if (Object.keys(own).length && st.activeId) st = profiles.upsert(st, { id: st.activeId, ...own }); // never create a profile from a patch
       return commit(st);
     }),
@@ -115,10 +118,10 @@ module.exports = ({ io, crypto }) => {
       if (typeof p.key === 'string') Object.assign(upd, p.key.trim() ? await encKey(p.key.trim()) : { keyEnc: '' }); // no `key` field at all means "keep the stored key"
       return commit(profiles.upsert(await read(), upd));
     }),
-    /** Creates or updates a persona and makes it the selected one. */
+    /** Creates or updates a persona and makes it the selected one. A `summarizer` turns on its own summary model; without one it uses the default. */
     savePersona: serial(async (p) => {
-      const st = await read(), s = (v) => String(v ?? '').trim();
-      const rec = { user: s(p.user), bot: s(p.bot), prompt: s(p.prompt) };
+      const st = await read(), s = (v) => String(v ?? '').trim(), sum = profiles.cleanSummarizer(p.summarizer);
+      const rec = { user: s(p.user), bot: s(p.bot), prompt: s(p.prompt), ...(sum && { summarizer: sum }) };
       rec.name = s(p.name) || rec.bot || 'Persona';
       const id = st.personas.some((x) => x.id === p.id) ? p.id : 'ps-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       st.personas = st.personas.some((x) => x.id === id) ? st.personas.map((x) => (x.id === id ? { id, ...rec } : x)) : [...st.personas, { id, ...rec }];

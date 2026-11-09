@@ -981,3 +981,74 @@ test('chatStats: filtered averages, reply numbers, last reply, running token tot
   const none = Lib.chatStats({ messages: [] });
   assert.deepStrictEqual([none.last, none.avgTtft, none.used], [null, null, 0]);
 });
+
+// ---- Summaries ----
+test('listModelsDetailed reads the context limit from each provider\'s field, and asks NanoGPT for it', async () => {
+  const data = [{ id: 'a', context_length: 1000 }, { id: 'b', top_provider: { context_length: 2000 } }, { id: 'c', model_spec: { availableContextTokens: 3000 } },
+    { id: 'd', context_window: 4000 }, { id: 'e', max_context_length: 5000 }, { id: 'f', max_model_len: 6000 }, { id: 'g' }, { id: 'h', context_length: 'big' }];
+  const seen = {}, out = await listModelsDetailed('http://x/v1', '', fake(200, { data }, seen));
+  assert.deepStrictEqual(out.map((m) => m.ctx), [1000, 2000, 3000, 4000, 5000, 6000, undefined, undefined]);
+  assert.ok(!('ctx' in out[6])); assert.strictEqual(seen.url, 'http://x/v1/models');
+  await listModelsDetailed('https://nano-gpt.com/api/v1', '', fake(200, { data }, seen));
+  assert.strictEqual(seen.url, 'https://nano-gpt.com/api/v1/models?detailed=true');
+});
+
+const turn = (n, extra = {}) => [{ role: 'user', content: 'q' + n }, { role: 'assistant', content: 'a' + n, ...extra }];
+test('Lib.requestMessages: a summary joins the one system message and replaces what it covers; a stale one is ignored', () => {
+  const chat = { messages: [...turn(1), ...turn(2)], summary: { text: 'S', upto: 2, at: 4 } };
+  const out = Lib.requestMessages(chat, { bot: 'Bo' });
+  assert.deepStrictEqual(out, [{ role: 'system', content: 'You are Bo.\n\nSummary of the earlier conversation:\nS' }, { role: 'user', content: 'q2' }, { role: 'assistant', content: 'a2' }]);
+  assert.deepStrictEqual(Lib.requestMessages({ ...chat, messages: chat.messages.slice(0, 1) }, null), [{ role: 'user', content: 'q1' }]); // chat now shorter than upto
+});
+
+test('Lib.contextTokens: the latest reply\'s server count plus an estimate, never a count from before the summary', () => {
+  const big = 'x'.repeat(400); // 100 tokens
+  assert.strictEqual(Lib.contextTokens({ messages: [{ role: 'user', content: big }, { role: 'user', content: [{ type: 'text', text: big }, { type: 'image_url', image_url: { url: 'd' } }] }] }), 1200);
+  const msgs = [...turn(1, { stats: { ctx: 900 } }), { role: 'user', content: big }];
+  assert.strictEqual(Lib.contextTokens({ messages: msgs }), 1000);
+  // summarized after reply 1: its 900 measured the old context, so the summary and the kept messages are estimated instead
+  assert.strictEqual(Lib.contextTokens({ messages: msgs, summary: { text: big, upto: 2, at: 3 } }), 200);
+  const later = [...msgs, { role: 'assistant', content: 'a', stats: { ctx: 300 } }, { role: 'user', content: big }];
+  assert.strictEqual(Lib.contextTokens({ messages: later, summary: { text: big, upto: 2, at: 3 } }), 400);
+});
+
+test('Lib.summaryCut and summaryDue: end on a user turn, keep the last 4 messages, need something new to fold in', () => {
+  const chat = { messages: [...turn(1), ...turn(2), ...turn(3), { role: 'user', content: 'q4' }] }; // 7 messages
+  assert.strictEqual(Lib.summaryCut(chat), 2); // index 3 is a reply, so it steps back to the user turn at 2
+  assert.strictEqual(Lib.summaryCut({ messages: chat.messages.slice(0, 4) }), -1); // too short to keep 4 and fold anything
+  assert.strictEqual(Lib.summaryCut({ ...chat, summary: { text: 's', upto: 2, at: 5 } }), -1); // nothing new since the last summary
+  assert.strictEqual(Lib.summaryDue(chat, 100), -1); // far under the limit
+  assert.strictEqual(Lib.summaryDue({ messages: [...chat.messages.slice(0, 6), { role: 'user', content: 'x'.repeat(400) }] }, 100), 2); // over 80
+});
+
+test('Lib.summaryRequest: folds the previous summary and the new messages, named after the persona, images as [image]', () => {
+  const chat = { messages: [...turn(1), { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'd' } }] }, { role: 'assistant', content: 'nice' }, ...turn(3)],
+    summary: { text: 'Old', upto: 2, at: 4 } };
+  const [sys, user] = Lib.summaryRequest(chat, { user: 'Ann', bot: 'Bo' }, 4);
+  assert.strictEqual(sys.role, 'system');
+  assert.strictEqual(user.content, 'Summary so far:\nOld\n\nConversation to add:\n\nAnn: look [image]\n\nBo: nice');
+  assert.match(Lib.summaryRequest({ messages: turn(1) }, null, 2)[1].content, /^Conversation to add:\n\nUser: q1\n\nAssistant: a1$/);
+});
+
+test('store: summary model, context limit and a persona\'s own summary model are validated and saved; ctx belongs to the profile', async () => {
+  const { dir, store } = tmpStore();
+  let v = await store.get();
+  assert.deepStrictEqual([v.summarizer, v.contextLimit], [{ profileId: '', model: '' }, { on: false, tokens: 300000 }]);
+  const a = (await store.saveProfile({ name: 'A', endpoint: 'http://a' })).activeId;
+  const b = (await store.saveProfile({ name: 'B', endpoint: 'http://b', key: 'kb' })).activeId;
+  await store.patch({ summarizer: { profileId: a, model: 'cheap' }, contextLimit: { on: true, tokens: 64000 }, ctx: 128000 });
+  await store.patch({ summarizer: 'nope', contextLimit: { on: true, tokens: 10 }, ctx: -1 }); // ignored
+  v = await store.get();
+  assert.deepStrictEqual([v.summarizer, v.contextLimit, v.profiles.find((p) => p.id === b).ctx, v.profiles.find((p) => p.id === a).ctx], [{ profileId: a, model: 'cheap' }, { on: true, tokens: 64000 }, 128000, 0]);
+  await store.patch({ ctx: 0 }); assert.strictEqual((await store.get()).profiles.find((p) => p.id === b).ctx, 0); // unknown again, not the old number
+  await store.patch({ summarizer: { profileId: '', model: 'stray' } }); assert.deepStrictEqual((await store.get()).summarizer, { profileId: '', model: '' });
+  // load({profileId}) reads that profile; an unknown one falls back to the active profile
+  assert.strictEqual((await store.load({ profileId: a })).endpoint, 'http://a');
+  assert.strictEqual((await store.load({ profileId: 'gone' })).key, 'kb');
+  let st = await store.savePersona({ name: 'P', summarizer: { profileId: a, model: 'm' } });
+  const id = st.personaId;
+  assert.deepStrictEqual(st.personas.find((p) => p.id === id).summarizer, { profileId: a, model: 'm' });
+  st = await store.savePersona({ id, name: 'P' }); // switch turned off
+  assert.ok(!('summarizer' in st.personas.find((p) => p.id === id)));
+  fs.rmSync(dir, { recursive: true });
+});

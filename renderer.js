@@ -32,7 +32,7 @@ const touch = matchMedia('(pointer: coarse)');
 const focusInput = () => { if (!touch.matches) $('input').focus(); };
 
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
-let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
+let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: 300000 } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
 
 // Red pop-up for failures; long server messages stay a little longer so they can be read.
 function showError(text) {
@@ -291,6 +291,7 @@ function setMsg(m, next) {
   const i = chat.messages.indexOf(m);
   if (i < 0) return;
   if (i === 0 && m.role === 'user' && chat.title === titleOf(m.text, m.files)) chat.title = titleOf(next.text, next.files);
+  if (i < (chat.summary?.upto ?? 0)) delete chat.summary; // it no longer says what this message says; a new one is made when needed
   chat.messages[i] = next; persist(); rerender();
 }
 
@@ -348,6 +349,8 @@ function addAssistant() {
   };
   return {
     row,
+    /** A note in place of the typing dots, such as "Summarizing…"; null puts the dots back. */
+    status(t) { b.replaceChildren(t ? el('span', 'status', t) : dots); },
     delta(d) { reasoning += d.reasoning || ''; content += d.content || ''; raf ||= requestAnimationFrame(flush); },
     done(text, finalReasoning = reasoning, m) {
       cancelAnimationFrame(raf); raf = 0; row.classList.remove('thinking');
@@ -382,6 +385,9 @@ const LEVELS = [
 let modelInfo = {};
 // Models that say they lack `tools` get no search. After a restart modelInfo is empty, so fall back to the flag saved with the profile.
 const toolsOk = () => (modelInfo[settings.model] ? modelInfo[settings.model].tools !== false : !settings.noTools);
+// The chat model's context limit: from its model list (or, after a restart, the copy saved with the profile); when the list gives none,
+// the user's number for unlisted models, or 300K.
+const ctxLimit = () => (modelInfo[settings.model] ? modelInfo[settings.model].ctx : settings.ctx) || (state.contextLimit.on ? state.contextLimit.tokens : 300000);
 
 function renderLevels() {
   const info = modelInfo[settings.model] || {};
@@ -514,8 +520,8 @@ function setModels(infos) {
   modelInfo = Object.fromEntries(infos.map((m) => [m.id, m]));
   const ids = infos.map((m) => m.id), saved = settings.model, sel = $('model');
   if (ids.length) { // remember whether the current model lacks tools, so that is still known after a restart
-    const known = modelInfo[settings.model]; settings.meta = infos.some((m) => m.meta); if (known) settings.noTools = known.tools === false;
-    window.api.patchSettings({ meta: settings.meta, ...(known && { noTools: settings.noTools }) });
+    const known = modelInfo[settings.model]; settings.meta = infos.some((m) => m.meta); if (known) { settings.noTools = known.tools === false; settings.ctx = known.ctx || 0; }
+    window.api.patchSettings({ meta: settings.meta, ...(known && { noTools: settings.noTools, ctx: settings.ctx }) });
   } // an empty list says nothing about the gateway
   sel.replaceChildren(...ids.map((id) => new Option(id, id)));
   // the saved choice is only ever changed by the user: keep it visible even if the provider stopped listing it
@@ -539,6 +545,40 @@ function ready() {
   if (!settings.model) { showError('Pick a model first: open the model picker (fetch models if the list is empty).'); return false; }
   return true;
 }
+// ---- Summaries: when the chat nears the model's context limit, its older messages are folded into chat.summary before the reply ----
+/** Who writes this chat's summaries: the persona's own choice when it has one, else the default. A choice whose profile was deleted is skipped; an empty profile means the chat model. */
+function summarizer() {
+  const ok = (s) => s && (!s.profileId || state.profiles.some((p) => p.id === s.profileId)), own = personaOf(chat)?.summarizer;
+  return ok(own) ? own : ok(state.summarizer) ? state.summarizer : { profileId: '', model: '' };
+}
+/**
+ * Summarizes the older messages when the chat is close to the limit. Stop throws 'Stopped' like a reply would. Any other failure only says so
+ * and the whole chat is sent: a cut-off summary is never kept, since the messages it stands for would no longer be sent.
+ */
+async function summarize(reply) {
+  const cut = Lib.summaryDue(chat, ctxLimit());
+  if (cut < 0) return;
+  reply.status('Summarizing earlier messages…');
+  const fail = (msg) => { reply.status(null); showError("Couldn't summarize the earlier messages, so the whole chat was sent: " + msg); };
+  let out;
+  try { out = await window.api.chat(Lib.summaryRequest(chat, personaOf(chat), cut), null, { summary: summarizer() }); }
+  catch (e) { if (cleanErr(e) === 'Stopped') throw e; return fail(cleanErr(e)); }
+  chat.used = (chat.used || 0) + (out.usage?.total_tokens || 0); // the summary used tokens too
+  if (out.stopped) throw new Error('Stopped');
+  const text = out.content.trim();
+  if (out.error || !text) return fail(out.error || 'the model returned no text');
+  chat.summary = { text, upto: cut, at: chat.messages.length };
+  reply.status(null);
+  $('log').querySelector('.sumdiv')?.remove(); $('log').children[cut].before(summaryDivider(chat.summary)); // each message is one row, the pending reply last
+}
+/** The line where the summary starts; clicking it shows what the model now gets instead of the messages above. */
+function summaryDivider(s) {
+  const box = el('div', 'sumdiv'), b = el('button', null, 'Earlier messages summarized'), text = el('div', 'sumtext', s.text);
+  b.type = 'button'; b.setAttribute('aria-expanded', 'false'); text.hidden = true;
+  b.onclick = () => { text.hidden = !text.hidden; b.setAttribute('aria-expanded', String(!text.hidden)); };
+  box.append(b, text); return box;
+}
+
 /**
  * Streams a reply to the chat as it stands, adds it and returns it (with `error` or `stopped` set when cut short; the caller
  * says so). With `base`, the reply is added as a new version of that message (`base` itself is left as it was).
@@ -548,6 +588,7 @@ async function generate(base) {
   const reply = addAssistant();
   setBusy(true);
   try {
+    await summarize(reply); // before the timing starts, so it never counts toward the reply's speed
     // Timing for Stats for nerds: t1 is the model's first text, and time spent waiting on web searches after it is left out of the speed.
     const model = settings.model, t0 = performance.now(); let t1 = 0, paused = 0, pauseAt = 0, sawReasoning = false;
     const onDelta = (d) => {
@@ -598,8 +639,10 @@ async function regenerate(m) {
   if (busy) return toast('Wait for the reply to finish');
   const i = chat.messages.indexOf(m);
   if (i < 0 || !ready()) return;
-  const prev = chat.messages, top = $('scroll').scrollTop, restore = () => { chat.messages = prev; rerender(top); persist(); }; // saved for chat.used: the attempt may have used tokens
+  const prev = chat.messages, prevSummary = chat.summary, top = $('scroll').scrollTop;
+  const restore = () => { chat.messages = prev; chat.summary ??= prevSummary; rerender(top); persist(); }; // saved for chat.used: the attempt may have used tokens
   const t = m.role === 'user' ? i + 1 : i, base = prev[t]?.role === 'assistant' ? prev[t] : undefined;
+  if (t < (chat.summary?.upto ?? 0)) delete chat.summary; // it covers messages that are being dropped
   chat.messages = prev.slice(0, t); renderChat();
   let out;
   try { out = await generate(base); } catch { return restore(); }
@@ -623,7 +666,9 @@ async function refreshList() { chatList = await window.api.listChats(); renderLi
 function renderChat() {
   if (!chat.messages.length) return showEmpty();
   $('log').replaceChildren();
-  for (const m of chat.messages) {
+  const sum = Lib.summaryOf(chat);
+  for (const [i, m] of chat.messages.entries()) {
+    if (i === sum?.upto) push(summaryDivider(sum));
     if (m.role === 'assistant') { addAssistant().done(m.content, m.reasoning, m); continue; }
     const urls = Array.isArray(m.content) ? m.content.filter((p) => p.type === 'image_url').map((p) => p.image_url.url) : [];
     let k = 0;
@@ -716,8 +761,15 @@ function openPersonaDialog(isNew) {
   $('pstitle').textContent = isNew ? 'New persona' : 'Edit persona';
   $('psname').value = p.name; $('psuser').value = p.user; $('psbot').value = p.bot; $('psprompt').value = p.prompt;
   $('psdelete').hidden = isNew || p.id === 'default'; clearTimeout(psDelTimer); $('psdelete').textContent = 'Delete persona'; $('pserr').hidden = true;
+  $('pssumon').checked = !!p.summarizer; $('pssumbox').hidden = !p.summarizer;
+  if (p.summarizer) fillSumPicker($('pssumprofile'), $('pssummodel'), p.summarizer, $('pserr')); // models are only fetched when the switch is on
   $('personadlg').showModal(); $('psname').focus();
 }
+$('pssumon').onchange = () => {
+  $('pssumbox').hidden = !$('pssumon').checked;
+  if ($('pssumon').checked) fillSumPicker($('pssumprofile'), $('pssummodel'), { profileId: '', model: '' }, $('pserr'));
+};
+$('pssumprofile').onchange = () => fillSumModels($('pssumprofile'), $('pssummodel'), '', $('pserr'));
 $('persona').onchange = () => selectPersona($('persona').value);
 $('newpersona').onclick = () => openPersonaDialog(true);
 $('editpersona').onclick = () => openPersonaDialog(false);
@@ -725,7 +777,8 @@ $('pscancel').onclick = () => $('personadlg').close();
 $('psform').onsubmit = async (e) => {
   e.preventDefault(); $('pserr').hidden = true;
   try {
-    const st = await window.api.savePersona({ id: editingPersona || undefined, name: $('psname').value, user: $('psuser').value, bot: $('psbot').value, prompt: $('psprompt').value });
+    const summarizer = $('pssumon').checked ? { profileId: $('pssumprofile').value, model: $('pssummodel').value } : undefined;
+    const st = await window.api.savePersona({ id: editingPersona || undefined, name: $('psname').value, user: $('psuser').value, bot: $('psbot').value, prompt: $('psprompt').value, summarizer });
     $('personadlg').close(); personaChanged(st); toast('Saved');
   } catch (err) { $('pserr').textContent = cleanErr(err); $('pserr').hidden = false; }
 };
@@ -820,7 +873,10 @@ $('key').oninput = () => { keyDirty = true; };
 $('reveal').onclick = () => { const k = $('key'); k.type = k.type === 'password' ? 'text' : 'password'; };
 $('gear').onclick = () => openPrefs(state.activeId ? 'appearance' : 'profiles');
 $('fetch').onclick = fetchModels;
-$('model').onchange = () => { settings.model = $('model').value; settings.noTools = modelInfo[settings.model]?.tools === false; window.api.patchSettings({ model: settings.model, noTools: settings.noTools }); renderLevels(); if (!chat.messages.length) showEmpty(); };
+$('model').onchange = () => {
+  const info = modelInfo[$('model').value]; settings.model = $('model').value; settings.noTools = info?.tools === false; settings.ctx = info?.ctx || 0;
+  window.api.patchSettings({ model: settings.model, noTools: settings.noTools, ctx: settings.ctx }); renderLevels(); if (!chat.messages.length) showEmpty();
+};
 $('newchat').onclick = $('histnew').onclick = startNew;
 $('send').onclick = () => (busy ? window.api.stopChat() : send());
 $('attach').onclick = () => $('picker').click();
@@ -833,8 +889,8 @@ addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); attach([...e.dataTransfer.files]); });
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
-// ---- Settings dialog: Appearance / Profiles / Replies ----
-const PANES = ['appearance', 'profiles', 'search', 'replies'];
+// ---- Settings dialog: Appearance / Profiles / Search / Replies / Summaries ----
+const PANES = ['appearance', 'profiles', 'search', 'replies', 'summaries'];
 let prefsDirty = false; // a Replies switch changed: redraw the open chat when the dialog closes
 function showPane(name, focus) {
   for (const n of PANES) {
@@ -842,6 +898,7 @@ function showPane(name, focus) {
     tab.setAttribute('aria-selected', String(on)); tab.tabIndex = on ? 0 : -1; $('pane-' + n).hidden = !on;
     if (on && focus) tab.focus();
   }
+  if (name === 'summaries') loadSummaryPane(); // only here, since it fetches a model list
 }
 function openPrefs(pane) {
   const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
@@ -926,6 +983,49 @@ $('searchsave').onclick = async () => {
   if (!searchKeyDirty || !(await saveSearch({ key: sent }))) return;
   if ($('searchkey').value === sent) searchKeyDirty = false; // typed again while saving: stays unsaved
   toast(sent.trim() ? 'Key saved' : 'Key removed');
+};
+
+// ---- Summary model pickers (Settings → Summaries and the persona dialog): a profile, "Chat model" first, then one of that profile's models ----
+/** Fills a picker with `s` ({profileId, model}) chosen. Errors go to `err`, since toasts sit under the modal dialog. */
+function fillSumPicker(prof, model, s, err) {
+  prof.replaceChildren(new Option('Chat model', ''), ...state.profiles.map((p) => new Option(p.name, p.id)));
+  prof.value = state.profiles.some((p) => p.id === s.profileId) ? s.profileId : '';
+  return fillSumModels(prof, model, prof.value ? s.model : '', err);
+}
+/** Lists the chosen profile's models, with `want` selected; a saved model the profile no longer lists stays, marked, as in the main picker. */
+async function fillSumModels(prof, model, want, err) {
+  const pid = prof.value; model.parentElement.hidden = !pid;
+  if (!pid) return;
+  model.replaceChildren(new Option('Loading models…', want)); model.disabled = true;
+  let ids = [];
+  try { ids = (await window.api.listModels(pid)).map((m) => m.id); }
+  catch (e) { err.textContent = 'Could not load models: ' + cleanErr(e); err.hidden = false; }
+  if (prof.value !== pid) return; // another profile was picked meanwhile
+  model.replaceChildren(new Option("The profile's chat model", ''), ...ids.map((id) => new Option(id, id)));
+  if (want && !ids.includes(want)) model.add(new Option(`${want} (not in list)`, want), 1);
+  model.value = want; model.disabled = false;
+}
+
+function syncContextLimit() {
+  const c = state.contextLimit; $('ctxon').checked = c.on; $('ctxtokens').value = c.tokens; $('ctxtokens').disabled = !c.on;
+}
+function loadSummaryPane() {
+  $('sumerr').hidden = true; syncContextLimit();
+  fillSumPicker($('sumprofile'), $('summodel'), state.summarizer, $('sumerr'));
+}
+async function saveSummaries(patch) {
+  $('sumerr').hidden = true;
+  try { applyState(await window.api.patchSettings(patch)); }
+  catch (e) { $('sumerr').textContent = cleanErr(e); $('sumerr').hidden = false; }
+  syncContextLimit();
+}
+$('sumprofile').onchange = () => { saveSummaries({ summarizer: { profileId: $('sumprofile').value, model: '' } }); fillSumModels($('sumprofile'), $('summodel'), '', $('sumerr')); };
+$('summodel').onchange = () => saveSummaries({ summarizer: { profileId: $('sumprofile').value, model: $('summodel').value } });
+$('ctxon').onchange = () => saveSummaries({ contextLimit: { ...state.contextLimit, on: $('ctxon').checked } });
+$('ctxtokens').onchange = () => {
+  const n = Math.round(Number($('ctxtokens').value));
+  if (n >= 1000) return saveSummaries({ contextLimit: { ...state.contextLimit, tokens: n } });
+  syncContextLimit(); $('sumerr').textContent = 'The limit must be at least 1,000 tokens.'; $('sumerr').hidden = false;
 };
 
 (async () => {

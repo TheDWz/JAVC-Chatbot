@@ -46,18 +46,19 @@ ipcMain.handle('profiles:activate', (_e, id) => store.activate(id));
 ipcMain.handle('profiles:key', (_e, id) => store.key(id));
 ipcMain.handle('search:save', (_e, p) => store.saveSearch(p));
 ipcMain.handle('search:key', () => store.searchKey());
-ipcMain.handle('models:list', async () => { const s = await store.load(); return api.listModelsDetailed(s.endpoint, s.key); });
+ipcMain.handle('models:list', async (_e, profileId) => { const s = await store.load({ profileId }); return api.listModelsDetailed(s.endpoint, s.key); });
 
 const running = new Map(); // request id -> AbortController, so the Stop button can cancel a reply
 ipcMain.handle('chat:abort', (_e, id) => running.get(id)?.abort());
-/** Streams a reply: deltas go to the page as 'chat:delta' events; resolves to the full reply. */
+/** Streams a reply: deltas go to the page as 'chat:delta' events; resolves to the full reply. `opts.summary` ({profileId, model}) writes a summary instead. */
 ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   const ctl = new AbortController();
   running.set(id, ctl); // before any await, so Stop works from the first moment
   const onDelta = (d) => { if (!e.sender.isDestroyed()) e.sender.send('chat:delta', id, d); };
   try {
-    const s = await store.load({ search: !!opts?.search });
-    return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), onDelta, undefined, ctl.signal, opts?.search ? s.search : null);
+    const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
+    // a summary goes to its own profile and model, with no reasoning level and no search
+    return await api.chatStream(s.endpoint, s.key, sum?.model || s.model, messages, sum ? {} : api.reasoningParams(s.endpoint, s.effort, s), onDelta, undefined, ctl.signal, !sum && opts?.search ? s.search : null);
   } finally { running.delete(id); }
 });
 

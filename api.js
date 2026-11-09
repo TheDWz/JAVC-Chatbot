@@ -32,9 +32,15 @@ function reasoningInfo(m) {
 // tools:false only when the list says so (OpenRouter-style supported_parameters without `tools`); plain /models says nothing.
 const noTools = (m) => Array.isArray(m.supported_parameters) && !m.supported_parameters.includes('tools');
 
+// The model's context window in tokens, from whichever field the provider uses (OpenRouter, Venice, NanoGPT, others), or 0 when none says.
+const ctxOf = (m) => [m.context_length, m.top_provider?.context_length, m.model_spec?.availableContextTokens, m.context_window, m.max_context_length, m.max_model_len]
+  .find((v) => Number.isInteger(v) && v > 0) || 0;
+
 async function listModelsDetailed(endpoint, key, fetchFn) {
-  const json = parseJson(await (await call(endpoint, key, '/models', null, fetchFn)).text());
-  return (json.data || []).map((m) => ({ id: m.id, ...reasoningInfo(m), ...(noTools(m) && { tools: false }) })).sort((a, b) => (a.id < b.id ? -1 : 1));
+  // NanoGPT only lists context lengths when asked; other servers never see the extra parameter
+  const path = /nano-gpt\.com/i.test(endpoint) ? '/models?detailed=true' : '/models';
+  const json = parseJson(await (await call(endpoint, key, path, null, fetchFn)).text());
+  return (json.data || []).map((m) => ({ id: m.id, ...reasoningInfo(m), ...(noTools(m) && { tools: false }), ...(ctxOf(m) && { ctx: ctxOf(m) }) })).sort((a, b) => (a.id < b.id ? -1 : 1));
 }
 
 // DeepSeek, Z.ai (GLM) and Moonshot (Kimi) turn thinking off with thinking:{type:'disabled'}, not effort 'none'.

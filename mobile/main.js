@@ -39,13 +39,14 @@ window.api = {
     const { doc, csp } = await Lib.richDoc(html, color, scheme, flags); // csp switches CSS/JavaScript off, as on the desktop
     return (await Javc.sandboxCreate({ html: doc, csp })).url;
   },
-  listModels: async () => { const s = await store.load(); return api.listModelsDetailed(s.endpoint, s.key, nativeFetch); },
-  /** Streams a reply: onDelta gets {reasoning, content} pieces as they arrive; resolves to the full reply. */
+  listModels: async (profileId) => { const s = await store.load({ profileId }); return api.listModelsDetailed(s.endpoint, s.key, nativeFetch); },
+  /** Streams a reply: onDelta gets {reasoning, content} pieces as they arrive; resolves to the full reply. `opts.summary` ({profileId, model}) writes a summary instead. */
   async chat(messages, onDelta, opts) {
     const ctl = (current = new AbortController());
     try {
-      const s = await store.load({ search: !!opts?.search });
-      return await api.chatStream(s.endpoint, s.key, s.model, messages, api.reasoningParams(s.endpoint, s.effort, s), (d) => onDelta?.(d), nativeFetch, ctl.signal, opts?.search ? s.search : null); // Linkup goes through nativeFetch too
+      const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
+      // a summary goes to its own profile and model, with no reasoning level and no search; Linkup goes through nativeFetch too
+      return await api.chatStream(s.endpoint, s.key, sum?.model || s.model, messages, sum ? {} : api.reasoningParams(s.endpoint, s.effort, s), (d) => onDelta?.(d), nativeFetch, ctl.signal, !sum && opts?.search ? s.search : null);
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),
