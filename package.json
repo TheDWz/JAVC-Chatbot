@@ -7,6 +7,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p .",
     "dist:linux": "electron-builder --linux",
     "dist:win": "npm install --no-save --force @napi-rs/canvas-win32-x64-msvc@$(node -p \"require('@napi-rs/canvas/package.json').version\") && electron-builder --win",
     "dist": "npm run dist:linux && npm run dist:win",
@@ -20,9 +22,14 @@
     "@capacitor/app": "^8.1.2",
     "@capacitor/cli": "^8.6.0",
     "@capacitor/core": "^8.6.0",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
     "electron": "^45.2.1",
     "electron-builder": "^26.18.0",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "marked": "^18.1.2",

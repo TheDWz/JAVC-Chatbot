@@ -1,3 +1,5 @@
+// shortcut: elements by id come back as any, so their own properties (value, checked, showModal…) need no casts; give it per-id types if that hides real bugs
+/** @type {(id: string) => any} */
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const svgEl = (tag, attrs = {}) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
@@ -170,7 +172,7 @@ function richFrame(html) {
 function expandRich(html) {
   const ov = el('div', 'richview'), bar = el('div', 'richview-bar'), close = el('button', 'btn', 'Close'), f = el('iframe'), prev = document.activeElement;
   const onKey = (e) => { if (e.key === 'Escape') shut(); };
-  const shut = () => { ov.remove(); document.removeEventListener('keydown', onKey); prev?.focus?.(); };
+  const shut = () => { ov.remove(); document.removeEventListener('keydown', onKey); /** @type {HTMLElement|null} */ (prev)?.focus?.(); };
   close.type = 'button'; close.onclick = shut; f.setAttribute('sandbox', 'allow-scripts'); f.title = 'Rich content';
   bar.append(el('span', null, 'Preview'), close); ov.append(bar, f); document.body.append(ov);
   document.addEventListener('keydown', onKey); close.focus(); loadFrame(f, html);
@@ -178,7 +180,7 @@ function expandRich(html) {
 // Frames report their content height so a rich block grows to fit inside the reply.
 addEventListener('message', (e) => {
   const h = e.data?.richHeight; if (typeof h !== 'number') return;
-  const f = [...document.querySelectorAll('.rich iframe')].find((x) => x.contentWindow === e.source);
+  const f = [.../** @type {NodeListOf<HTMLIFrameElement>} */ (document.querySelectorAll('.rich iframe'))].find((x) => x.contentWindow === e.source);
   if (f) f.style.height = Math.min(4000, Math.max(24, h)) + 'px';
 });
 
@@ -421,6 +423,11 @@ $('statsbtn').onclick = () => { closeMore(); openStats(); };
 const fmtMs = (v) => (v == null ? ['—'] : v < 1000 ? [String(Math.round(v)), 'ms'] : [(v / 1000).toFixed(2), 's']);
 const fmtTps = (v, est) => (v == null ? ['—'] : [(est ? '~' : '') + v.toFixed(1), 'tok/s']);
 const fmtTok = (v) => (v == null ? ['—'] : [v.toLocaleString(), 'tokens']);
+/**
+ * One stat as a tile: the big value and the small unit under/next to it.
+ * @param {string} label
+ * @param {string[]} pair
+ */
 function tile(label, [value, unit]) {
   const t = el('div', 'tile'), b = el('b', null, value);
   if (unit) b.append(el('i', null, unit));
@@ -736,10 +743,11 @@ $('histbtn').onclick = () => {
 $('histscrim').onclick = () => applyHist(false); // narrow screens: tapping beside the history closes it
 
 /** The Android back button: closes whatever is on top. Returns false when nothing was open. */
+/* exported closeTopLayer */
 function closeTopLayer() {
-  const rich = document.querySelector('.richview'); if (rich) { rich.querySelector('.richview-bar .btn').click(); return true; }
+  const rich = /** @type {HTMLElement|null} */ (document.querySelector('.richview')); if (rich) { /** @type {HTMLElement|null} */ (rich.querySelector('.richview-bar .btn'))?.click(); return true; }
   // Settings is the only dialog that opens another (the profile editor) on top of itself, so close any other one first.
-  const open = [...document.querySelectorAll('dialog[open]')], dlg = open.find((d) => d.id !== 'prefs') || open[0];
+  const open = [.../** @type {NodeListOf<HTMLDialogElement>} */ (document.querySelectorAll('dialog[open]'))], dlg = open.find((d) => d.id !== 'prefs') || open[0];
   if (dlg) { dlg.close(); return true; }
   if ($('side').classList.contains('open')) { toggleSide(false); return true; }
   if (!$('modelpop').hidden) { closeModelPop(); return true; }
@@ -913,7 +921,7 @@ function openPrefs(pane) {
 for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
 $('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
   const d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key]; if (!d) return;
-  e.preventDefault(); showPane(PANES[(PANES.indexOf(document.activeElement.dataset.pane) + d + PANES.length) % PANES.length], true);
+  e.preventDefault(); showPane(PANES[(PANES.indexOf(/** @type {HTMLElement} */ (document.activeElement).dataset.pane) + d + PANES.length) % PANES.length], true);
 };
 $('prefsclose').onclick = () => $('prefs').close();
 $('prefs').onclose = () => {
@@ -952,10 +960,10 @@ function renderProfiles() {
 $('addprofile').onclick = () => openProfileDialog(true);
 
 function syncReplies() {
-  for (const c of document.querySelectorAll('[data-render]')) c.checked = !!state.render[c.dataset.render];
-  for (const k of ['css', 'js']) document.querySelector(`[data-render=${k}]`).disabled = !state.render.html; // they only apply inside HTML
+  for (const c of /** @type {NodeListOf<HTMLInputElement>} */ (document.querySelectorAll('[data-render]'))) c.checked = !!state.render[c.dataset.render];
+  for (const k of ['css', 'js']) (/** @type {HTMLInputElement} */ (document.querySelector(`[data-render=${k}]`))).disabled = !state.render.html; // they only apply inside HTML
 }
-for (const c of document.querySelectorAll('[data-render]')) c.onchange = async () => {
+for (const c of /** @type {NodeListOf<HTMLInputElement>} */ (document.querySelectorAll('[data-render]'))) c.onchange = async () => {
   try { applyState(await window.api.patchSettings({ render: { [c.dataset.render]: c.checked } })); prefsDirty = true; }
   catch (e) { showError(cleanErr(e)); applyState(state); }
   syncReplies();

@@ -1,0 +1,18 @@
+{
+  // Type-checks the JavaScript as it is (JSDoc types where they help); nothing is compiled.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "include": ["*.js", "*.d.ts", "mobile/**/*.js", "mobile/**/*.mjs"],
+  // needs Playwright, which only the Android smoke job installs; ESLint still checks it
+  "exclude": ["mobile/smoke"]
+}

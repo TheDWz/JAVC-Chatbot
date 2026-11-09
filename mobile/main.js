@@ -47,7 +47,7 @@ window.api = {
       const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
       // Linkup goes through nativeFetch too
       const { model, extra, search } = api.requestArgs(s, opts);
-      return await api.chatStream(s.endpoint, s.key, model, messages, extra, (d) => onDelta?.(d), nativeFetch, ctl.signal, search);
+      return await api.chatStream(s.endpoint, s.key, model, messages, extra, (/** @type {object} */ d) => onDelta?.(d), nativeFetch, ctl.signal, search);
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),

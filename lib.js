@@ -1,5 +1,5 @@
 // Pure helpers shared by the page (as globalThis.Lib) and the tests (via require).
-(function (root, factory) {
+(function (/** @type {any} */ root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(); else root.Lib = factory();
 })(globalThis, () => {
   // One system message from a persona: who the bot is, who the user is, then the prompt with {{user}} / {{char}} filled in.
@@ -149,6 +149,11 @@
 
   // Chat isolation: only this chat's messages go out, stripped of display-only fields (text, files, reasoning).
   // A summary joins the one system message (some providers reject a second one) and replaces the messages it covers.
+  /**
+   * @param {{messages?: {role: string, content: (string|object)}[]}} chat
+   * @param {object} [persona]
+   * @param {{render?: object}} [opts]
+   */
   function requestMessages(chat, persona, { render } = {}) {
     const s = summaryOf(chat), msgs = chat.messages.slice(s ? s.upto : 0).map(({ role, content }) => ({ role, content }));
     const sys = [systemPrompt(persona), render && renderHint(render), s && 'Summary of the earlier conversation:\n' + s.text].filter(Boolean).join('\n\n');
@@ -230,7 +235,7 @@
   // ---- Stats for nerds: saved on each reply (and each of its versions), never sent to the model ----
   /**
    * One reply's stats from its timings (ms, from performance.now()) and the server's token counts.
-   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: object, ctx?: number, sent?: number, text: string, sawReasoning?: boolean}} r
+   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: {completion_tokens?: number, completion_tokens_details?: {reasoning_tokens?: number}, total_tokens?: number, prompt_tokens?: number}, ctx?: number, sent?: number, text: string, sawReasoning?: boolean}} r
    *   t0 request sent, t1 the model's first text (0 = none), t2 reply finished, paused time spent waiting on web searches after t1;
    *   text is the reply plus its reasoning; sawReasoning says whether any reasoning text was streamed.
    *   sent is the prompt tokens of the request's first round (search rounds add more), which the next request's size is counted from.
