@@ -1245,3 +1245,62 @@ test('mcp hub: Stop while a server is still starting ends the wait at once; the 
     assert.ok(Date.now() - t0 < 2000);
   } finally { await hub.closeAll(); }
 });
+
+// A fake Streamable HTTP MCP server, as a fetch: sessions, JSON and event-stream answers, a ping from the server, an expiring session.
+const mcpHttp = (opts = {}) => {
+  const log = [], state = { session: 0, expireNext: false };
+  const reply = (status, body, headers = {}) => new Response(body, { status, headers });
+  const f = async (url, o) => {
+    const h = o.headers || {}; log.push({ method: o.method, headers: h, body: o.body ? JSON.parse(o.body) : null });
+    if (opts.auth) return reply(401, 'authentication required', { 'www-authenticate': 'Bearer resource_metadata="https://x.example/.well-known/oauth-protected-resource/mcp"' });
+    if (o.method === 'DELETE') return reply(200, '');
+    const m = JSON.parse(o.body);
+    if (m.method === 'initialize') {
+      state.session++;
+      return reply(200, JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-11-25', capabilities: {}, serverInfo: { name: 'h', version: '1' } } }), { 'content-type': 'application/json', 'mcp-session-id': 's' + state.session });
+    }
+    if (h['Mcp-Session-Id'] !== 's' + state.session) return reply(400, 'missing session');
+    if (state.expireNext) { state.expireNext = false; return reply(404, 'session gone'); }
+    if (m.method === undefined || m.id === undefined) return reply(202, null);
+    if (m.method === 'tools/list') return reply(200, JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { tools: [{ name: 'quote', inputSchema: { type: 'object' } }] } }), { 'content-type': 'application/json' });
+    const enc = new TextEncoder(); // tools/call: an event stream with a ping first, the answer's data over two lines, and a stream left open
+    return new Response(new ReadableStream({ start(c) {
+      c.enqueue(enc.encode(`event: message\r\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 'srv1', method: 'ping' })}\r\n\r\n`));
+      c.enqueue(enc.encode(`data: {"jsonrpc":"2.0","id":${m.id},\ndata: "result":{"content":[{"type":"text","text":"AAPL ${m.params.arguments.n}"}]}}\n\n`));
+    } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  return { f, log, state };
+};
+const remote = { rh: { type: 'http', url: 'https://x.example/mcp', headers: { 'X-Key': 'k' } } };
+
+test('mcp http: session and version headers, JSON and event-stream answers, ping answered, an ended session is started again', async () => {
+  const { f, log, state } = mcpHttp(), hub = Mcp.makeHub({ fetchFn: f }); // no spawn, as on a phone: url servers still work
+  hub.configure(remote);
+  assert.deepStrictEqual(await hub.status(), [{ name: 'rh', type: 'http', state: 'ok', tools: 1, error: '' }]);
+  const set = await hub.tools();
+  assert.strictEqual(await set.run('mcp__rh__quote', { n: 1 }), 'AAPL 1');
+  const [init, initialized, list] = log;
+  assert.strictEqual(init.body.method, 'initialize'); assert.strictEqual(init.headers['Mcp-Session-Id'], undefined); assert.strictEqual(init.headers['MCP-Protocol-Version'], undefined);
+  assert.strictEqual(init.headers.Accept, 'application/json, text/event-stream'); assert.strictEqual(init.headers['X-Key'], 'k');
+  assert.strictEqual(initialized.body.method, 'notifications/initialized'); assert.strictEqual(list.body.method, 'tools/list'); // in that order
+  assert.strictEqual(list.headers['MCP-Protocol-Version'], '2025-11-25'); assert.strictEqual(list.headers['Mcp-Session-Id'], 's1');
+  assert.ok(log.some((e) => e.body?.id === 'srv1' && e.body.result && e.headers['Mcp-Session-Id'] === 's1'), 'the ping was answered');
+  state.expireNext = true;
+  assert.strictEqual(await set.run('mcp__rh__quote', { n: 2 }), 'AAPL 2');
+  assert.strictEqual(state.session, 2);
+  await hub.closeAll();
+  assert.deepStrictEqual(log.filter((e) => e.method === 'DELETE').map((e) => e.headers['Mcp-Session-Id']), ['s2']);
+});
+
+test('mcp http: a server that wants sign-in, one that is down, and one that answers an error are told apart', async () => {
+  const hub = Mcp.makeHub({ fetchFn: mcpHttp({ auth: true }).f });
+  hub.configure(remote);
+  const [s] = await hub.status();
+  assert.strictEqual(s.state, 'auth'); assert.match(s.error, /sign in/);
+  const down = Mcp.makeHub({ fetchFn: async () => { throw new TypeError('fetch failed'); } });
+  down.configure(remote);
+  assert.match((await down.status())[0].error, /Couldn't reach x\.example: fetch failed/);
+  const broken = Mcp.makeHub({ fetchFn: async () => new Response('oops', { status: 500 }) });
+  broken.configure(remote);
+  assert.match((await broken.status())[0].error, /x\.example answered HTTP 500: oops/);
+});

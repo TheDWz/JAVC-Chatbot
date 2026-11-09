@@ -1,5 +1,6 @@
 // MCP (Model Context Protocol) client, tools only: the servers in a pasted Claude-style `mcpServers` config, and their tools
 // offered to the model. Platform-neutral: the desktop passes `spawn` for local (command) servers; Android has none.
+// Remote (url) servers speak Streamable HTTP through the `fetchFn` each platform passes in.
 // shortcut: speaks revision 2025-11-25 with the initialize handshake; add server/discover and per-request _meta (2026-07-28) when a server needs them
 const { version } = require('./package.json');
 
@@ -59,10 +60,11 @@ function parseConfig(text) {
 }
 
 /**
- * JSON-RPC over a transport. `send(msg)` writes one message; feed incoming ones to `receive`, and a dead transport to `fail`.
- * Requests from the server get "method not found", except ping.
+ * JSON-RPC over a transport. `send(msg, signal)` writes one message (it may return a promise; a rejection fails that
+ * request); feed incoming ones to `receive`, and a dead transport to `fail`. Requests from the server get "method not found", except ping.
  */
 function rpc(send) {
+  const post = (m, signal) => Promise.resolve().then(() => send(m, signal));
   const pending = new Map();
   let seq = 0, dead = null;
   const settle = (id, fn) => { const p = pending.get(id); if (p) { pending.delete(id); p.cleanup(); fn(p); } };
@@ -76,18 +78,19 @@ function rpc(send) {
         const timer = ms ? setTimeout(() => { settle(id, (p) => p.reject(new Error(`No answer to ${method} after ${ms / 1000} s`))); }, ms) : null;
         const onAbort = () => {
           settle(id, (p) => p.reject(new Error('Stopped')));
-          try { send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason: 'Stopped by the user' } }); } catch {}
+          post({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason: 'Stopped by the user' } }).catch(() => {});
         };
         signal?.addEventListener('abort', onAbort, { once: true });
         pending.set(id, { resolve, reject, cleanup: () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); } });
-        try { send({ jsonrpc: '2.0', id, method, ...(params && { params }) }); } catch (e) { settle(id, (p) => p.reject(e)); }
+        post({ jsonrpc: '2.0', id, method, ...(params && { params }) }, signal).catch((e) => settle(id, (p) => p.reject(signal?.aborted ? new Error('Stopped') : e)));
       });
     },
-    notify(method, params) { if (!dead) send({ jsonrpc: '2.0', method, ...(params && { params }) }); },
+    /** Resolves once it's sent (or failed: a notification's failure is not an error). */
+    notify(method, params) { return dead ? Promise.resolve() : post({ jsonrpc: '2.0', method, ...(params && { params }) }).catch(() => {}); },
     receive(m) {
       if (!isObj(m)) return;
       if (m.method !== undefined) { // from the server
-        if (m.id !== undefined) send(m.method === 'ping' ? { jsonrpc: '2.0', id: m.id, result: {} } : { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'Method not found' } });
+        if (m.id !== undefined) post(m.method === 'ping' ? { jsonrpc: '2.0', id: m.id, result: {} } : { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'Method not found' } }).catch(() => {});
         return;
       }
       if (m.error) settle(m.id, (p) => p.reject(new Error(m.error.message || `Error ${m.error.code}`)));
@@ -144,24 +147,92 @@ async function stdioTransport(spawn, entry, onMessage, onDead) {
   };
 }
 
+/** Reads a text/event-stream body, handing each event's JSON to `onMessage`, until the stream ends or `doneId`'s answer arrives. */
+async function readSse(body, onMessage, doneId) {
+  const reader = body.getReader(), dec = new TextDecoder();
+  let buf = '', data = [], done = false;
+  const dispatch = () => {
+    if (!data.length) return;
+    let m; try { m = JSON.parse(data.join('\n')); } catch {}
+    data = [];
+    for (const x of [].concat(m ?? [])) { onMessage(x); if (isObj(x) && x.id === doneId && x.method === undefined) done = true; }
+  };
+  try {
+    while (!done) {
+      const { done: end, value } = await reader.read();
+      if (end) break;
+      buf += dec.decode(value, { stream: true });
+      for (let i; !done && (i = buf.indexOf('\n')) >= 0; ) {
+        const line = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1);
+        if (!line) dispatch();
+        else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+      }
+    }
+    if (!done) dispatch();
+  } finally { reader.cancel().catch(() => {}); } // the answer is in: don't wait for a server that keeps the stream open
+}
+
+/**
+ * A remote server over Streamable HTTP: each message is a POST, answered with JSON or an event stream. Keeps the
+ * session id the server gives, and sends the negotiated protocol version once it's known.
+ * A 401 throws an error with `auth: true` and the server's `resourceMetadata` URL; a 404 on an open session throws
+ * one with `expired: true`, so the caller can start a new session.
+ */
+function httpTransport(entry, fetchFn, onMessage) {
+  let session = '', proto = '';
+  const host = new URL(entry.url).host;
+  const headers = () => ({
+    'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
+    ...(proto && { 'MCP-Protocol-Version': proto }), ...(session && { 'Mcp-Session-Id': session }), ...entry.headers,
+  });
+  return {
+    setVersion(v) { proto = v; },
+    async send(m, signal) {
+      let res;
+      try { res = await fetchFn(entry.url, { method: 'POST', headers: headers(), body: JSON.stringify(m), signal }); }
+      catch (e) { throw signal?.aborted ? new Error('Stopped') : new Error(`Couldn't reach ${host}: ${e.message}`, { cause: e }); }
+      if (res.status === 401) {
+        const meta = /resource_metadata="([^"]+)"/.exec(res.headers.get('www-authenticate') || '')?.[1] || '';
+        res.body?.cancel().catch(() => {});
+        throw Object.assign(new Error('This server needs you to sign in.'), { auth: true, resourceMetadata: meta });
+      }
+      if (res.status === 404 && session) { session = ''; res.body?.cancel().catch(() => {}); throw Object.assign(new Error('The server ended the session.'), { expired: true }); }
+      if (!res.ok) throw new Error(`${host} answered HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const sid = res.headers.get('mcp-session-id'); if (sid) session = sid;
+      if (m.method === undefined || m.id === undefined) { res.body?.cancel().catch(() => {}); return; } // a notification or our answer: 202, no body
+      if ((res.headers.get('content-type') || '').includes('text/event-stream')) return readSse(res.body, onMessage, m.id);
+      const text = await res.text();
+      let j; try { j = JSON.parse(text); } catch { throw new Error(`${host} didn't answer with JSON`); }
+      for (const x of [].concat(j)) onMessage(x);
+    },
+    async close() {
+      if (!session) return;
+      const h = headers(); session = '';
+      try { (await fetchFn(entry.url, { method: 'DELETE', headers: h })).body?.cancel().catch(() => {}); } catch {} // the server may not support it
+    },
+  };
+}
+
 /** Starts a server and does the initialize handshake. Resolves to {request, close, version}. `started(transport)` gets
  * the transport as soon as it exists, so the server can be stopped before the handshake ends.
  * @param {{type: string, command?: string, args?: string[], env?: object}} entry
- * @param {{spawn?: Function, signal?: AbortSignal, started?: (t: {close: () => Promise<void>}) => void}} deps
+ * @param {{spawn?: Function, fetchFn?: Function, signal?: AbortSignal, started?: (t: {close: () => Promise<void>}) => void}} deps
  */
-async function connect(entry, { spawn, signal, started }) {
+async function connect(entry, { spawn, fetchFn, signal, started }) {
   let r = null, deadErr = null;
   const onDead = (e) => { deadErr ||= e; r?.fail(e); };
-  if (entry.type !== 'stdio') throw new Error('Remote (url) servers are coming in a later update.');
-  if (!spawn) throw new Error('Only the desktop app can run local servers.');
-  const t = await stdioTransport(spawn, entry, (m) => r.receive(m), onDead);
+  let t;
+  if (entry.type === 'http') t = httpTransport(entry, fetchFn, (m) => r.receive(m));
+  else if (!spawn) throw new Error('Only the desktop app can run local servers.');
+  else t = await stdioTransport(spawn, entry, (m) => r.receive(m), onDead);
   r = rpc(t.send);
   started?.(t);
   if (deadErr) r.fail(deadErr);
   try {
     const init = await r.request('initialize', { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: 'JAVC Chatbot', version } }, signal, CONNECT_MS);
     if (![PROTOCOL, ...OLDER].includes(init?.protocolVersion)) throw new Error(`The server speaks MCP ${init?.protocolVersion}, which this app doesn't support yet.`);
-    r.notify('notifications/initialized');
+    t.setVersion?.(init.protocolVersion);
+    await r.notify('notifications/initialized'); // before any other request, which over HTTP could otherwise overtake it
     return { request: r.request, close: t.close, version: init.protocolVersion };
   } catch (e) { await t.close(); throw e; }
 }
@@ -205,9 +276,9 @@ function toolNames(list) {
 
 /**
  * The servers, connected lazily and kept running. `spawn` is the desktop's; without it local servers report 'desktop-only'.
- * @param {{spawn?: (command: string, args: string[], env: object) => any}} deps
+ * @param {{spawn?: (command: string, args: string[], env: object) => any, fetchFn?: Function}} deps `fetchFn` is for url servers (fetch by default).
  */
-function makeHub({ spawn }) {
+function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts) }) {
   let servers = {};
   const conns = new Map(); // name -> {key, conn: Promise<{conn, tools}>, stop: () => Promise<void>}
 
@@ -223,7 +294,7 @@ function makeHub({ spawn }) {
       const started = (t) => { transport = t; if (stopped) t.close(); };
       c = {
         key,
-        conn: connect(entry, { spawn, started }).then(async (conn) => {
+        conn: connect(entry, { spawn, fetchFn, started }).then(async (conn) => {
           try { return { conn, tools: await listTools(conn) }; } catch (e) { await conn.close(); throw e; }
         }),
         stop: async () => { stopped = true; await transport?.close(); },
@@ -242,13 +313,13 @@ function makeHub({ spawn }) {
       servers = next || {};
       for (const [name, c] of [...conns]) if (!servers[name] || c.key !== JSON.stringify(servers[name])) drop(name);
     },
-    /** Every server's state, starting any that aren't running: [{name, type, state: ok|error|desktop-only, tools, error}]. */
+    /** Every server's state, starting any that aren't running: [{name, type, state: ok|error|auth|desktop-only, tools, error}]. */
     async status() {
       return Promise.all(Object.keys(servers).map(async (name) => {
         const type = servers[name].type;
         if (local(name) && !spawn) return { name, type, state: 'desktop-only', tools: 0, error: '' };
         try { return { name, type, state: 'ok', tools: (await open(name)).tools.length, error: '' }; }
-        catch (e) { return { name, type, state: 'error', tools: 0, error: e.message }; }
+        catch (e) { return { name, type, state: e.auth ? 'auth' : 'error', tools: 0, error: e.message }; }
       }));
     },
     /** Restarts every server (the Reload button). */
@@ -279,8 +350,9 @@ function makeHub({ spawn }) {
         info: (n) => byName.get(n),
         /** Calls the tool; resolves to text for the model. */
         async run(n, args, signal) {
-          const t = byName.get(n);
-          return resultText(await (await open(t.server)).conn.request('tools/call', { name: t.tool, arguments: args }, signal));
+          const t = byName.get(n), call = async () => resultText(await (await until(open(t.server), signal)).conn.request('tools/call', { name: t.tool, arguments: args }, signal));
+          try { return await call(); }
+          catch (e) { if (!e.expired) throw e; await drop(t.server); return call(); } // the HTTP session ended: start a new one, once
         },
       };
     },

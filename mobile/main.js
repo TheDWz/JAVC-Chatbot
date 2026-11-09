@@ -14,8 +14,8 @@ const nativeFetch = makeNativeFetch(Javc);
 const store = makeStore({ io: makeNativeDisk(Javc), crypto: makeNativeCrypto(Javc) });
 const chats = makeChats(makeNativeDisk(Javc, 'chats'));
 
-// MCP: no local (command) servers on a phone, so those report 'desktop-only'
-const hub = Mcp.makeHub({});
+// MCP: no local (command) servers on a phone, so those report 'desktop-only'; url servers go through nativeFetch, which has no CORS
+const hub = Mcp.makeHub({ fetchFn: nativeFetch });
 const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
 /** @type {(info: object) => Promise<string>} */
 let approve = async () => 'deny'; // until the page registers its dialog
