@@ -109,7 +109,11 @@ async function mcpTools(sender, onDelta) {
   const set = await (await mcpReady()).tools();
   for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
   const allow = (await store.get()).mcp.allow;
-  return Mcp.gated(set, { allowed: (server, tool) => !!allow[server]?.includes(tool), approve: approver(sender) });
+  const ask = approver(sender);
+  return Mcp.gated(set, {
+    allowed: (server, tool) => !!allow[server]?.includes(tool),
+    approve: async (info) => { const a = await ask(info); if (a === 'always') (allow[info.server] ||= []).push(info.tool); return a; }, // counts for the rest of this reply too
+  });
 }
 let quitting = false;
 app.on('before-quit', (e) => { // stop the servers first; before-quit doesn't wait for promises by itself

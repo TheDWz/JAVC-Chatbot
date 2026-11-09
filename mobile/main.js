@@ -86,7 +86,11 @@ async function mcpTools(onDelta) {
   const allow = (await store.get()).mcp.allow;
   return Mcp.gated(set, {
     allowed: (server, tool) => !!allow[server]?.includes(tool),
-    approve: async (info) => { const a = await approve(info); if (a === 'always') await store.allowMcpTool(info.server, info.tool); return a; },
+    approve: async (info) => {
+      const a = await approve(info);
+      if (a === 'always') { await store.allowMcpTool(info.server, info.tool); (allow[info.server] ||= []).push(info.tool); } // counts for the rest of this reply too
+      return a;
+    },
   });
 }
 
