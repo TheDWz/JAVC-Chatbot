@@ -114,6 +114,14 @@
   #scroll { flex: 1; overflow-y: auto; }
   #log { max-width: 780px; margin: 0 auto; padding: 28px 20px 12px; display: flex; flex-direction: column; gap: 18px; min-height: 100%; }
   .row { display: flex; gap: 12px; animation: rise .22s ease-out; }
+  /* Where a chat's summary starts: a hairline with a quiet label that opens the summary. */
+  .sumdiv { display: flex; flex-direction: column; gap: 10px; }
+  .sumdiv > button { display: flex; align-items: center; gap: 12px; border: 0; background: none; padding: 2px 0; font: inherit; font-size: 11.5px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; color: var(--faint); cursor: pointer; }
+  .sumdiv > button::before, .sumdiv > button::after { content: ""; flex: 1; border-top: 1px solid var(--line-soft); }
+  .sumdiv > button:hover { color: var(--muted); }
+  .sumtext { padding: 10px 15px; border-radius: 12px; background: var(--surface-2); color: var(--muted); font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble .status { color: var(--muted); font-size: 13.5px; }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
   .row.user { justify-content: flex-end; }
   .avatar { width: 30px; height: 30px; border-radius: 9px; background: var(--grad); color: #fff; display: grid; place-items: center; flex-shrink: 0; margin-top: 2px;
@@ -205,7 +213,7 @@
   .tile small { display: block; font-size: 12px; color: var(--muted); }
   .tile b { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
   .tile b i { font-style: normal; font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 3px; }
-  #statsdlg .opt { margin-top: 0; }
+  #statsdlg .opt, #personadlg .opt { margin-top: 0; }
   .chart h4 { margin: 4px 0 2px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
   .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
   .chart .ln { stroke: var(--a1); stroke-width: 2; fill: none; }
@@ -307,7 +315,7 @@
   .prefs-body .opt { margin-top: 0; padding-top: 12px; }
   .prefs-body .opt:first-of-type { border-top: 0; }
   .sub-opt { margin-left: 46px; }
-  .opt:has(input:disabled) { opacity: .5; cursor: default; }
+  .opt:has(input:disabled), .field:has(input:disabled) { opacity: .5; cursor: default; }
   .sw { appearance: none; flex-shrink: 0; inline-size: 36px; block-size: 20px; margin: 0; border-radius: 999px; background: var(--line); position: relative; cursor: inherit; transition: background .15s; }
   .sw::before { content: ""; position: absolute; inset: 2px auto 2px 2px; aspect-ratio: 1; border-radius: 50%; background: #fff; transition: translate .15s; }
   .sw:checked { background: var(--grad); } .sw:checked::before { translate: 16px 0; }
@@ -488,6 +496,7 @@
       <button type="button" role="tab" id="tab-profiles" data-pane="profiles" aria-controls="pane-profiles">Profiles</button>
       <button type="button" role="tab" id="tab-search" data-pane="search" aria-controls="pane-search">Search</button>
       <button type="button" role="tab" id="tab-replies" data-pane="replies" aria-controls="pane-replies">Replies</button>
+      <button type="button" role="tab" id="tab-summaries" data-pane="summaries" aria-controls="pane-summaries">Summaries</button>
     </div>
     <div class="prefs-body">
       <button type="button" class="icon-btn prefs-close" id="prefsclose" title="Close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
@@ -529,6 +538,20 @@
         <label class="opt sub-opt"><input type="checkbox" class="sw" data-render="css"><span>CSS<small>Style tags, stylesheets and inline styles inside HTML.</small></span></label>
         <label class="opt sub-opt"><input type="checkbox" class="sw" data-render="js"><span>JavaScript<small>Scripts inside HTML, such as charts and interactive demos.</small></span></label>
       </section>
+      <section role="tabpanel" id="pane-summaries" aria-labelledby="tab-summaries" tabindex="0" hidden>
+        <h3>Long chats</h3>
+        <p class="sub">When a chat nears its model's context limit, the older messages are summarized so it can keep going. They stay on screen.</p>
+        <div class="field">Summary model
+          <span class="input"><select id="sumprofile" aria-label="Summary model profile"></select></span>
+          <span class="input" id="summodelbox" hidden><select id="summodel" aria-label="Summary model"></select></span>
+          <span style="font-weight:400;color:var(--faint)">A persona can choose its own in its settings.</span>
+        </div>
+        <label class="opt"><input type="checkbox" class="sw" id="ctxon"><span>Context limit for unlisted models<small>Used only when the provider doesn't list a model's limit. Off uses 300,000 tokens.</small></span></label>
+        <label class="field sub-opt">Tokens
+          <span class="input"><input id="ctxtokens" type="number" min="1000" step="1000" inputmode="numeric"></span>
+        </label>
+        <p id="sumerr" class="perr" role="alert" hidden></p>
+      </section>
     </div>
   </div>
 </dialog>
@@ -548,6 +571,11 @@
       <span class="input"><textarea id="psprompt" placeholder="How the bot should behave…"></textarea></span>
       <span style="font-weight:400;color:var(--faint)">Write {{user}} and {{char}} to insert the two names.</span>
     </label>
+    <label class="opt"><input type="checkbox" class="sw" id="pssumon"><span>Own summary model<small>Overrides the default in Settings → Summaries.</small></span></label>
+    <div class="field" id="pssumbox" hidden>
+      <span class="input"><select id="pssumprofile" aria-label="Summary model profile"></select></span>
+      <span class="input" id="pssummodelbox" hidden><select id="pssummodel" aria-label="Summary model"></select></span>
+    </div>
     <p id="pserr" class="perr" role="alert" hidden></p>
     <div class="btns">
       <button type="button" class="btn danger" id="psdelete">Delete persona</button>

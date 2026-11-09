@@ -136,10 +136,54 @@
   }
   const themeColors = (t) => THEMES.find((x) => x.id === t?.id) || (t?.id === 'custom' && cleanTheme(t)) || THEMES[0];
 
+  // ---- Summaries: once a chat nears the model's context limit, its oldest messages go out as one summary. chat.summary = {text, upto, at}:
+  // it stands for messages[0..upto), and `at` is how many messages the chat had when it was written. The messages themselves stay on screen. ----
+  // shortcut: summarize at 80% of the limit and keep the last 4 messages word for word; tune if summaries come too early or too late
+  const SUMMARY_AT = 0.8, KEEP = 4, IMG_TOKENS = 1000, DEFAULT_CTX = 300000; // context limit for models whose list gives none
+  /** The chat's summary, or null when there is none or an edit or regenerate left the chat shorter than it. */
+  const summaryOf = (chat) => (chat.summary && chat.summary.upto <= chat.messages.length ? chat.summary : null);
+  const textOf = (c) => (Array.isArray(c) ? c.filter((p) => p.type === 'text').map((p) => p.text).join('\n') : c || '');
+  const imagesIn = (c) => (Array.isArray(c) ? c.filter((p) => p.type === 'image_url').length : 0);
+  /** A rough token count for a message: about 4 characters a token, and a flat amount per image. */
+  const tokensOf = (m) => Math.ceil(textOf(m.content).length / 4) + imagesIn(m.content) * IMG_TOKENS;
+
   // Chat isolation: only this chat's messages go out, stripped of display-only fields (text, files, reasoning).
+  // A summary joins the one system message (some providers reject a second one) and replaces the messages it covers.
   function requestMessages(chat, persona, { render } = {}) {
-    const msgs = chat.messages.map(({ role, content }) => ({ role, content })), sys = [systemPrompt(persona), render && renderHint(render)].filter(Boolean).join('\n\n');
+    const s = summaryOf(chat), msgs = chat.messages.slice(s ? s.upto : 0).map(({ role, content }) => ({ role, content }));
+    const sys = [systemPrompt(persona), render && renderHint(render), s && 'Summary of the earlier conversation:\n' + s.text].filter(Boolean).join('\n\n');
     return sys ? [{ role: 'system', content: sys }, ...msgs] : msgs;
+  }
+
+  /**
+   * About how many tokens the chat's next request holds (persona and opts as for requestMessages). With a recent reply, it's the server's
+   * count of that reply's prompt plus an estimate for the reply and what came after; reasoning and search results aren't sent again, so
+   * they don't count. Replies written before the summary measured the old, longer context, so they're skipped; without one it's all estimated.
+   */
+  function contextTokens(chat, persona, opts) {
+    const s = summaryOf(chat), ms = chat.messages, start = s ? Math.max(s.upto, s.at) : 0;
+    const i = ms.findLastIndex((m, k) => k >= start && m.role === 'assistant' && m.stats?.prompt);
+    if (i < 0) return requestMessages(chat, persona, opts).reduce((n, m) => n + tokensOf(m), 0);
+    return ms.slice(i).reduce((n, m) => n + tokensOf(m), ms[i].stats.prompt);
+  }
+  /** Where a new summary should end: a user message that leaves the last KEEP messages as they are and adds something new. -1 when there is none. */
+  function summaryCut(chat) {
+    const from = summaryOf(chat)?.upto || 0, ms = chat.messages;
+    for (let i = ms.length - KEEP; i > from; i--) if (ms[i].role === 'user') return i;
+    return -1;
+  }
+  /** The cut to summarize at when the chat's next request is over SUMMARY_AT of `limit` tokens, else -1. */
+  const summaryDue = (chat, limit, persona, opts) => (contextTokens(chat, persona, opts) > SUMMARY_AT * limit ? summaryCut(chat) : -1);
+  /** The request that folds messages up to `cut` into the chat's summary. shortcut: sent in one piece, so a gap bigger than the summarizer's own context fails (and the chat is sent unsummarized); chunk it if that happens. */
+  function summaryRequest(chat, persona, cut) {
+    const s = summaryOf(chat), user = persona?.user || 'User', bot = persona?.bot || 'Assistant';
+    const lines = chat.messages.slice(s ? s.upto : 0, cut)
+      .map((m) => `${m.role === 'user' ? user : bot}: ${[textOf(m.content), ...Array(imagesIn(m.content)).fill('[image]')].filter(Boolean).join(' ')}`);
+    return [
+      { role: 'system', content: 'You summarize conversations so they can go on after the older messages are dropped. Write a concise summary in plain text and in the third person. '
+        + 'Keep every fact, name, decision, preference and open task the rest of the conversation may need. Reply with the summary only.' },
+      { role: 'user', content: [s && `Summary so far:\n${s.text}`, `Conversation to add:\n\n${lines.join('\n\n')}`].filter(Boolean).join('\n\n') },
+    ];
   }
 
   // Text files are inlined as fenced blocks; images become image_url parts.
@@ -186,19 +230,20 @@
   // ---- Stats for nerds: saved on each reply (and each of its versions), never sent to the model ----
   /**
    * One reply's stats from its timings (ms, from performance.now()) and the server's token counts.
-   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: object, ctx?: number, text: string, sawReasoning?: boolean}} r
+   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: object, ctx?: number, sent?: number, text: string, sawReasoning?: boolean}} r
    *   t0 request sent, t1 the model's first text (0 = none), t2 reply finished, paused time spent waiting on web searches after t1;
    *   text is the reply plus its reasoning; sawReasoning says whether any reasoning text was streamed.
-   * @returns {{model, ttft, tps, out, total, ctx, est}} Without usage, `out` is guessed from the length (about 4 characters a token) and `est` is set.
+   *   sent is the prompt tokens of the request's first round (search rounds add more), which the next request's size is counted from.
+   * @returns {{model, ttft, tps, out, total, ctx, prompt, est}} Without usage, `out` is guessed from the length (about 4 characters a token) and `est` is set.
    */
-  function replyStats({ model, t0, t1, t2, paused = 0, usage, ctx, text, sawReasoning = true }) {
+  function replyStats({ model, t0, t1, t2, paused = 0, usage, ctx, sent, text, sawReasoning = true }) {
     const est = usage?.completion_tokens == null, out = est ? Math.round((text || '').length / 4) : usage.completion_tokens;
     // Hidden reasoning (o-series, GPT-5) is counted but never streamed: it happens before t1, so it isn't part of the speed.
     const shown = out - (!est && !sawReasoning ? usage.completion_tokens_details?.reasoning_tokens || 0 : 0);
     const gen = (t2 - (t1 || t2) - paused) / 1000; // a reply that arrives in one piece has no measurable speed
     return {
       model, ttft: t1 ? Math.round(t1 - t0) : null, tps: gen > 0.05 && shown > 0 ? Math.round((shown / gen) * 10) / 10 : null,
-      out, total: usage?.total_tokens ?? null, ctx: ctx ?? usage?.total_tokens ?? null, ...(est && { est: true }),
+      out, total: usage?.total_tokens ?? null, ctx: ctx ?? usage?.total_tokens ?? null, prompt: sent ?? usage?.prompt_tokens ?? null, ...(est && { est: true }),
     };
   }
   const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -222,5 +267,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
+  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize, DEFAULT_CTX };
 });

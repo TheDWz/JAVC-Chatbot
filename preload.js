@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   getSearchKey: () => ipcRenderer.invoke('search:key'),
   getProfileKey: (id) => ipcRenderer.invoke('profiles:key', id),
   createSandbox: (html, color, scheme, flags) => ipcRenderer.invoke('sandbox:create', html, color, scheme, flags),
-  listModels: () => ipcRenderer.invoke('models:list'),
+  listModels: (profileId) => ipcRenderer.invoke('models:list', profileId),
   // Streams: onDelta gets {reasoning, content} pieces tagged with this request's id; resolves to the full reply.
   chat: async (messages, onDelta, opts) => {
     const id = (currentId = Date.now().toString(36) + Math.random().toString(36).slice(2));

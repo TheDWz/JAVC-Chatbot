@@ -32,9 +32,15 @@ function reasoningInfo(m) {
 // tools:false only when the list says so (OpenRouter-style supported_parameters without `tools`); plain /models says nothing.
 const noTools = (m) => Array.isArray(m.supported_parameters) && !m.supported_parameters.includes('tools');
 
+// The model's context window in tokens, from whichever field the provider uses (OpenRouter, Venice, NanoGPT, others), or 0 when none says.
+const ctxOf = (m) => [m.context_length, m.top_provider?.context_length, m.model_spec?.availableContextTokens, m.context_window, m.max_context_length, m.max_model_len]
+  .find((v) => Number.isInteger(v) && v > 0) || 0;
+
 async function listModelsDetailed(endpoint, key, fetchFn) {
-  const json = parseJson(await (await call(endpoint, key, '/models', null, fetchFn)).text());
-  return (json.data || []).map((m) => ({ id: m.id, ...reasoningInfo(m), ...(noTools(m) && { tools: false }) })).sort((a, b) => (a.id < b.id ? -1 : 1));
+  // NanoGPT only lists context lengths when asked; other servers never see the extra parameter
+  const path = /nano-gpt\.com/i.test(endpoint) ? '/models?detailed=true' : '/models';
+  const json = parseJson(await (await call(endpoint, key, path, null, fetchFn)).text());
+  return (json.data || []).map((m) => { const ctx = ctxOf(m); return { id: m.id, ...reasoningInfo(m), ...(noTools(m) && { tools: false }), ...(ctx && { ctx }) }; }).sort((a, b) => (a.id < b.id ? -1 : 1));
 }
 
 // DeepSeek, Z.ai (GLM) and Moonshot (Kimi) turn thinking off with thinking:{type:'disabled'}, not effort 'none'.
@@ -58,6 +64,12 @@ function reasoningParams(endpoint, effort, { format, meta } = {}) {
     return /moonshot/i.test(endpoint) ? { reasoning_effort: effort } : { reasoning_effort: effort, thinking: { type: 'enabled' } };
   }
   return { reasoning_effort: effort };
+}
+
+/** What one chat or summary request sends: the model, the extra params and the search config ({key}). A summary goes to its own profile and model, with no reasoning level and no search. */
+function requestArgs(s, opts) {
+  const sum = opts?.summary;
+  return { model: sum?.model || s.model, extra: sum ? {} : reasoningParams(s.endpoint, s.effort, s), search: !sum && opts?.search ? s.search : null };
 }
 
 // Local R1-style models put reasoning in content as <think>…</think>. Only a block at the very start counts,
@@ -201,6 +213,7 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     const s = (total.usage ||= { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
     for (const k in s) s[k] += u[k] || 0;
     total.ctx = u.total_tokens;
+    total.sent ??= u.prompt_tokens; // the first round's prompt is the chat itself; later rounds add search results that aren't sent again
   };
   for (let round = 0; ; round++) {
     const final = round >= SEARCH_ROUNDS, calls = [];
@@ -231,4 +244,4 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
   }
 }
 
-module.exports = { listModelsDetailed, reasoningParams, chatStream, thinkSplitter, THINKING_SWITCH };
+module.exports = { listModelsDetailed, reasoningParams, requestArgs, chatStream, thinkSplitter, THINKING_SWITCH };

@@ -28,6 +28,7 @@
 - **Live reasoning.** Watch a reasoning model think in real time, and choose how hard it thinks.
 - **Connection profiles.** Save several endpoint, key and model combinations and switch between them in one click. Keys are encrypted by your operating system.
 - **Personas.** Give the assistant a name, a personality and a system prompt. Each persona keeps its own chat history.
+- **Long chats.** When a chat nears the model's context limit, its older messages are summarized so it can keep going, and they stay on screen. Choose the summary model in Settings → Summaries, or per persona. The limit comes from your provider's model list (300K tokens when it doesn't say, or your own number).
 - **Chat history.** Every conversation is saved locally and grouped by persona. You can duplicate a chat to another persona.
 - **Attachments.** Drop in text files, PDFs (text is extracted on your machine) or images for vision models.
 - **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view. Markdown, HTML, CSS and JavaScript can each be switched off.
