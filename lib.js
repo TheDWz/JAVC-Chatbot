@@ -139,7 +139,7 @@
   // ---- Summaries: once a chat nears the model's context limit, its oldest messages go out as one summary. chat.summary = {text, upto, at}:
   // it stands for messages[0..upto), and `at` is how many messages the chat had when it was written. The messages themselves stay on screen. ----
   // shortcut: summarize at 80% of the limit and keep the last 4 messages word for word; tune if summaries come too early or too late
-  const SUMMARY_AT = 0.8, KEEP = 4, IMG_TOKENS = 1000;
+  const SUMMARY_AT = 0.8, KEEP = 4, IMG_TOKENS = 1000, DEFAULT_CTX = 300000; // context limit for models whose list gives none
   /** The chat's summary, or null when there is none or an edit or regenerate left the chat shorter than it. */
   const summaryOf = (chat) => (chat.summary && chat.summary.upto <= chat.messages.length ? chat.summary : null);
   const textOf = (c) => (Array.isArray(c) ? c.filter((p) => p.type === 'text').map((p) => p.text).join('\n') : c || '');
@@ -265,5 +265,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize };
+  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize, DEFAULT_CTX };
 });

@@ -45,13 +45,13 @@ const cleanContextLimit = (v) => (v && typeof v === 'object' && Number.isInteger
 // Personas: {id, name, user, bot, prompt, summarizer?}. `summarizer` is there only while the persona's own-summary-model switch is on. 'default' always exists and can't be deleted. `render` (which reply formats are shown and hinted) and `theme` have defaults; `rich` is the old single switch.
 function finishState(state, raw) {
   const personas = (Array.isArray(raw?.personas) ? raw.personas : []).filter((p) => p && typeof p.id === 'string' && p.id)
-    .map((p) => ({ id: p.id, name: str(p.name), user: str(p.user), bot: str(p.bot), prompt: str(p.prompt), ...(cleanSummarizer(p.summarizer) && { summarizer: cleanSummarizer(p.summarizer) }) }));
+    .map((p) => { const sum = cleanSummarizer(p.summarizer); return { id: p.id, name: str(p.name), user: str(p.user), bot: str(p.bot), prompt: str(p.prompt), ...(sum && { summarizer: sum }) }; });
   if (!personas.some((p) => p.id === 'default')) personas.unshift({ id: 'default', name: 'Default', user: '', bot: '', prompt: '' });
   const richOff = raw?.rich === false; // old single switch: off meant "no HTML/CSS/JS", Markdown stayed on
   const r = raw?.render && typeof raw.render === 'object' ? raw.render : {};
   const render = Object.fromEntries(Lib.RENDER_KEYS.map((k) => [k, typeof r[k] === 'boolean' ? r[k] : !(richOff && k !== 'markdown')]));
   const search = { enabled: raw?.search?.enabled === true, ...(raw?.search && typeof raw.search === 'object' ? keyOf(raw.search) : {}) }; // web search: {enabled, keyEnc|keyPlain}
-  const summarizer = cleanSummarizer(raw?.summarizer) || { profileId: '', model: '' }, contextLimit = cleanContextLimit(raw?.contextLimit) || { on: false, tokens: 300000 };
+  const summarizer = cleanSummarizer(raw?.summarizer) || { profileId: '', model: '' }, contextLimit = cleanContextLimit(raw?.contextLimit) || { on: false, tokens: Lib.DEFAULT_CTX };
   return { ...state, search, summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
 }
 

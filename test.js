@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { listModelsDetailed, chatStream, thinkSplitter } = require('./api');
+const { listModelsDetailed, chatStream, thinkSplitter, requestArgs } = require('./api');
 
 const fake = (status, body, seen = {}) => async (url, opts) => {
   Object.assign(seen, { url, opts });
@@ -1051,4 +1051,13 @@ test('store: summary model, context limit and a persona\'s own summary model are
   st = await store.savePersona({ id, name: 'P' }); // switch turned off
   assert.ok(!('summarizer' in st.personas.find((p) => p.id === id)));
   fs.rmSync(dir, { recursive: true });
+});
+
+// ---- requestArgs ----
+test('requestArgs: a summary takes its own model, no reasoning and no search; a chat takes the settings', () => {
+  const s = { model: 'gpt', endpoint: 'https://openrouter.ai/api/v1', effort: 'high', search: { key: 'k' } };
+  assert.deepStrictEqual(requestArgs(s, { summary: { profileId: 'p', model: 'cheap' } }), { model: 'cheap', extra: {}, search: null });
+  assert.strictEqual(requestArgs(s, { summary: { profileId: 'p', model: '' } }).model, 'gpt');
+  assert.deepStrictEqual(requestArgs(s, { search: true }), { model: 'gpt', extra: { reasoning: { effort: 'high' } }, search: { key: 'k' } });
+  assert.strictEqual(requestArgs(s, {}).search, null);
 });

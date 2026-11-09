@@ -32,7 +32,7 @@ const touch = matchMedia('(pointer: coarse)');
 const focusInput = () => { if (!touch.matches) $('input').focus(); };
 
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
-let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: 300000 } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
+let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: Lib.DEFAULT_CTX } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
 
 // Red pop-up for failures; long server messages stay a little longer so they can be read.
 function showError(text) {
@@ -387,7 +387,7 @@ let modelInfo = {};
 const toolsOk = () => (modelInfo[settings.model] ? modelInfo[settings.model].tools !== false : !settings.noTools);
 // The chat model's context limit: from its model list (or, after a restart, the copy saved with the profile); when the list gives none,
 // the user's number for unlisted models, or 300K.
-const ctxLimit = () => (modelInfo[settings.model] ? modelInfo[settings.model].ctx : settings.ctx) || (state.contextLimit.on ? state.contextLimit.tokens : 300000);
+const ctxLimit = () => (modelInfo[settings.model] ? modelInfo[settings.model].ctx : settings.ctx) || (state.contextLimit.on ? state.contextLimit.tokens : Lib.DEFAULT_CTX);
 
 function renderLevels() {
   const info = modelInfo[settings.model] || {};
