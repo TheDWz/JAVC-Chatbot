@@ -147,10 +147,14 @@ async function stdioTransport(spawn, entry, onMessage, onDead) {
   };
 }
 
-/** Reads a text/event-stream body, handing each event's JSON to `onMessage`, until the stream ends or `doneId`'s answer arrives. */
+/**
+ * Reads a text/event-stream body, handing each event's JSON to `onMessage`, until the stream ends or `doneId`'s answer
+ * arrives. Resolves to {answered, lastId, retry}: the last event id and retry delay let the caller resume a stream the
+ * server closed early.
+ */
 async function readSse(body, onMessage, doneId) {
   const reader = body.getReader(), dec = new TextDecoder();
-  let buf = '', data = [], done = false;
+  let buf = '', data = [], done = false, lastId = '', retry = null;
   const dispatch = () => {
     if (!data.length) return;
     let m; try { m = JSON.parse(data.join('\n')); } catch {}
@@ -164,13 +168,22 @@ async function readSse(body, onMessage, doneId) {
       buf += dec.decode(value, { stream: true });
       for (let i; !done && (i = buf.indexOf('\n')) >= 0; ) {
         const line = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1);
+        const field = (f) => (line.startsWith(f + ':') ? line.slice(f.length + 1).replace(/^ /, '') : null);
         if (!line) dispatch();
-        else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+        else if (field('data') !== null) data.push(field('data'));
+        else if (field('id') !== null) lastId = field('id');
+        else if (/^\d+$/.test(field('retry') ?? '')) retry = +field('retry');
       }
     }
     if (!done) dispatch();
   } finally { reader.cancel().catch(() => {}); } // the answer is in: don't wait for a server that keeps the stream open
+  return { answered: done, lastId, retry };
 }
+
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Stopped')); }, { once: true });
+});
 
 /**
  * A remote server over Streamable HTTP: each message is a POST, answered with JSON or an event stream. Keeps the
@@ -200,10 +213,25 @@ function httpTransport(entry, fetchFn, onMessage) {
       if (!res.ok) throw new Error(`${host} answered HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
       const sid = res.headers.get('mcp-session-id'); if (sid) session = sid;
       if (m.method === undefined || m.id === undefined) { res.body?.cancel().catch(() => {}); return; } // a notification or our answer: 202, no body
-      if ((res.headers.get('content-type') || '').includes('text/event-stream')) return readSse(res.body, onMessage, m.id);
+      if ((res.headers.get('content-type') || '').includes('text/event-stream')) {
+        let r = await readSse(res.body, onMessage, m.id);
+        // The server may close the connection before answering and expect the client to resume from the last event id, after `retry` ms
+        for (let tries = 0; !r.answered && r.lastId && tries < 5; tries++) {
+          await sleep(Math.min(r.retry ?? 1000, 30000), signal);
+          let g;
+          try { g = await fetchFn(entry.url, { method: 'GET', headers: { ...headers(), Accept: 'text/event-stream', 'Last-Event-ID': r.lastId }, signal }); }
+          catch (e) { throw signal?.aborted ? new Error('Stopped') : new Error(`Couldn't reach ${host}: ${e.message}`, { cause: e }); }
+          if (!g.ok || !(g.headers.get('content-type') || '').includes('text/event-stream')) { g.body?.cancel().catch(() => {}); break; }
+          const next = await readSse(g.body, onMessage, m.id);
+          r = { answered: next.answered, lastId: next.lastId || r.lastId, retry: next.retry ?? r.retry };
+        }
+        if (!r.answered) throw new Error(`${host} closed the stream without answering`);
+        return;
+      }
       const text = await res.text();
       let j; try { j = JSON.parse(text); } catch { throw new Error(`${host} didn't answer with JSON`); }
       for (const x of [].concat(j)) onMessage(x);
+      if (![].concat(j).some((x) => isObj(x) && x.id === m.id)) throw new Error(`${host} answered without a reply to the request`);
     },
     async close() {
       if (!session) return;
