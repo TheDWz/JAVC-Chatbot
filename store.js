@@ -5,6 +5,7 @@
 const profiles = require('./profiles');
 const { THINKING_SWITCH } = require('./api');
 const Lib = require('./lib');
+const { parseConfig } = require('./mcp');
 
 const FILE = 'settings.json';
 const hasKey = (o) => !!(o.keyEnc || o.keyPlain);
@@ -49,7 +50,7 @@ module.exports = ({ io, crypto }) => {
     const st = profiles.migrate(raw);
     let changed = text !== null && raw.version !== 2; // persist a migrated file right away so profile ids stay stable
     if (await crypto.available()) { // upgrade leftover plaintext keys now that a keyring is available
-      for (const p of [...st.profiles, st.search]) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
+      for (const p of [...st.profiles, st.search, st.mcp]) if (p.keyPlain) { Object.assign(p, await encKey(p.keyPlain)); delete p.keyPlain; changed = true; }
     }
     if (changed) await write(st);
     return st;
@@ -93,6 +94,33 @@ module.exports = ({ io, crypto }) => {
         delete st.search.keyEnc; delete st.search.keyPlain;
         if (p.key.trim()) Object.assign(st.search, await encKey(p.key.trim()));
       }
+      return commit(st);
+    }),
+    /** The pasted MCP config as text, or '' when there is none. */
+    mcpConfig: serial(async () => keyOf((await read()).mcp, 'MCP servers')),
+    /** The MCP servers ({name: entry}, see mcp.js), or {} when MCP is off or none are set up. */
+    mcpServers: serial(async () => { const m = (await read()).mcp; return m.enabled && hasKey(m) ? parseConfig(await keyOf(m, 'MCP servers')) : {}; }),
+    /**
+     * Saves {enabled, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
+     * A server whose entry changed, or that is gone, loses its "Always allow" tools.
+     */
+    saveMcp: serial(async (p) => {
+      const st = await read();
+      if (typeof p.enabled === 'boolean') st.mcp.enabled = p.enabled;
+      if (typeof p.config === 'string') {
+        const next = parseConfig(p.config);
+        let prev = {}; try { prev = parseConfig(await keyOf(st.mcp, 'MCP servers')); } catch {} // unreadable: treat every server as new
+        for (const name of Object.keys(st.mcp.allow)) if (JSON.stringify(prev[name]) !== JSON.stringify(next[name]) || !next[name]) delete st.mcp.allow[name];
+        delete st.mcp.keyEnc; delete st.mcp.keyPlain;
+        if (p.config.trim()) Object.assign(st.mcp, await encKey(p.config.trim()));
+        st.mcp.names = Object.keys(next);
+      }
+      return commit(st);
+    }),
+    /** Remembers "Always allow" for one server's tool. */
+    allowMcpTool: serial(async (server, tool) => {
+      const st = await read(), list = st.mcp.allow[server] || [];
+      if (st.mcp.names.includes(server) && !list.includes(tool)) st.mcp.allow[server] = [...list, tool];
       return commit(st);
     }),
     /** The API key of profile `id`, or '' for an unknown profile. */

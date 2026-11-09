@@ -51,8 +51,13 @@ function finishState(state, raw) {
   const r = raw?.render && typeof raw.render === 'object' ? raw.render : {};
   const render = Object.fromEntries(Lib.RENDER_KEYS.map((k) => [k, typeof r[k] === 'boolean' ? r[k] : !(richOff && k !== 'markdown')]));
   const search = { enabled: raw?.search?.enabled === true, ...(raw?.search && typeof raw.search === 'object' ? keyOf(raw.search) : {}) }; // web search: {enabled, keyEnc|keyPlain}
+  // MCP servers: {enabled, keyEnc|keyPlain, names, allow}. The pasted config sits in the key fields, encrypted like a key, since env and headers often hold tokens.
+  // `names` is a plain copy of its server names for the window; `allow` is {server: [tool]} for "Always allow".
+  const m = raw?.mcp && typeof raw.mcp === 'object' ? raw.mcp : {};
+  const allow = Object.fromEntries(Object.entries(m.allow && typeof m.allow === 'object' ? m.allow : {}).filter(([, v]) => Array.isArray(v)).map(([k, v]) => [k, v.filter((t) => typeof t === 'string')]));
+  const mcp = { enabled: m.enabled === true, ...keyOf(m), names: Array.isArray(m.names) ? m.names.filter((n) => typeof n === 'string') : [], allow };
   const summarizer = cleanSummarizer(raw?.summarizer) || { profileId: '', model: '' }, contextLimit = cleanContextLimit(raw?.contextLimit) || { on: false, tokens: Lib.DEFAULT_CTX };
-  return { ...state, search, summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
+  return { ...state, search, mcp, summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
 }
 
 const newId = () => 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -78,6 +83,7 @@ function publicView(state) {
   return {
     activeId: state.activeId, effort: state.effort, templates: TEMPLATES, personas: state.personas, personaId: state.personaId, render: state.render, theme: state.theme,
     summarizer: state.summarizer, contextLimit: state.contextLimit, search: { enabled: state.search.enabled, hasKey: hasKey(state.search) },
+    mcp: { enabled: state.mcp.enabled, hasConfig: hasKey(state.mcp), servers: state.mcp.names, allow: state.mcp.allow },
     profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, noTools, ctx, ...rest }) => ({
       id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, noTools: !!noTools, ctx: ctx || 0, hasKey: hasKey(rest),
     })),

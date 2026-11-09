@@ -1066,8 +1066,171 @@ test('store: summary model, context limit and a persona\'s own summary model are
 // ---- requestArgs ----
 test('requestArgs: a summary takes its own model, no reasoning and no search; a chat takes the settings', () => {
   const s = { model: 'gpt', endpoint: 'https://openrouter.ai/api/v1', effort: 'high', search: { key: 'k' } };
-  assert.deepStrictEqual(requestArgs(s, { summary: { profileId: 'p', model: 'cheap' } }), { model: 'cheap', extra: {}, search: null });
+  assert.deepStrictEqual(requestArgs(s, { summary: { profileId: 'p', model: 'cheap' }, search: true, mcp: true }), { model: 'cheap', extra: {}, search: null, mcp: false });
   assert.strictEqual(requestArgs(s, { summary: { profileId: 'p', model: '' } }).model, 'gpt');
-  assert.deepStrictEqual(requestArgs(s, { search: true }), { model: 'gpt', extra: { reasoning: { effort: 'high' } }, search: { key: 'k' } });
+  assert.deepStrictEqual(requestArgs(s, { search: true, mcp: true }), { model: 'gpt', extra: { reasoning: { effort: 'high' } }, search: { key: 'k' }, mcp: true });
   assert.strictEqual(requestArgs(s, {}).search, null);
+});
+
+// ---- MCP servers ----
+const Mcp = require('./mcp');
+const childProcess = require('node:child_process');
+
+test('mcp parseConfig: Claude-style, bare and single-entry pastes; bad entries are named', () => {
+  const godot = { command: 'npx', args: ['-y', '@npgamedev/godot-mcp-server'] };
+  const want = { godot: { type: 'stdio', command: 'npx', args: ['-y', '@npgamedev/godot-mcp-server'], env: {} } };
+  assert.deepStrictEqual(Mcp.parseConfig(JSON.stringify({ mcpServers: { godot } })), want);
+  assert.deepStrictEqual(Mcp.parseConfig(JSON.stringify({ godot: { type: 'stdio', ...godot, env: {} } })), want);
+  assert.deepStrictEqual(Object.keys(Mcp.parseConfig(JSON.stringify(godot))), ['godot-mcp-server']); // one entry on its own is named after its package
+  assert.deepStrictEqual(Mcp.parseConfig(JSON.stringify({ mcpServers: { rh: { type: 'http', url: 'https://x.example/mcp', headers: { A: 'b' } } } })), { rh: { type: 'http', url: 'https://x.example/mcp', headers: { A: 'b' } } });
+  assert.deepStrictEqual(Mcp.parseConfig('  '), {});
+  assert.throws(() => Mcp.parseConfig('{oops'), /isn't valid JSON/);
+  assert.throws(() => Mcp.parseConfig('{"mcpServers": {"a": {"type": "sse", "url": "https://x"}}}'), /Server "a": the old SSE transport/);
+  assert.throws(() => Mcp.parseConfig('{"mcpServers": {"b": {"command": "x", "args": [1]}}}'), /Server "b": "args"/);
+  assert.throws(() => Mcp.parseConfig('{"mcpServers": {"c": {"command": "x", "env": {"K": 1}}}}'), /Server "c": "env"/);
+  assert.throws(() => Mcp.parseConfig('{"mcpServers": {"d": {"url": "ftp://x"}}}'), /Server "d": "url" must start/);
+  assert.throws(() => Mcp.parseConfig('{"mcpServers": []}'), /must be an object of servers/);
+});
+
+test('mcp toolNames and resultText: safe unique names; results flattened, marked and capped', () => {
+  assert.deepStrictEqual(Mcp.toolNames([{ server: 'my server', tool: 'get.scene' }, { server: 'my_server', tool: 'get_scene' }]), ['mcp__my_server__get_scene', 'mcp__my_server__get_scene_2']);
+  assert.ok(Mcp.toolNames([{ server: 's', tool: 'x'.repeat(100) }, { server: 's', tool: 'x'.repeat(101) }]).every((n) => n.length <= 64 && /^[\w-]+$/.test(n)));
+  assert.strictEqual(Mcp.resultText({ content: [{ type: 'text', text: 'a' }, { type: 'image', data: '…' }, { type: 'resource', resource: { text: 'r' } }] }), 'a\n[image omitted]\nr');
+  assert.strictEqual(Mcp.resultText({ content: [], structuredContent: { n: 1 } }), '{"n":1}');
+  assert.strictEqual(Mcp.resultText({ content: [{ type: 'text', text: 'nope' }], isError: true }), 'Tool error: nope');
+  assert.match(Mcp.resultText({ content: [{ type: 'text', text: 'x'.repeat(30000) }] }), /\[cut off after 20000 characters\]$/);
+});
+
+// A tiny MCP server: logs a non-JSON line first, answers in pages, echoes, hangs on "slow" until cancelled, dies on "crash".
+const MCP_SERVER = `
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
+process.stdout.write('starting up...\\n');
+let buf = '', cancelled = [];
+process.stdin.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) on(JSON.parse(l)); } });
+process.stdin.on('end', () => process.exit(0));
+function on(m) {
+  if (m.method === 'initialize') return out({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: process.env.PV || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 't', version: '1' } } });
+  if (m.method === 'notifications/cancelled') return cancelled.push(m.params.requestId);
+  if (m.method === 'tools/list') return out({ jsonrpc: '2.0', id: m.id, result: m.params?.cursor
+    ? { tools: [{ name: 'slow', inputSchema: { type: 'object' } }, { name: 'crash', inputSchema: { type: 'object' } }] }
+    : { tools: [{ name: 'echo', description: 'Echo', inputSchema: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', properties: { t: { type: 'string' } } } }], nextCursor: 'p2' } });
+  if (m.method === 'tools/call') {
+    if (m.params.name === 'echo') return out({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: 'echo:' + m.params.arguments.t + ' cancelled:' + cancelled.join(',') }] } });
+    if (m.params.name === 'crash') { process.stderr.write('Traceback: boom\\n'); process.exit(3); }
+    return; // slow: never answers
+  }
+}`;
+const nodeSpawn = (cmd, args, env) => childProcess.spawn(cmd, args, { env: { ...process.env, ...env } });
+const testServer = (env = {}) => ({ type: 'stdio', command: process.execPath, args: ['-e', MCP_SERVER], env });
+
+test('mcp hub: a real local server lists its tools over pages, runs them, survives Stop, and reports a crash with its stderr', async () => {
+  const hub = Mcp.makeHub({ spawn: nodeSpawn });
+  hub.configure({ ed: testServer() });
+  try {
+    assert.deepStrictEqual(await hub.status(), [{ name: 'ed', type: 'stdio', state: 'ok', tools: 3, error: '' }]);
+    const set = await hub.tools();
+    assert.deepStrictEqual(set.defs.map((d) => d.function.name), ['mcp__ed__crash', 'mcp__ed__echo', 'mcp__ed__slow']);
+    assert.deepStrictEqual(set.defs[1].function.parameters, { type: 'object', properties: { t: { type: 'string' } } }); // $schema dropped
+    assert.strictEqual(set.label('mcp__ed__echo'), 'ed › echo');
+    assert.strictEqual(await set.run('mcp__ed__echo', { t: 'hi' }), 'echo:hi cancelled:');
+    const ctl = new AbortController(), slow = set.run('mcp__ed__slow', {}, ctl.signal);
+    setTimeout(() => ctl.abort(), 20);
+    await assert.rejects(slow, /Stopped/);
+    assert.match(await set.run('mcp__ed__echo', { t: 'again' }), /^echo:again cancelled:\d+$/); // still running, and it was told
+    await assert.rejects(set.run('mcp__ed__crash', {}), /exit code 3[\s\S]*Traceback: boom/);
+    assert.strictEqual((await hub.status())[0].state, 'ok'); // the next use starts it again
+  } finally { await hub.closeAll(); }
+});
+
+test('mcp hub: unknown protocol versions, missing commands and local servers without spawn are reported', async () => {
+  const hub = Mcp.makeHub({ spawn: nodeSpawn });
+  hub.configure({ odd: testServer({ PV: '1999-01-01' }), gone: { type: 'stdio', command: 'no-such-command-javc', args: [], env: {} } });
+  try {
+    const [odd, gone] = await hub.status();
+    assert.match(odd.error, /speaks MCP 1999-01-01/); assert.match(gone.error, /"no-such-command-javc" wasn't found/);
+    const set = await hub.tools();
+    assert.deepStrictEqual(set.defs, []); assert.deepStrictEqual(set.failed.map((f) => f.name).sort(), ['gone', 'odd']);
+  } finally { await hub.closeAll(); }
+  const phone = Mcp.makeHub({});
+  phone.configure({ ed: testServer() });
+  assert.deepStrictEqual(await phone.status(), [{ name: 'ed', type: 'stdio', state: 'desktop-only', tools: 0, error: '' }]);
+  assert.deepStrictEqual((await phone.tools()).defs, []);
+});
+
+test('mcp hub: a changed or removed server is stopped', async () => {
+  const seen = [];
+  const spy = (cmd, args, env) => { const c = nodeSpawn(cmd, args, env); seen.push(c); return c; };
+  const h = Mcp.makeHub({ spawn: spy });
+  h.configure({ ed: testServer() }); await h.status();
+  h.configure({ ed: testServer({ X: '1' }) }); await h.status();
+  const exited = (c) => new Promise((/** @type {(v?: unknown) => void} */ r) => (c.exitCode !== null ? r() : c.once('exit', r)));
+  await exited(seen[0]);
+  assert.strictEqual(seen.length, 2); assert.notStrictEqual(seen[0].exitCode, null);
+  h.configure({}); await exited(seen[1]);
+});
+
+const fakeSet = (ran = []) => ({
+  defs: [{ type: 'function', function: { name: 'mcp__ed__echo', description: 'Echo', parameters: { type: 'object' } } }], failed: [],
+  has: (n) => n === 'mcp__ed__echo', label: () => 'ed › echo', info: (n) => (n === 'mcp__ed__echo' ? { server: 'ed', tool: 'echo' } : undefined),
+  run: async (n, args) => { ran.push(args); return 'echoed ' + args.t; },
+});
+
+test('mcp gated: every call is put to the user unless always allowed; bad arguments never run', async () => {
+  const ran = [], asked = [];
+  const deny = Mcp.gated(fakeSet(ran), { allowed: () => false, approve: async (i) => { asked.push(i); return 'deny'; } });
+  assert.strictEqual(await deny.call('mcp__ed__echo', '{"t":"x"}'), Mcp.DECLINED);
+  assert.deepStrictEqual(asked, [{ server: 'ed', tool: 'echo', args: { t: 'x' } }]); assert.deepStrictEqual(ran, []);
+  assert.match(await deny.call('mcp__ed__echo', '[1]'), /must be a JSON object/);
+  assert.match(await deny.call('mcp__nope', '{}'), /no tool called "mcp__nope"/);
+  const ok = Mcp.gated(fakeSet(ran), { allowed: (s, t) => s === 'ed' && t === 'echo', approve: async () => { throw new Error('not asked'); } });
+  assert.strictEqual(await ok.call('mcp__ed__echo', ''), 'echoed undefined'); // empty arguments are {}
+});
+
+test('chatStream with MCP tools: calls run between rounds with a note; search and MCP share a round; rounds are capped', async () => {
+  const chats = [], deltas = [];
+  const both = toolFrames([[{ index: 0, id: 'a', function: { name: 'mcp__ed__echo', arguments: '{"t":"hi"}' } }, { index: 1, id: 'b', function: { name: 'web_search', arguments: '{"query":"q"}' } }]]);
+  const mcp = Mcp.gated(fakeSet(), { allowed: () => true, approve: async () => 'deny' });
+  const out = await chatStream('http://x', 'k', 'm', [], {}, (d) => deltas.push(d), searchFetch([both, frames([{ content: 'done' }])], linkupOk([]), chats), undefined, { key: 'lk' }, mcp);
+  assert.strictEqual(out.content, 'done');
+  assert.deepStrictEqual(chats[0].tools.map((t) => t.function.name), ['web_search', 'mcp__ed__echo']);
+  assert.deepStrictEqual(chats[1].messages.slice(-2).map((m) => m.content), ['echoed hi', 'No results.']);
+  assert.ok(deltas.some((d) => d.note && d.reasoning === 'Using ed › echo\n'));
+  const loop = toolFrames([[{ index: 0, id: 'c', function: { name: 'mcp__ed__echo', arguments: '{}' } }]]), many = [];
+  await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch(Array(25).fill(loop), linkupOk([]), many), undefined, undefined, mcp);
+  assert.strictEqual(many.length, 21); assert.strictEqual(many[20].tool_choice, 'none'); // 20 tool rounds, then it must answer
+  const none = {}; // no servers with tools: a plain request
+  await chatStream('http://x', '', 'm', [], {}, () => {}, sse(frames([{ content: 'hi' }]), none), undefined, undefined, Mcp.gated({ ...fakeSet(), defs: [] }, { allowed: () => true, approve: async () => 'once' }));
+  assert.strictEqual('tools' in JSON.parse(none.opts.body), false);
+});
+
+test('chatStream with MCP tools: a failing tool becomes tool text, and Stop during a tool stops the reply', async () => {
+  const chats = [], call = toolFrames([[{ index: 0, id: 'c', function: { name: 'mcp__ed__echo', arguments: '{}' } }]]);
+  const failing = Mcp.gated({ ...fakeSet(), run: async () => { throw new Error('editor not open'); } }, { allowed: () => true, approve: async () => 'once' });
+  await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch([call, frames([{ content: 'ok' }])], linkupOk([]), chats), undefined, undefined, failing);
+  assert.strictEqual(chats[1].messages.at(-1).content, 'Tool failed: editor not open');
+  const ctl = new AbortController();
+  const hanging = Mcp.gated({ ...fakeSet(), run: () => new Promise((_, no) => { ctl.signal.addEventListener('abort', () => no(new Error('Stopped'))); setTimeout(() => ctl.abort(), 5); }) }, { allowed: () => true, approve: async () => 'once' });
+  await assert.rejects(chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch([call], linkupOk([])), ctl.signal, undefined, hanging), /Stopped/);
+});
+
+test('mcp settings: off by default, config encrypted and never exposed, bad pastes refused, changed servers lose "Always allow"', async () => {
+  const { dir, file, store } = tmpStore();
+  assert.deepStrictEqual((await store.get()).mcp, { enabled: false, hasConfig: false, servers: [], allow: {} });
+  const cfg = JSON.stringify({ mcpServers: { ed: { command: 'npx', args: ['ed'], env: { TOKEN: 'secret-tok' } }, rh: { url: 'https://x.example/mcp' } } });
+  let v = await store.saveMcp({ config: cfg, enabled: true });
+  assert.deepStrictEqual(v.mcp, { enabled: true, hasConfig: true, servers: ['ed', 'rh'], allow: {} });
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('secret-tok'));
+  assert.strictEqual(await store.mcpConfig(), cfg);
+  assert.deepStrictEqual(Object.keys(await store.mcpServers()), ['ed', 'rh']);
+  await store.allowMcpTool('ed', 'echo'); await store.allowMcpTool('rh', 'quote'); await store.allowMcpTool('ghost', 'x');
+  assert.deepStrictEqual((await store.get()).mcp.allow, { ed: ['echo'], rh: ['quote'] });
+  await assert.rejects(store.saveMcp({ config: '{"mcpServers": {"x": {"type": "sse", "url": "https://x"}}}' }), /SSE/);
+  assert.strictEqual(await store.mcpConfig(), cfg); // nothing saved
+  v = await store.saveMcp({ config: JSON.stringify({ mcpServers: { ed: { command: 'npx', args: ['other'] }, rh: { url: 'https://x.example/mcp' } } }) });
+  assert.deepStrictEqual(v.mcp.allow, { rh: ['quote'] }); // ed now runs something else
+  await store.saveMcp({ enabled: false });
+  assert.deepStrictEqual(await store.mcpServers(), {});
+  v = await store.saveMcp({ config: '' });
+  assert.deepStrictEqual(v.mcp, { enabled: false, hasConfig: false, servers: [], allow: {} });
+  fs.rmSync(dir, { recursive: true });
 });

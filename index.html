@@ -311,6 +311,10 @@
   .prow.active { border-color: color-mix(in srgb, var(--a1) 55%, transparent); }
   .prow > div { flex: 1; min-width: 0; }
   .prow strong { font-weight: 600; } .prow small { display: block; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow small.perr { white-space: pre-wrap; }
+  #mcpconfig, #toolargs { font: 12.5px/1.5 "JetBrains Mono", "Fira Code", ui-monospace, monospace; }
+  #mcpconfig { min-height: 170px; }
+  #toolargs { margin: 0; max-height: 240px; overflow: auto; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .prow .tag { margin-left: 6px; font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
   .prefs-body .opt { margin-top: 0; padding-top: 12px; }
   .prefs-body .opt:first-of-type { border-top: 0; }
@@ -495,6 +499,7 @@
       <button type="button" role="tab" id="tab-appearance" data-pane="appearance" aria-controls="pane-appearance">Appearance</button>
       <button type="button" role="tab" id="tab-profiles" data-pane="profiles" aria-controls="pane-profiles">Profiles</button>
       <button type="button" role="tab" id="tab-search" data-pane="search" aria-controls="pane-search">Search</button>
+      <button type="button" role="tab" id="tab-tools" data-pane="tools" aria-controls="pane-tools">Tools</button>
       <button type="button" role="tab" id="tab-replies" data-pane="replies" aria-controls="pane-replies">Replies</button>
       <button type="button" role="tab" id="tab-summaries" data-pane="summaries" aria-controls="pane-summaries">Summaries</button>
     </div>
@@ -529,6 +534,22 @@
         <p id="searchnote" class="sub" hidden></p>
         <p id="searcherr" class="perr" role="alert" hidden></p>
         <div class="btns"><button type="button" class="btn primary" id="searchsave">Save key</button></div>
+      </section>
+      <section role="tabpanel" id="pane-tools" aria-labelledby="tab-tools" tabindex="0" hidden>
+        <h3>MCP servers</h3>
+        <p class="sub">Gives the model tools from <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer">MCP</a> servers, such as the ones for Blender, Godot or Unity. Paste the same <code>mcpServers</code> JSON you would give Claude. The editor's own plugin or addon still has to be installed in the editor.</p>
+        <label class="opt"><input type="checkbox" class="sw" id="mcpon"><span>Let models use MCP tools<small>Needs a model that supports tools. You're asked before every tool call.</small></span></label>
+        <label class="field">Servers (JSON)
+          <span class="input"><textarea id="mcpconfig" spellcheck="false" autocomplete="off" placeholder='{
+  "mcpServers": {
+    "godot": { "command": "npx", "args": ["-y", "@npgamedev/godot-mcp-server"] }
+  }
+}'></textarea></span>
+        </label>
+        <p class="sub">Servers with a <code>command</code> run on this computer, so only the desktop app can use them.</p>
+        <p id="mcperr" class="perr" role="alert" hidden></p>
+        <div class="btns"><button type="button" class="btn" id="mcpreload">Restart servers</button><button type="button" class="btn primary" id="mcpsave">Save</button></div>
+        <div id="mcplist" class="proflist" aria-live="polite"></div>
       </section>
       <section role="tabpanel" id="pane-replies" aria-labelledby="tab-replies" tabindex="0" hidden>
         <h3>How replies are shown</h3>
@@ -582,6 +603,20 @@
       <span style="flex:1"></span>
       <button type="button" class="btn" id="pscancel">Cancel</button>
       <button type="submit" class="btn primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="tooldlg" aria-labelledby="tooltitle">
+  <form method="dialog">
+    <h2 id="tooltitle">Allow this tool?</h2>
+    <p class="sub" id="toolsub"></p>
+    <pre id="toolargs"></pre>
+    <p id="toolwarn" class="perr" hidden>This tool looks like it can change things. Think twice before always allowing it.</p>
+    <div class="btns">
+      <button type="submit" class="btn" value="deny" id="tooldeny">Deny</button>
+      <button type="submit" class="btn" value="always">Always allow</button>
+      <button type="submit" class="btn primary" value="once">Allow once</button>
     </div>
   </form>
 </dialog>

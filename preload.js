@@ -29,4 +29,16 @@ contextBridge.exposeInMainWorld('api', {
   saveChat: (chat) => ipcRenderer.invoke('chats:save', chat),
   deleteChat: (id) => ipcRenderer.invoke('chats:delete', id),
   extractPdf: (buf) => ipcRenderer.invoke('pdf:extract', buf),
+  getMcpConfig: () => ipcRenderer.invoke('mcp:config'),
+  saveMcp: (p) => ipcRenderer.invoke('mcp:save', p),
+  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  reloadMcp: () => ipcRenderer.invoke('mcp:reload'),
+  /** fn({server, tool, args}) resolves to 'once' | 'always' | 'deny' before a tool runs; anything else, or an error, denies. */
+  onToolApproval: (fn) => {
+    ipcRenderer.removeAllListeners('mcp:approve');
+    ipcRenderer.on('mcp:approve', async (_e, id, info) => {
+      let answer = 'deny'; try { answer = await fn(info); } catch {}
+      ipcRenderer.invoke('mcp:answer', id, answer);
+    });
+  },
 });

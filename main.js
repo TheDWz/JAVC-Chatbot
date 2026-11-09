@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
 const { createHash } = require('node:crypto');
+const { spawn, execFile } = require('node:child_process');
 const path = require('node:path');
 const api = require('./api');
 const Lib = require('./lib');
 const makeChats = require('./chats');
 const makeStore = require('./store');
+const Mcp = require('./mcp');
 const { makeDisk, migrateLegacy } = require('./disk');
 
 // Rich replies (HTML/CSS/JS from the model) run in sandboxed iframes loaded from this scheme. Being a non-local scheme,
@@ -57,9 +59,63 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   const onDelta = (d) => { if (!e.sender.isDestroyed()) e.sender.send('chat:delta', id, d); };
   try {
     const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
-    const { model, extra, search } = api.requestArgs(s, opts);
-    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search);
+    const { model, extra, search, mcp } = api.requestArgs(s, opts);
+    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await mcpTools(e.sender, onDelta) : undefined);
   } finally { running.delete(id); }
+});
+
+// ---- MCP servers: local ones run as child processes of this one ----
+const win32 = process.platform === 'win32';
+let loginPath = null;
+/** The login shell's PATH, read once: an app started from the desktop menu misses what nvm, ~/.local/bin and the like add. */
+const shellPath = () => (loginPath ??= win32 ? Promise.resolve(process.env.PATH || '') : new Promise((resolve) => {
+  execFile(process.env.SHELL || '/bin/bash', ['-ilc', 'printf "__P__%s__P__" "$PATH"'], { timeout: 5000 }, (_err, out) => {
+    const m = /__P__(.*)__P__/s.exec(String(out || '')); // .bashrc may print things of its own around it
+    resolve([...new Set([m?.[1], process.env.PATH].filter(Boolean).join(path.delimiter).split(path.delimiter))].join(path.delimiter));
+  });
+}));
+const quoteWin = (a) => (/[\s"&|<>^]/.test(a) ? '"' + a.replace(/"/g, '""') + '"' : a);
+const hub = Mcp.makeHub({
+  spawn: async (command, args, env) => {
+    const opts = { env: { ...process.env, PATH: await shellPath(), ...env }, stdio: /** @type {['pipe', 'pipe', 'pipe']} */ (['pipe', 'pipe', 'pipe']), windowsHide: true };
+    // shortcut: Windows goes through cmd so npx.cmd and uvx.exe resolve; quoting covers spaces and quotes, revisit if a server's args still break
+    return win32 ? spawn([command, ...args].map(quoteWin).join(' '), { ...opts, shell: true }) : spawn(command, args, opts);
+  },
+});
+const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
+ipcMain.handle('mcp:config', () => store.mcpConfig());
+ipcMain.handle('mcp:save', async (_e, p) => { const v = await store.saveMcp(p); await mcpReady(); return v; });
+ipcMain.handle('mcp:status', async () => (await mcpReady()).status());
+ipcMain.handle('mcp:reload', async () => { await (await mcpReady()).reload(); return hub.status(); });
+const asking = new Map(); // approval id -> resolve, while the page shows the dialog
+ipcMain.handle('mcp:answer', (_e, id, answer) => asking.get(id)?.(answer));
+/** Asks the page whether a tool may run: 'once' | 'always' | 'deny'. "Always" is saved here. */
+function approver(sender) {
+  return async (info) => {
+    if (sender.isDestroyed()) return 'deny';
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const answer = await new Promise((resolve) => {
+      const gone = () => resolve('deny');
+      asking.set(id, (a) => { sender.off('destroyed', gone); resolve(['once', 'always'].includes(a) ? a : 'deny'); });
+      sender.once('destroyed', gone);
+      sender.send('mcp:approve', id, info);
+    }).finally(() => asking.delete(id));
+    if (answer === 'always') await store.allowMcpTool(info.server, info.tool);
+    return answer;
+  };
+}
+/** The MCP tools for one reply, or undefined. Servers that don't start are left out with a note in the reply. */
+async function mcpTools(sender, onDelta) {
+  const set = await (await mcpReady()).tools();
+  for (const f of set.failed) onDelta({ reasoning: `MCP server "${f.name}" didn't start: ${f.error}\n`, content: '', note: true });
+  const allow = (await store.get()).mcp.allow;
+  return Mcp.gated(set, { allowed: (server, tool) => !!allow[server]?.includes(tool), approve: approver(sender) });
+}
+let quitting = false;
+app.on('before-quit', (e) => { // stop the servers first; before-quit doesn't wait for promises by itself
+  if (quitting) return;
+  quitting = true; e.preventDefault();
+  Promise.race([hub.closeAll(), new Promise((r) => setTimeout(r, 5000))]).finally(() => app.quit());
 });
 
 const chats = makeChats(makeDisk(path.join(app.getPath('userData'), 'chats')));
