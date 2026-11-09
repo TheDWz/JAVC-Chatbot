@@ -40,7 +40,7 @@ async function listModelsDetailed(endpoint, key, fetchFn) {
   // NanoGPT only lists context lengths when asked; other servers never see the extra parameter
   const path = /nano-gpt\.com/i.test(endpoint) ? '/models?detailed=true' : '/models';
   const json = parseJson(await (await call(endpoint, key, path, null, fetchFn)).text());
-  return (json.data || []).map((m) => ({ id: m.id, ...reasoningInfo(m), ...(noTools(m) && { tools: false }), ...(ctxOf(m) && { ctx: ctxOf(m) }) })).sort((a, b) => (a.id < b.id ? -1 : 1));
+  return (json.data || []).map((m) => { const ctx = ctxOf(m); return { id: m.id, ...reasoningInfo(m), ...(noTools(m) && { tools: false }), ...(ctx && { ctx }) }; }).sort((a, b) => (a.id < b.id ? -1 : 1));
 }
 
 // DeepSeek, Z.ai (GLM) and Moonshot (Kimi) turn thinking off with thinking:{type:'disabled'}, not effort 'none'.
@@ -64,6 +64,12 @@ function reasoningParams(endpoint, effort, { format, meta } = {}) {
     return /moonshot/i.test(endpoint) ? { reasoning_effort: effort } : { reasoning_effort: effort, thinking: { type: 'enabled' } };
   }
   return { reasoning_effort: effort };
+}
+
+/** What one chat or summary request sends: the model, the extra params and the search config ({key}). A summary goes to its own profile and model, with no reasoning level and no search. */
+function requestArgs(s, opts) {
+  const sum = opts?.summary;
+  return { model: sum?.model || s.model, extra: sum ? {} : reasoningParams(s.endpoint, s.effort, s), search: !sum && opts?.search ? s.search : null };
 }
 
 // Local R1-style models put reasoning in content as <think>…</think>. Only a block at the very start counts,
@@ -238,4 +244,4 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
   }
 }
 
-module.exports = { listModelsDetailed, reasoningParams, chatStream, thinkSplitter, THINKING_SWITCH };
+module.exports = { listModelsDetailed, reasoningParams, requestArgs, chatStream, thinkSplitter, THINKING_SWITCH };

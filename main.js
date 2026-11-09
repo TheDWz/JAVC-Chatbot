@@ -57,8 +57,8 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   const onDelta = (d) => { if (!e.sender.isDestroyed()) e.sender.send('chat:delta', id, d); };
   try {
     const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
-    // a summary goes to its own profile and model, with no reasoning level and no search
-    return await api.chatStream(s.endpoint, s.key, sum?.model || s.model, messages, sum ? {} : api.reasoningParams(s.endpoint, s.effort, s), onDelta, undefined, ctl.signal, !sum && opts?.search ? s.search : null);
+    const { model, extra, search } = api.requestArgs(s, opts);
+    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search);
   } finally { running.delete(id); }
 });
 

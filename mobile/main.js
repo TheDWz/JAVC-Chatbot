@@ -45,8 +45,9 @@ window.api = {
     const ctl = (current = new AbortController());
     try {
       const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
-      // a summary goes to its own profile and model, with no reasoning level and no search; Linkup goes through nativeFetch too
-      return await api.chatStream(s.endpoint, s.key, sum?.model || s.model, messages, sum ? {} : api.reasoningParams(s.endpoint, s.effort, s), (d) => onDelta?.(d), nativeFetch, ctl.signal, !sum && opts?.search ? s.search : null);
+      // Linkup goes through nativeFetch too
+      const { model, extra, search } = api.requestArgs(s, opts);
+      return await api.chatStream(s.endpoint, s.key, model, messages, extra, (d) => onDelta?.(d), nativeFetch, ctl.signal, search);
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),
