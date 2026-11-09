@@ -555,11 +555,13 @@ function summarizer() {
  * Summarizes the older messages when the chat is close to the limit. Stop throws 'Stopped' like a reply would. Any other failure only says so
  * and the whole chat is sent: a cut-off summary is never kept, since the messages it stands for would no longer be sent.
  */
+let sumFail = null; // {id, at}: the chat and its length when summarizing last failed
 async function summarize(reply) {
-  const cut = Lib.summaryDue(chat, ctxLimit());
+  if (sumFail?.id === chat.id && chat.messages.length < sumFail.at + 4) return; // a failing summarizer is tried again two turns later, not on every send
+  const cut = Lib.summaryDue(chat, ctxLimit(), personaOf(chat), { render: state.render });
   if (cut < 0) return;
   reply.status('Summarizing earlier messages…');
-  const fail = (msg) => { reply.status(null); showError("Couldn't summarize the earlier messages, so the whole chat was sent: " + msg); };
+  const fail = (msg) => { sumFail = { id: chat.id, at: chat.messages.length }; reply.status(null); showError("Couldn't summarize the earlier messages, so the whole chat was sent: " + msg); };
   let out;
   try { out = await window.api.chat(Lib.summaryRequest(chat, personaOf(chat), cut), null, { summary: summarizer() }); }
   catch (e) { if (cleanErr(e) === 'Stopped') throw e; return fail(cleanErr(e)); }
@@ -567,9 +569,9 @@ async function summarize(reply) {
   if (out.stopped) throw new Error('Stopped');
   const text = out.content.trim();
   if (out.error || !text) return fail(out.error || 'the model returned no text');
-  chat.summary = { text, upto: cut, at: chat.messages.length };
+  chat.summary = { text, upto: cut, at: chat.messages.length }; sumFail = null;
   reply.status(null);
-  $('log').querySelector('.sumdiv')?.remove(); $('log').children[cut].before(summaryDivider(chat.summary)); // each message is one row, the pending reply last
+  $('log').querySelector('.sumdiv')?.remove(); $('log').querySelectorAll(':scope > .row')[cut].before(summaryDivider(chat.summary)); // one row per message, the pending reply last
 }
 /** The line where the summary starts; clicking it shows what the model now gets instead of the messages above. */
 function summaryDivider(s) {
@@ -599,7 +601,7 @@ async function generate(base) {
     };
     const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), onDelta, { search: toolsOk() });
     const t2 = performance.now(); if (pauseAt) paused += t2 - pauseAt;
-    const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, text: out.content + out.reasoning, sawReasoning });
+    const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, sent: out.sent, text: out.content + out.reasoning, sawReasoning });
     chat.used = (chat.used || 0) + (stats.total || 0); // a running total: it stays when this reply is later replaced or dropped
     const fields = { content: out.content, reasoning: out.reasoning, stats }; // reasoning and stats are display-only, never sent back
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
@@ -630,6 +632,7 @@ async function send() {
     chat.messages.pop(); userRow.remove();
     $('input').value = [text, $('input').value].filter(Boolean).join('\n');
     pending = [...atts, ...pending].slice(0, MAX_FILES); renderChips();
+    if (chat.messages.length) persist(); // keeps a summary made before the reply failed, and the tokens it used
   }
 }
 
@@ -640,7 +643,10 @@ async function regenerate(m) {
   const i = chat.messages.indexOf(m);
   if (i < 0 || !ready()) return;
   const prev = chat.messages, prevSummary = chat.summary, top = $('scroll').scrollTop;
-  const restore = () => { chat.messages = prev; chat.summary ??= prevSummary; rerender(top); persist(); }; // saved for chat.used: the attempt may have used tokens
+  const restore = () => { // saved for chat.used: the attempt may have used tokens
+    chat.messages = prev; if (prevSummary) chat.summary = prevSummary; else delete chat.summary; // a summary made by the failed attempt doesn't fit the old messages
+    rerender(top); persist();
+  };
   const t = m.role === 'user' ? i + 1 : i, base = prev[t]?.role === 'assistant' ? prev[t] : undefined;
   if (t < (chat.summary?.upto ?? 0)) delete chat.summary; // it covers messages that are being dropped
   chat.messages = prev.slice(0, t); renderChat();
@@ -994,13 +1000,13 @@ function fillSumPicker(prof, model, s, err) {
 }
 /** Lists the chosen profile's models, with `want` selected; a saved model the profile no longer lists stays, marked, as in the main picker. */
 async function fillSumModels(prof, model, want, err) {
-  const pid = prof.value; model.parentElement.hidden = !pid;
+  const pid = prof.value, seq = (model.dataset.seq = String(+(model.dataset.seq || 0) + 1)); model.parentElement.hidden = !pid;
   if (!pid) return;
   model.replaceChildren(new Option('Loading models…', want)); model.disabled = true;
   let ids = [];
   try { ids = (await window.api.listModels(pid)).map((m) => m.id); }
   catch (e) { err.textContent = 'Could not load models: ' + cleanErr(e); err.hidden = false; }
-  if (prof.value !== pid) return; // another profile was picked meanwhile
+  if (prof.value !== pid || model.dataset.seq !== seq) return; // another profile or a newer load came along meanwhile
   model.replaceChildren(new Option("The profile's chat model", ''), ...ids.map((id) => new Option(id, id)));
   if (want && !ids.includes(want)) model.add(new Option(`${want} (not in list)`, want), 1);
   model.value = want; model.disabled = false;

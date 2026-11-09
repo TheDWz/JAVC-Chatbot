@@ -207,6 +207,7 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     const s = (total.usage ||= { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
     for (const k in s) s[k] += u[k] || 0;
     total.ctx = u.total_tokens;
+    total.sent ??= u.prompt_tokens; // the first round's prompt is the chat itself; later rounds add search results that aren't sent again
   };
   for (let round = 0; ; round++) {
     const final = round >= SEARCH_ROUNDS, calls = [];

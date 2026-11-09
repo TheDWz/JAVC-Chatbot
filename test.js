@@ -942,11 +942,13 @@ test('web search: usage adds up over rounds, ctx is the last round', async () =>
   const withUsage = (f, u) => f.replace('data: [DONE]', usageFrame(u) + 'data: [DONE]');
   const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch([withUsage(call, U(10, 2)), withUsage(frames([{ content: 'done' }]), U(30, 5))], linkupOk([])), undefined, { key: 'lk' });
   assert.deepStrictEqual(out.usage, U(40, 7)); assert.strictEqual(out.ctx, 35);
+  assert.strictEqual(out.sent, 10); // the first round's prompt: the chat as sent, without the search results added later
 });
 
 test('replyStats: timings and tokens from usage, or an estimate without it', () => {
   assert.deepStrictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 400, t2: 2400, usage: U(100, 50), text: 'x' }),
-    { model: 'a', ttft: 400, tps: 25, out: 50, total: 150, ctx: 150 });
+    { model: 'a', ttft: 400, tps: 25, out: 50, total: 150, ctx: 150, prompt: 100 });
+  assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 1, t2: 2, sent: 10, usage: U(40, 7), text: '' }).prompt, 10); // search: the first round's prompt
   assert.deepStrictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 1000, t2: 2000, ctx: 99, usage: U(10, 20), text: '' }).ctx, 99);
   const est = Lib.replyStats({ model: 'a', t0: 0, t1: 100, t2: 1100, text: 'x'.repeat(40) });
   assert.deepStrictEqual([est.out, est.tps, est.total, est.est], [10, 10, null, true]);
@@ -1001,15 +1003,20 @@ test('Lib.requestMessages: a summary joins the one system message and replaces w
   assert.deepStrictEqual(Lib.requestMessages({ ...chat, messages: chat.messages.slice(0, 1) }, null), [{ role: 'user', content: 'q1' }]); // chat now shorter than upto
 });
 
-test('Lib.contextTokens: the latest reply\'s server count plus an estimate, never a count from before the summary', () => {
+test('Lib.contextTokens: the latest reply\'s prompt count plus an estimate, never a count from before the summary', () => {
   const big = 'x'.repeat(400); // 100 tokens
   assert.strictEqual(Lib.contextTokens({ messages: [{ role: 'user', content: big }, { role: 'user', content: [{ type: 'text', text: big }, { type: 'image_url', image_url: { url: 'd' } }] }] }), 1200);
-  const msgs = [...turn(1, { stats: { ctx: 900 } }), { role: 'user', content: big }];
-  assert.strictEqual(Lib.contextTokens({ messages: msgs }), 1000);
-  // summarized after reply 1: its 900 measured the old context, so the summary and the kept messages are estimated instead
-  assert.strictEqual(Lib.contextTokens({ messages: msgs, summary: { text: big, upto: 2, at: 3 } }), 200);
-  const later = [...msgs, { role: 'assistant', content: 'a', stats: { ctx: 300 } }, { role: 'user', content: big }];
-  assert.strictEqual(Lib.contextTokens({ messages: later, summary: { text: big, upto: 2, at: 3 } }), 400);
+  // without a server count the system message counts too: the persona prompt, the render hint and any summary
+  const persona = { prompt: big }, sys = Lib.requestMessages({ messages: [] }, persona, { render: {} })[0].content;
+  assert.strictEqual(Lib.contextTokens({ messages: [{ role: 'user', content: big }] }, persona, { render: {} }), 100 + Math.ceil(sys.length / 4));
+  // the reply's ctx (its total, with reasoning and search results) is not used: its prompt count plus the reply's own text is
+  const msgs = [...turn(1, { content: big, stats: { ctx: 50000, prompt: 900 } }), { role: 'user', content: big }];
+  assert.strictEqual(Lib.contextTokens({ messages: msgs }), 1100);
+  // summarized after reply 1: its count measured the old context, so the summary and the kept messages are estimated instead
+  const sumd = { messages: msgs, summary: { text: big, upto: 2, at: 3 } };
+  assert.strictEqual(Lib.contextTokens(sumd), Math.ceil(Lib.requestMessages(sumd, null)[0].content.length / 4) + 100);
+  const later = [...msgs, { role: 'assistant', content: 'a', stats: { prompt: 300 } }, { role: 'user', content: big }];
+  assert.strictEqual(Lib.contextTokens({ messages: later, summary: { text: big, upto: 2, at: 3 } }), 401);
 });
 
 test('Lib.summaryCut and summaryDue: end on a user turn, keep the last 4 messages, need something new to fold in', () => {

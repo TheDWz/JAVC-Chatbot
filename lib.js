@@ -156,14 +156,15 @@
   }
 
   /**
-   * About how many tokens the chat's next request holds: the server's own count from the latest reply, plus an estimate for what came after it.
-   * Replies written before the summary measured the old, longer context, so they don't count; without a usable reply it's all estimated.
+   * About how many tokens the chat's next request holds (persona and opts as for requestMessages). With a recent reply, it's the server's
+   * count of that reply's prompt plus an estimate for the reply and what came after; reasoning and search results aren't sent again, so
+   * they don't count. Replies written before the summary measured the old, longer context, so they're skipped; without one it's all estimated.
    */
-  function contextTokens(chat) {
-    const s = summaryOf(chat), ms = chat.messages, from = s ? s.upto : 0, start = s ? Math.max(s.upto, s.at) : 0;
-    const i = ms.findLastIndex((m, k) => k >= start && m.role === 'assistant' && m.stats?.ctx);
-    const base = i >= 0 ? ms[i].stats.ctx : Math.ceil((s?.text.length || 0) / 4);
-    return ms.slice(i >= 0 ? i + 1 : from).reduce((n, m) => n + tokensOf(m), base);
+  function contextTokens(chat, persona, opts) {
+    const s = summaryOf(chat), ms = chat.messages, start = s ? Math.max(s.upto, s.at) : 0;
+    const i = ms.findLastIndex((m, k) => k >= start && m.role === 'assistant' && m.stats?.prompt);
+    if (i < 0) return requestMessages(chat, persona, opts).reduce((n, m) => n + tokensOf(m), 0);
+    return ms.slice(i).reduce((n, m) => n + tokensOf(m), ms[i].stats.prompt);
   }
   /** Where a new summary should end: a user message that leaves the last KEEP messages as they are and adds something new. -1 when there is none. */
   function summaryCut(chat) {
@@ -171,8 +172,8 @@
     for (let i = ms.length - KEEP; i > from; i--) if (ms[i].role === 'user') return i;
     return -1;
   }
-  /** The cut to summarize at when the chat is over SUMMARY_AT of `limit` tokens, else -1. */
-  const summaryDue = (chat, limit) => (contextTokens(chat) > SUMMARY_AT * limit ? summaryCut(chat) : -1);
+  /** The cut to summarize at when the chat's next request is over SUMMARY_AT of `limit` tokens, else -1. */
+  const summaryDue = (chat, limit, persona, opts) => (contextTokens(chat, persona, opts) > SUMMARY_AT * limit ? summaryCut(chat) : -1);
   /** The request that folds messages up to `cut` into the chat's summary. shortcut: sent in one piece, so a gap bigger than the summarizer's own context fails (and the chat is sent unsummarized); chunk it if that happens. */
   function summaryRequest(chat, persona, cut) {
     const s = summaryOf(chat), user = persona?.user || 'User', bot = persona?.bot || 'Assistant';
@@ -229,19 +230,20 @@
   // ---- Stats for nerds: saved on each reply (and each of its versions), never sent to the model ----
   /**
    * One reply's stats from its timings (ms, from performance.now()) and the server's token counts.
-   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: object, ctx?: number, text: string, sawReasoning?: boolean}} r
+   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: object, ctx?: number, sent?: number, text: string, sawReasoning?: boolean}} r
    *   t0 request sent, t1 the model's first text (0 = none), t2 reply finished, paused time spent waiting on web searches after t1;
    *   text is the reply plus its reasoning; sawReasoning says whether any reasoning text was streamed.
-   * @returns {{model, ttft, tps, out, total, ctx, est}} Without usage, `out` is guessed from the length (about 4 characters a token) and `est` is set.
+   *   sent is the prompt tokens of the request's first round (search rounds add more), which the next request's size is counted from.
+   * @returns {{model, ttft, tps, out, total, ctx, prompt, est}} Without usage, `out` is guessed from the length (about 4 characters a token) and `est` is set.
    */
-  function replyStats({ model, t0, t1, t2, paused = 0, usage, ctx, text, sawReasoning = true }) {
+  function replyStats({ model, t0, t1, t2, paused = 0, usage, ctx, sent, text, sawReasoning = true }) {
     const est = usage?.completion_tokens == null, out = est ? Math.round((text || '').length / 4) : usage.completion_tokens;
     // Hidden reasoning (o-series, GPT-5) is counted but never streamed: it happens before t1, so it isn't part of the speed.
     const shown = out - (!est && !sawReasoning ? usage.completion_tokens_details?.reasoning_tokens || 0 : 0);
     const gen = (t2 - (t1 || t2) - paused) / 1000; // a reply that arrives in one piece has no measurable speed
     return {
       model, ttft: t1 ? Math.round(t1 - t0) : null, tps: gen > 0.05 && shown > 0 ? Math.round((shown / gen) * 10) / 10 : null,
-      out, total: usage?.total_tokens ?? null, ctx: ctx ?? usage?.total_tokens ?? null, ...(est && { est: true }),
+      out, total: usage?.total_tokens ?? null, ctx: ctx ?? usage?.total_tokens ?? null, prompt: sent ?? usage?.prompt_tokens ?? null, ...(est && { est: true }),
     };
   }
   const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
