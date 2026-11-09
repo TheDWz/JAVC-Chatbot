@@ -33,6 +33,7 @@
 - **Attachments.** Drop in text files, PDFs (text is extracted on your machine) or images for vision models.
 - **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view. Markdown, HTML, CSS and JavaScript can each be switched off.
 - **Web search.** Let the model look things up with [Linkup](https://www.linkup.so). It decides when to search and answers from the results. Needs a Linkup API key (Settings → Search) and a model that supports tools.
+- **MCP tools.** Give the model tools from [MCP](https://modelcontextprotocol.io) servers, such as the ones for Blender, Godot or Unity. Paste the same `mcpServers` JSON you would give Claude (Settings → Tools), and allow each tool call before it runs.
 - **Model picker.** Fetch your provider's model list and search it as you type.
 - **Themes.** Six accent gradients (Aurora purple-to-blue is the default) or your own two colors, in dark or light mode following your system setting.
 - **One settings panel.** Appearance, connection profiles and reply formats in one place, opened from the gear.
@@ -64,12 +65,33 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 3. **Chat.** Press <kbd>Enter</kbd> to send and <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line. Drag files onto the window to attach them.
    On Android, <kbd>Enter</kbd> starts a new line and the send button sends; attach files with the paperclip. A local server on your computer is reached by its network address (for example `http://192.168.1.20:11434/v1` for Ollama started with `OLLAMA_HOST=0.0.0.0`), not `localhost`.
 
-Click the assistant's avatar on any reply to open its reasoning. The brain button next to the paperclip sets the reasoning level, and **⋯ → Stats for nerds** shows time to first token, tokens per second and token counts for the chat. The gear opens **Settings**: pick a theme, manage connection profiles, set up web search, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
+Click the assistant's avatar on any reply to open its reasoning. The brain button next to the paperclip sets the reasoning level, and **⋯ → Stats for nerds** shows time to first token, tokens per second and token counts for the chat. The gear opens **Settings**: pick a theme, manage connection profiles, set up web search, set up MCP servers, and choose which reply formats (Markdown, HTML, CSS, JavaScript) are shown.
+
+## MCP servers
+
+Settings → Tools takes the same `mcpServers` JSON you would give Claude, and offers the servers' tools to the model. The editor's own plugin or addon still has to be installed in the editor.
+
+```json
+{
+  "mcpServers": {
+    "godot": { "command": "npx", "args": ["-y", "@npgamedev/godot-mcp-server"] }
+  }
+}
+```
+
+```json
+{ "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"] } } }
+```
+
+- **Approval.** Every tool call shows a dialog first: **Deny**, **Allow once** or **Always allow**. <kbd>Esc</kbd> or the back button denies. "Always allow" is remembered per server and tool, and forgotten if that server's entry changes.
+- **Local servers run on the desktop.** Servers with a `command` run as child processes of the desktop app. `npx` and `uvx` are found through your login shell's `PATH`, so nvm and `~/.local/bin` installs work even when the app is started from the desktop menu. Remote servers (`"type": "http"` with a `"url"`) are accepted but not connected yet.
+- **Other forms.** A bare `{"name": {...}}` object, or a single entry on its own, works too.
+- **Limits.** The model must support tools. Tool results aren't saved with the chat, so later turns see only the model's answer.
 
 ## Privacy & security
 
-- **No telemetry.** The app only talks to the API endpoint you configure. The one exception is web search, which is off until you turn it on: then the queries the model writes are sent to Linkup (linkup.so) with your Linkup key.
-- **Encrypted keys.** API keys (including the Linkup key) are encrypted with your OS keychain through Electron's `safeStorage` and are only ever sent to the service they belong to: your provider, or Linkup for the search key. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device.
+- **No telemetry.** The app only talks to the API endpoint you configure. The one exception is web search, which is off until you turn it on: then the queries the model writes are sent to Linkup (linkup.so) with your Linkup key. MCP servers you add run on your computer with your user's permissions and talk to whatever they're built for; the model can only use their tools after you allow each call.
+- **Encrypted keys.** API keys (including the Linkup key) are encrypted with your OS keychain through Electron's `safeStorage` and are only ever sent to the service they belong to: your provider, or Linkup for the search key. The MCP server config is encrypted the same way, since its `env` and `headers` often hold tokens. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device.
 - **Local data.** Settings and chats are stored in plain files on your machine:
   - Linux: `~/.config/javc-chatbot/`
   - Windows: `%APPDATA%\javc-chatbot\`
@@ -146,6 +168,7 @@ To sign a local build, set the same names as environment variables, with `ANDROI
 | `index.html` / `renderer.js` | User interface, shared by the desktop and Android apps |
 | `lib.js` | Shared pure logic: prompts, attachments, model search, rich-reply splitting and sandbox pages |
 | `api.js` | OpenAI-compatible streaming client and reasoning support |
+| `mcp.js` | MCP client: reads the pasted config, runs local servers and offers their tools to the model |
 | `profiles.js` / `store.js` | Connection profiles, personas and encrypted settings |
 | `chats.js` | Chat history |
 | `disk.js` | Desktop file access for settings and chats, and the move from the old `chatbot` folder |
