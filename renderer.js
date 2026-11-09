@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-const svg = (paths) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24');
-  for (const d of paths) { const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', d); s.append(p); } return s; };
+const svgEl = (tag, attrs = {}) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const svg = (paths) => { const s = svgEl('svg', { viewBox: '0 0 24 24' }); s.append(...paths.map((d) => svgEl('path', { d }))); return s; };
 const ICON = {
   // App mark, printed by build/mkicon.py (same strokes as build/icon.svg, at 24px). Keep in sync with .mark in index.html.
   logo: ['M15.08 12.87C13.77 15.67 10.44 16.88 7.63 15.58C4.83 14.27 3.62 10.94 4.92 8.13C6.23 5.33 9.56 4.12 12.37 5.42',
@@ -420,7 +420,6 @@ function tile(label, [value, unit]) {
   if (unit) b.append(el('i', null, unit));
   t.append(el('small', null, label), b); return t;
 }
-const svgEl = (tag, attrs) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
 /** One metric as a line from a zero baseline, one point per reply; hovering a point shows its value. */
 function lineChart(title, points, key, fmt) {
   const box = el('div', 'chart'), pts = points.map((s, i) => ({ i, s, v: s[key] })).filter((p) => typeof p.v === 'number');
@@ -434,7 +433,7 @@ function lineChart(title, points, key, fmt) {
     label(L, T - 8, fmt(max).join(' ')), label(L, H - 3, `Reply ${points[0].n}`), ...(n > 1 ? [label(W - R, H - 3, `Reply ${points[n - 1].n}`, 'end')] : []),
     svgEl('polyline', { class: 'ln', points: pts.map((p) => `${x(p.i)},${y(p.v)}`).join(' ') }));
   for (const p of pts) {
-    const g = svgEl('g', {}), tip = svgEl('title', {});
+    const g = svgEl('g'), tip = svgEl('title');
     tip.textContent = `Reply ${p.s.n} · ${p.s.model}: ${fmt(p.v, p.s.est).join(' ')}`;
     g.append(tip, svgEl('circle', { class: 'hit', cx: x(p.i), cy: y(p.v), r: 12 }), svgEl('circle', { class: 'pt', cx: x(p.i), cy: y(p.v), r: 4 }));
     s.append(g);
