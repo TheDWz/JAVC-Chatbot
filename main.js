@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
-const { randomUUID } = require('node:crypto');
+const { createHash } = require('node:crypto');
 const path = require('node:path');
 const api = require('./api');
 const Lib = require('./lib');
@@ -11,11 +11,12 @@ const { makeDisk, migrateLegacy } = require('./disk');
 // the documents don't inherit the app's CSP; the `sandbox` header and attribute keep them in an opaque origin with no access to the app.
 protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const richDocs = new Map(); // id -> {doc, csp}; the page and its CSP come from Lib.richDoc, shared with the Android app
-/** Stores a rich block's page and returns the chatbot-sandbox: URL it's served from (the 300 newest are kept). */
+/** Stores a rich block's page and returns the chatbot-sandbox: URL it's served from (the 300 most recently used are kept). */
 ipcMain.handle('sandbox:create', async (_e, html, color, scheme, flags) => {
   if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
-  const id = randomUUID();
-  richDocs.set(id, await Lib.richDoc(html, color, scheme, flags));
+  const rec = await Lib.richDoc(html, color, scheme, flags);
+  const id = createHash('sha256').update(rec.csp + '\n' + rec.doc).digest('hex'); // the same page gets the same id, so re-renders reuse it
+  richDocs.delete(id); richDocs.set(id, rec); // re-set: the Map's order is the eviction order
   if (richDocs.size > 300) richDocs.delete(richDocs.keys().next().value);
   return 'chatbot-sandbox://doc/' + id;
 });

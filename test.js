@@ -65,7 +65,8 @@ const tmpChats = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chat
 test('chat store keeps chats separate, sorted, deletable, and rejects bad ids', async () => {
   const { dir, store } = tmpChats();
   await store.save({ id: 'a1', title: 'A', updated: 1, messages: [{ role: 'user', content: 'alpha' }] });
-  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [{ role: 'user', content: 'beta' }] });
+  const saved = await store.save({ id: 'b2', title: 'B', updated: 2, messages: [{ role: 'user', content: 'beta' }] });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(saved)), await store.list()); // save returns the list (undefined fields aside), so the page needn't ask again
   assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2', 'a1']);
   assert.deepStrictEqual((await store.load('a1')).messages, [{ role: 'user', content: 'alpha' }]);
   await store.remove('a1');
@@ -211,6 +212,7 @@ test('disk: missing files read as null, names cannot leave the folder, writes le
   assert.strictEqual(await d.read('nope.json'), null);
   assert.deepStrictEqual(await d.list(), []); // folder not created yet
   await d.write('a.json', 'x'); assert.strictEqual(await d.read('a.json'), 'x');
+  if (process.platform !== 'win32') assert.strictEqual(fs.statSync(path.join(dir, 'sub', 'a.json')).mode & 0o777, 0o600); // owner-only
   await d.rename('a.json', 'b.json'); assert.deepStrictEqual(await d.list(), ['b.json']);
   await d.remove('b.json'); await d.remove('b.json'); // removing twice is fine
   for (const bad of ['../x', 'a/b', 'a\\b', '..', '']) await assert.rejects(d.read(bad), /Invalid file name/);

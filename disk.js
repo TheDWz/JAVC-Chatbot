@@ -7,7 +7,7 @@ const path = require('node:path');
  * File access rooted at one folder, with flat file names.
  * @param {string} root The folder.
  * @returns {{read(name): Promise<string|null>, write(name, text): Promise<void>, remove(name): Promise<void>, list(): Promise<string[]>, rename(from, to): Promise<void>}}
- *   `read` gives null for a missing file; `write` is atomic and owner-only; `remove` of a missing file is fine; `list` of a missing folder is [].
+ *   `read` gives null for a missing file; `write` is atomic, durable and owner-only; `remove` of a missing file is fine; `list` of a missing folder is [].
  */
 function makeDisk(root) {
   /** The full path of `name`, which must be a plain file name (no folders, no `..`). */
@@ -21,9 +21,10 @@ function makeDisk(root) {
     },
     async write(name, text) {
       const f = at(name);
-      fs.mkdirSync(root, { recursive: true });
-      fs.writeFileSync(f + '.tmp', text, { mode: 0o600 });
-      fs.renameSync(f + '.tmp', f); // a crash mid-write can't leave a half-written file
+      await fs.promises.mkdir(root, { recursive: true });
+      const fh = await fs.promises.open(f + '.tmp', 'w', 0o600);
+      try { await fh.writeFile(text); await fh.sync(); } finally { await fh.close(); } // synced before the rename, as on Android, so a power cut can't leave an empty file
+      await fs.promises.rename(f + '.tmp', f); // a crash mid-write can't leave a half-written file
     },
     async remove(name) { fs.rmSync(at(name), { force: true }); },
     async list() {

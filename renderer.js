@@ -616,7 +616,7 @@ function setBusy(b) {
   s.title = label; s.setAttribute('aria-label', label); s.querySelector('path').setAttribute('d', b ? 'M7 7h10v10H7z' : 'M12 19V5M5 12l7-7 7 7');
 }
 async function persist() {
-  try { await window.api.saveChat(chat); await refreshList(); } catch (e) { showError('Could not save chat: ' + cleanErr(e)); }
+  try { chatList = await window.api.saveChat(chat); renderList(); } catch (e) { showError('Could not save chat: ' + cleanErr(e)); }
 }
 async function refreshList() { chatList = await window.api.listChats(); renderList(); }
 
