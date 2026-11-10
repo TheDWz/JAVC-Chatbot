@@ -25,7 +25,7 @@ Builds `window.api` (same names as `preload.js`), plus: PDF extraction in the pa
 
 ## The plugin contract
 
-Both plugins implement the same 13 methods with the same arguments and results: `httpStart`, `httpAbort`, `fsRead`, `fsWrite`, `fsRemove`, `fsList`, `fsRename`, `cryptoAvailable`, `encrypt`, `decrypt`, `sandboxCreate`, `copyText`, `openUrl`. Keep them in step when one changes. Ciphertext is `base64(nonce | ciphertext | tag)` with AES-256-GCM on both.
+Both plugins implement the same 14 methods with the same arguments and results: `httpStart`, `httpAbort`, `fsRead`, `fsWrite`, `fsRemove`, `fsList`, `fsRename`, `cryptoAvailable`, `encrypt`, `decrypt`, `sandboxCreate`, `copyText`, `openUrl`, `saveFile`. `saveFile({name, mime, data})` shows the system's save screen for a chat export and resolves `{saved}` (false if cancelled): Android uses `ACTION_CREATE_DOCUMENT` and writes off the main thread; iOS writes a temporary file (complete file protection), presents `UIDocumentPickerViewController(forExporting:asCopy:)` and removes the file when the screen closes. Keep them in step when one changes. Ciphertext is `base64(nonce | ciphertext | tag)` with AES-256-GCM on both.
 
 ## Android (`android/app/src/main/java/io/github/thedwz/javcchatbot/`)
 

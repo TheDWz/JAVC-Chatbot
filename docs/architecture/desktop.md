@@ -29,10 +29,10 @@
 
 - **Linux:** `AppImage`, `deb`, `rpm`, `tar.gz`; executable name `javc-chatbot`; app id `io.github.thedwz.javc-chatbot`.
 - **Windows:** `nsis` installer, named `JAVC-Chatbot-Setup-<version>.exe`. The `dist:win` script installs the Windows build of `@napi-rs/canvas` (a `pdf-parse` dependency) before building.
-- Each target has an explicit `files` list of the runtime files: `main.js`, `preload.js`, `api.js`, `chats.js`, `profiles.js`, `store.js`, `disk.js`, `lib.js`, `mcp.js`, `renderer.js`, `index.html`, `build/icon.png`. **A new top-level source file that `main.js` or the page loads must be added to both lists**, or it will be missing from the packaged app (tests and `npm start` won't show the problem).
+- Each target has an explicit `files` list of the runtime files: `main.js`, `preload.js`, `api.js`, `chats.js`, `seal.js`, `backup.js`, `profiles.js`, `store.js`, `disk.js`, `lib.js`, `mcp.js`, `renderer.js`, `index.html`, `build/icon.png`. **A new top-level source file that `main.js` or the page loads must be added to both lists**, or it will be missing from the packaged app (tests and `npm start` won't show the problem).
 
 ## Platform notes
 
 - Settings and chats live in Electron's per-app data folder (see [storage.md](storage.md)).
-- Keys and the chat key use `safeStorage` (the `keyring` object in `main.js`); on Linux without a keyring they fall back to a plaintext field in the owner-only file. `package.json`'s two `files` lists must name every shipped module, `seal.js` included.
+- Keys and the chat key use `safeStorage` (the `keyring` object in `main.js`); on Linux without a keyring they fall back to a plaintext field in the owner-only file.
 - The Windows installer isn't code-signed; the AppImage and tar.gz may need `--no-sandbox` where unprivileged user namespaces are restricted (see the README).

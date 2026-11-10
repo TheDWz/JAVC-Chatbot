@@ -1,7 +1,7 @@
 # Storage: settings, profiles, chats, keys
 
 **Scope:** what is saved, where, in what shape, and how it survives damage and upgrades.
-**Source:** `store.js`, `profiles.js`, `chats.js`, `seal.js`, `disk.js`; the phone versions of `io`/`crypto` in `mobile/native.js`.
+**Source:** `store.js`, `profiles.js`, `chats.js`, `seal.js`, `backup.js`, `disk.js`; the phone versions of `io`/`crypto` in `mobile/native.js`.
 
 ## Layers
 
@@ -71,6 +71,19 @@ Every file in `chats/` (each chat and `_index.json`) is encrypted. `makeChatSeal
 - A chat holds only its own messages; that is what keeps chats isolated from each other.
 - `list` reconciles the index with the files every time: entries whose file is gone are dropped, files missing from the index are added, a damaged index is rebuilt, and corrupt files or id/name mismatches are skipped instead of losing the whole list.
 - `save` writes the chat file first, then the index; `remove` deletes the chat file first, then writes the index. An interruption between the two is repaired by the next `list`.
+
+## Export and import (`backup.js`)
+
+Settings → Chats exports every chat to a file the user picks, and imports one back. `backup.js` is pure (WebCrypto); the hosts only collect, save and pick files.
+
+- **`collect(chats)`** loads every listed chat; one it can't read is counted (`missed`), not fatal.
+- **`buildExport(chats, {format, passphrase, names})`** gives `{name, mime, text}`:
+  - JSON, `javc-chats-YYYY-MM-DD.json`: `{app: 'javc-chatbot', kind: 'chats', version: 1, exported, chats: [full chat objects]}`. Importable.
+  - Text, `….txt`: a transcript per chat (title, date, the persona's user and bot names from `names`, attachments as `[image: …]` / `[file: …]`, no reasoning). For reading only.
+  - With a passphrase, always the JSON, locked: `….-protected.json`, `{app, kind: 'chats-encrypted', version: 1, kdf: {name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt}, iv, data}`, AES-256-GCM. Still `.json` and `application/json`, so phone file pickers offer it. The page asks for 8+ characters, typed twice.
+- **`readExport(text, passphrase)`** checks `app`, `kind` and `version`, unlocks a locked file (a wrong passphrase says so; `iterations` must be 100,000 to 10,000,000, so a crafted file can't hash for minutes), and drops chats without a valid id, `messages` array and `updated` (counted as `skipped`).
+- **`mergeInto(store, read)`**: a new id is added; an existing one is replaced only by a newer `updated`; the same id twice in one file keeps the newer. It returns `{added, updated, kept, skipped, ids}`, and the page reloads the open chat if its id is in `ids`, so its in-memory copy can't overwrite the import. Personas aren't exported; an unknown `personaId` shows under Default (`personaIdOf`).
+- **Saving:** desktop shows `dialog.showSaveDialog` and writes the file owner-only; phones call the plugin's `saveFile` (Android `ACTION_CREATE_DOCUMENT`, iOS `UIDocumentPickerViewController` for exporting). **Importing** is a plain `<input type=file>` on every platform; the page reads the text and sniffs `kind` to ask for the passphrase.
 
 ## Changing a stored format
 

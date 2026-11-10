@@ -1,13 +1,15 @@
-const { app, clipboard, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
+const { app, clipboard, BrowserWindow, dialog, ipcMain, safeStorage, protocol, session, shell } = require('electron');
 const { createHash } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const http = require('node:http');
+const fs = require('node:fs');
 const path = require('node:path');
 const api = require('./api');
 const Lib = require('./lib');
 const makeChats = require('./chats');
 const makeStore = require('./store');
 const { makeChatSeal } = require('./seal');
+const Backup = require('./backup');
 const Mcp = require('./mcp');
 const { makeDisk, migrateLegacy } = require('./disk');
 
@@ -140,6 +142,22 @@ app.on('before-quit', (e) => { // stop the servers first; before-quit doesn't wa
 
 const chats = makeChats(seal.io);
 /** Whether chats are encrypted and the key is really protected. Linux's 'basic_text' store uses a fixed built-in key, so it doesn't count. */
+/** Persona id -> {user, bot}, for the names in a text export. */
+const personaNames = async () => Object.fromEntries((await store.get()).personas.map((p) => [p.id, { user: p.user, bot: p.bot }]));
+/** Writes every chat to a file the user picks: JSON, text, or JSON locked with a passphrase (backup.js). */
+ipcMain.handle('chats:export', async (e, opts) => {
+  const { chats: all, missed } = await Backup.collect(chats);
+  const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: await personaNames() });
+  const json = file.mime === 'application/json';
+  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
+    defaultPath: path.join(app.getPath('documents'), file.name),
+    filters: [json ? { name: 'Chat export', extensions: ['json'] } : { name: 'Text', extensions: ['txt'] }],
+  });
+  if (r.canceled || !r.filePath) return { saved: false };
+  await fs.promises.writeFile(r.filePath, file.text, { mode: 0o600 });
+  return { saved: true, count: all.length, missed };
+});
+ipcMain.handle('chats:import', async (_e, text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)));
 ipcMain.handle('chats:status', async () => {
   const s = await seal.status();
   if (s.keyring && process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') s.keyring = false;

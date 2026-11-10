@@ -159,6 +159,72 @@ test('seal: a lost key file means a new key and a notice, and the old encrypted 
   done();
 });
 
+// ---- chat export and import (backup.js) ----
+const Backup = require('./backup');
+const sample = () => [
+  { id: 'c1', title: 'Trip', updated: 10, personaId: 'p1', messages: [{ role: 'user', text: 'Plan it', content: 'Plan it', files: [{ name: 'map.png', kind: 'image' }, { name: 'notes.txt', kind: 'text' }] }, { role: 'assistant', content: 'Day 1: go', reasoning: 'secret thoughts' }] },
+  { id: 'c2', title: 'Other', updated: 20, personaId: 'gone', messages: [{ role: 'user', text: 'hi', content: 'hi' }] },
+];
+
+test('backup: JSON export round-trips, and import adds new chats and replaces only with newer copies', async () => {
+  const f = await Backup.buildExport(sample(), { now: Date.UTC(2026, 10, 10, 12) });
+  assert.match(f.name, /^javc-chats-2026-11-1\d\.json$/); assert.strictEqual(f.mime, 'application/json');
+  const read = await Backup.readExport(f.text);
+  assert.deepStrictEqual(read, { chats: sample(), skipped: 0 });
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'c1', title: 'Trip (older here)', updated: 5, messages: [] });
+  await store.save({ id: 'c3', title: 'Mine', updated: 1, messages: [] });
+  const newer = { id: 'c2', title: 'Other, newer', updated: 99, messages: [] };
+  await store.save(newer);
+  const r = await Backup.mergeInto(store, read);
+  assert.deepStrictEqual(r, { added: 0, updated: 1, kept: 1, skipped: 0, ids: ['c1'] });
+  assert.strictEqual((await store.load('c1')).title, 'Trip'); // the export's copy was newer
+  assert.strictEqual((await store.load('c2')).title, 'Other, newer'); // this device's copy was newer
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['c2', 'c1', 'c3']);
+  const twice = await Backup.mergeInto(store, { chats: [{ id: 'n1', title: 'old', updated: 1, messages: [] }, { id: 'n1', title: 'new', updated: 2, messages: [] }], skipped: 0 });
+  assert.deepStrictEqual([twice.added, twice.updated], [1, 0]); assert.strictEqual((await store.load('n1')).title, 'new');
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('backup: a passphrase export is encrypted, needs the passphrase, and rejects a wrong one', async () => {
+  const f = await Backup.buildExport(sample(), { format: 'txt', passphrase: 'correct horse' }); // a passphrase means locked JSON, whatever the format
+  assert.match(f.name, /-protected\.json$/); assert.strictEqual(f.mime, 'application/json');
+  assert.ok(!/Plan it|Trip|Day 1/.test(f.text));
+  const box = JSON.parse(f.text); assert.strictEqual(box.kind, 'chats-encrypted'); assert.strictEqual(box.kdf.iterations, 600000);
+  await assert.rejects(Backup.readExport(f.text), /protected with a passphrase/);
+  await assert.rejects(Backup.readExport(f.text, 'wrong horse'), /Wrong passphrase/);
+  assert.deepStrictEqual((await Backup.readExport(f.text, 'correct horse')).chats, sample());
+  await assert.rejects(Backup.readExport(JSON.stringify({ ...box, kdf: { ...box.kdf, iterations: 1e9 } }), 'x'), /isn't a JAVC Chatbot chat export/); // no endless hashing
+});
+
+test('backup: import rejects other files and drops chats with bad ids or shapes', async () => {
+  await assert.rejects(Backup.readExport('not json'), /isn't a JAVC Chatbot chat export/);
+  await assert.rejects(Backup.readExport('{"app":"other","kind":"chats","version":1,"chats":[]}'), /isn't a JAVC/);
+  await assert.rejects(Backup.readExport('{"app":"javc-chatbot","kind":"chats","version":2,"chats":[]}'), /newer version/);
+  const f = JSON.stringify({ app: 'javc-chatbot', kind: 'chats', version: 1, chats: [sample()[0], { id: '../evil', updated: 1, messages: [] }, { id: 'ok2', updated: 1 }, null] });
+  const r = await Backup.readExport(f);
+  assert.deepStrictEqual(r.chats.map((c) => c.id), ['c1']); assert.strictEqual(r.skipped, 3);
+});
+
+test('backup: the text export is a readable transcript without reasoning', async () => {
+  const f = await Backup.buildExport(sample(), { format: 'txt', names: { p1: { user: 'Dana', bot: 'Captain' } } });
+  assert.match(f.name, /\.txt$/); assert.strictEqual(f.mime, 'text/plain');
+  assert.match(f.text, /^JAVC Chatbot chats, exported .+ \(2 chats\)/);
+  assert.match(f.text, /=== Trip ===\nUpdated .+\n\nDana:\nPlan it\n\[image: map\.png\]\n\[file: notes\.txt\]\n\nCaptain:\nDay 1: go/);
+  assert.match(f.text, /=== Other ===\nUpdated .+\n\nYou:\nhi/); // an unknown persona gets the plain names
+  assert.ok(!f.text.includes('secret thoughts'));
+});
+
+test('backup: collect gathers every readable chat and counts the ones it cannot read', async () => {
+  const { dir, store } = tmpChats();
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  fs.writeFileSync(path.join(dir, 'b2.json'), PREFIX + 'AAAA'); // damaged after it was listed
+  const r = await Backup.collect(store);
+  assert.deepStrictEqual(r.chats.map((c) => c.id), ['a1']); assert.strictEqual(r.missed, 1);
+  fs.rmSync(dir, { recursive: true });
+});
+
 // Fake streaming fetch: SSE text cut into awkward 7-byte pieces.
 const sse = (text, seen = {}, ctype = 'text/event-stream; charset=utf-8') => async (url, opts) => {
   Object.assign(seen, { url, opts });

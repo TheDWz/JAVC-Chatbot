@@ -19,7 +19,7 @@ The page (`renderer.js`) never touches Electron, Capacitor or the file system. I
 | Personas | `savePersona`, `deletePersona` | `personas:save`, `personas:delete` |
 | Search | `saveSearch`, `getSearchKey` | `search:save`, `search:key` |
 | Chat | `chat(messages, onDelta, opts)`, `stopChat` | `chat:send` (+ `chat:delta` events), `chat:abort` |
-| History | `listChats`, `loadChat`, `saveChat`, `deleteChat`, `chatsStatus` | `chats:list`, `chats:load`, `chats:save`, `chats:delete`, `chats:status` |
+| History | `listChats`, `loadChat`, `saveChat`, `deleteChat`, `chatsStatus`, `exportChats({format, passphrase})`, `importChats(text, passphrase)` | `chats:list`, `chats:load`, `chats:save`, `chats:delete`, `chats:status`, `chats:export`, `chats:import` |
 | Files | `extractPdf` | `pdf:extract` |
 | Clipboard | `copyText` | `clipboard:write` |
 | Rich replies | `createSandbox(html, color, scheme, flags)` | `sandbox:create` |

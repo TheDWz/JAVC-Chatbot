@@ -103,4 +103,4 @@ function makeChatSeal({ io, crypto, chats }) {
   };
 }
 
-module.exports = { makeChatSeal, PREFIX };
+module.exports = { makeChatSeal, PREFIX, toB64, fromB64 };

@@ -26,7 +26,11 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "sandboxCreate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "copyText", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openUrl", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "saveFile", returnType: CAPPluginReturnPromise),
     ]
+
+    /// Keeps the save screen's delegate alive while it's open (the picker only holds it weakly).
+    private var saving: SaveFileDelegate?
 
     private lazy var requests = HttpRequests(plugin: self)
 
@@ -238,6 +242,35 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Saves {data} (text) to a file the user picks with the system's save screen, suggesting {name}. Resolves {saved: false}
+    /// if they cancel. Used for chat exports. The text goes through a temporary file, removed once the screen closes.
+    @objc func saveFile(_ call: CAPPluginCall) {
+        let name = (call.getString("name") ?? "export").replacingOccurrences(of: "/", with: "-")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let file = dir.appendingPathComponent(name.isEmpty ? "export" : name)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data((call.getString("data") ?? "").utf8).write(to: file, options: [.atomic, .completeFileProtection])
+        } catch {
+            return call.reject(error.localizedDescription)
+        }
+        DispatchQueue.main.async {
+            guard let vc = self.bridge?.viewController else {
+                try? FileManager.default.removeItem(at: dir)
+                return call.reject("There's nowhere to show the save screen")
+            }
+            let picker = UIDocumentPickerViewController(forExporting: [file], asCopy: true)
+            let delegate = SaveFileDelegate { saved in
+                try? FileManager.default.removeItem(at: dir)
+                self.saving = nil
+                call.resolve(["saved": saved])
+            }
+            picker.delegate = delegate
+            self.saving = delegate
+            vc.present(picker, animated: true)
+        }
+    }
+
     /// Opens {url} (http or https only) in the browser, for MCP sign-in pages.
     @objc func openUrl(_ call: CAPPluginCall) {
         let raw = call.getString("url", "")
@@ -345,4 +378,13 @@ private final class HttpRequests: NSObject, URLSessionDataDelegate {
         if let call = e.call { return call.reject(error?.localizedDescription ?? "Network error") } // never got an answer
         if let error { plugin?.emit(e.id, "error", error.localizedDescription) } else { plugin?.emit(e.id, "end", nil) }
     }
+}
+
+/// Reports whether the save screen saved the file or was cancelled, once.
+final class SaveFileDelegate: NSObject, UIDocumentPickerDelegate {
+    private var done: ((Bool) -> Void)?
+    init(_ done: @escaping (Bool) -> Void) { self.done = done }
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { finish(!urls.isEmpty) }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finish(false) }
+    private func finish(_ saved: Bool) { done?(saved); done = nil }
 }

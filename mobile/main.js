@@ -7,6 +7,7 @@ const Lib = require('../lib');
 const makeStore = require('../store');
 const makeChats = require('../chats');
 const { makeChatSeal } = require('../seal');
+const Backup = require('../backup');
 const Mcp = require('../mcp');
 const { makeNativeFetch, makeNativeDisk, makeNativeCrypto } = require('./native');
 
@@ -82,6 +83,15 @@ window.api = {
   stopChat: async () => current?.abort(),
   listChats: () => chats.list(),
   chatsStatus: async () => ({ ...(await seal.status()), device: true }),
+  /** Writes every chat to a file the user picks with the system's save screen (JSON, text, or JSON locked with a passphrase). */
+  exportChats: async (opts) => {
+    const { chats: all, missed } = await Backup.collect(chats);
+    const names = Object.fromEntries((await store.get()).personas.map((p) => [p.id, { user: p.user, bot: p.bot }]));
+    const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names });
+    const { saved } = await Javc.saveFile({ name: file.name, mime: file.mime, data: file.text });
+    return saved ? { saved: true, count: all.length, missed } : { saved: false };
+  },
+  importChats: async (text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)),
   loadChat: (id) => chats.load(id),
   saveChat: (chat) => chats.save(chat),
   deleteChat: (id) => chats.remove(id),

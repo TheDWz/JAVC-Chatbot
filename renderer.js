@@ -998,7 +998,8 @@ function showPane(name, focus) {
 }
 /** Says how saved chats are protected here: the host reports whether the chat key is in a real keyring (seal.js). */
 async function loadChatsPane() {
-  $('chatsecerr').hidden = true; $('chatsec').textContent = '';
+  $('chatsecerr').hidden = $('experr').hidden = $('imperr').hidden = true; $('chatsec').textContent = '';
+  /** @type {HTMLInputElement} */ ($('exppw')).value = /** @type {HTMLInputElement} */ ($('exppw2')).value = ''; // never left filled in
   let s;
   try { s = await window.api.chatsStatus(); } catch (e) { s = { error: cleanErr(e) }; }
   if (s.error) { $('chatsecerr').textContent = `Saved chats can't be opened: ${s.error}`; $('chatsecerr').hidden = false; return; }
@@ -1008,6 +1009,60 @@ async function loadChatsPane() {
     : (s.device ? 'Chats are encrypted, but this device\'s keystore isn\'t working, so the key is kept unprotected in the app\'s private folder.'
       : 'Chats are encrypted, but no system keyring was found, so the key is stored unprotected beside them. Unlock or install a keyring (GNOME Keyring or KWallet) and restart the app to protect it.');
 }
+// Export: a passphrase always gives the locked JSON, so the format is fixed to JSON while it's on
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+$('exppass').onchange = () => {
+  const on = $('exppass').checked; $('exppassbox').hidden = !on; $('expformat').disabled = on;
+  if (on) { $('expformat').value = 'json'; refreshSel($('expformat')); $('exppw').focus(); }
+};
+$('expbtn').onclick = async () => {
+  const err = $('experr'), locked = $('exppass').checked, pass = locked ? $('exppw').value : '';
+  const fail = (m) => { err.textContent = m; err.hidden = false; };
+  err.hidden = true;
+  if (locked && pass.length < 8) return fail('Use a passphrase of at least 8 characters.');
+  if (locked && pass !== $('exppw2').value) return fail("The two passphrases don't match.");
+  $('expbtn').disabled = true;
+  try {
+    const r = await window.api.exportChats({ format: $('expformat').value, passphrase: pass });
+    if (r.saved) toast(`Exported ${plural(r.count, 'chat')}${r.missed ? `; ${r.missed} couldn't be read` : ''}`);
+  } catch (e) { fail('Could not export: ' + cleanErr(e)); }
+  finally { $('expbtn').disabled = false; }
+};
+// Import: read the file in the page, ask for the passphrase if it's locked, then merge it in
+let importText = '';
+$('impbtn').onclick = () => {
+  if (busy) return toast('Wait for the reply to finish first');
+  $('imperr').hidden = true; /** @type {HTMLInputElement} */ ($('impfile')).value = ''; $('impfile').click();
+};
+$('impfile').onchange = async () => {
+  const f = /** @type {HTMLInputElement} */ ($('impfile')).files[0]; if (!f) return;
+  try { importText = await f.text(); } catch (e) { $('imperr').textContent = 'Could not read the file: ' + cleanErr(e); $('imperr').hidden = false; return; }
+  let locked = false; try { locked = JSON.parse(importText)?.kind === 'chats-encrypted'; } catch {}
+  if (!locked) return runImport('', $('imperr'));
+  /** @type {HTMLInputElement} */ ($('imppw')).value = ''; $('imperr2').hidden = true; $('impdlg').showModal(); $('imppw').focus();
+};
+/** Imports importText; shows a failure in `err` and returns false. */
+async function runImport(pass, err) {
+  err.hidden = true;
+  let r;
+  try { r = await window.api.importChats(importText, pass); }
+  catch (e) { err.textContent = cleanErr(e); err.hidden = false; return false; }
+  importText = '';
+  const extra = [r.updated && `${r.updated} updated`, r.kept && `${r.kept} already up to date`, r.skipped && `${r.skipped} skipped`].filter(Boolean);
+  toast(`Imported ${plural(r.added + r.updated, 'chat')}${extra.length ? ` (${extra.join(', ')})` : ''}`);
+  await refreshList().catch((e) => showError('Could not load chats: ' + cleanErr(e)));
+  if (r.ids.includes(chat.id) && !busy) { // the open chat was replaced: show the imported copy, so a later save can't undo it
+    try { chat = await window.api.loadChat(chat.id); renderChat(); refreshPersonaUi(); } catch (e) { showError('Could not open chat: ' + cleanErr(e)); }
+  }
+  return true;
+}
+$('impcancel').onclick = () => $('impdlg').close();
+$('impdlg').onclose = () => { importText = ''; }; // Cancel, Escape or Back: drop the file
+$('impform').onsubmit = async (e) => {
+  e.preventDefault(); $('impgo').disabled = true;
+  try { if (await runImport(/** @type {HTMLInputElement} */ ($('imppw')).value, $('imperr2'))) $('impdlg').close(); }
+  finally { $('impgo').disabled = false; }
+};
 function openPrefs(pane) {
   const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; $('gradon').checked = state.theme.gradient; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
   renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); loadMcpPane(); loadChatsPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();

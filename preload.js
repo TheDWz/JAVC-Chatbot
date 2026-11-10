@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('api', {
   stopChat: () => currentId && ipcRenderer.invoke('chat:abort', currentId),
   listChats: () => ipcRenderer.invoke('chats:list'),
   chatsStatus: () => ipcRenderer.invoke('chats:status'),
+  exportChats: (opts) => ipcRenderer.invoke('chats:export', opts),
+  importChats: (text, passphrase) => ipcRenderer.invoke('chats:import', text, passphrase),
   loadChat: (id) => ipcRenderer.invoke('chats:load', id),
   saveChat: (chat) => ipcRenderer.invoke('chats:save', chat),
   deleteChat: (id) => ipcRenderer.invoke('chats:delete', id),
