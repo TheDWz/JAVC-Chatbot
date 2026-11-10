@@ -61,7 +61,7 @@ function applyState(st) {
 // A chat whose persona is missing or was deleted counts as Default.
 const personaIdOf = (c) => (state.personas.some((p) => p.id === c.personaId) ? c.personaId : 'default');
 const personaOf = (c) => state.personas.find((p) => p.id === personaIdOf(c));
-function refreshPersonaUi() { $('input').placeholder = `Message ${personaOf(chat)?.bot || 'JAVC Chatbot'}…`; }
+function refreshPersonaUi() { const bot = personaOf(chat)?.bot; $('input').placeholder = bot ? `Message ${bot}` : 'Message'; }
 const isLocal = (u) => /^https?:\/\/(localhost|127\.|\[::1\]|10\.|192\.168\.)/i.test(u || '');
 
 function toast(text) {
@@ -71,6 +71,13 @@ function toast(text) {
 /** Copies text and says so. Both apps copy through native code (Electron's main process, the Android plugin), since the page's own clipboard access is blocked or unreliable. */
 async function copy(text) {
   try { await window.api.copyText(text); toast('Copied'); } catch { toast('Copy failed'); }
+}
+// The header floats over the chat and the composer is sticky at its bottom; their heights keep content from starting, or landing on focus, under them.
+{
+  const head = document.querySelector('header'), foot = document.querySelector('footer'), bars = new ResizeObserver(() => {
+    $('scroll').style.setProperty('--head-h', head.offsetHeight + 'px'); $('scroll').style.setProperty('--foot-h', foot.offsetHeight + 'px');
+  });
+  bars.observe(head); bars.observe(foot);
 }
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
 function push(node) { $('log').querySelector('.empty')?.remove(); $('log').append(node); scrollDown(); return node; }
@@ -374,7 +381,7 @@ function addAssistant() {
 function showEmpty() {
   const box = el('div', 'empty'), big = el('div', 'big');
   big.append(svg(ICON.logo));
-  box.append(big, el('h1', null, 'How can I help?'));
+  box.append(big, el('h1', null, 'New chat'));
   const p = el('p');
   if (!state.activeId) { const a = el('button', 'linkish', 'Create a profile'); a.onclick = () => openProfileDialog(true); p.append(a, ' (endpoint + API key) to get started.'); }
   else if (settings.model) { const ps = personaOf(chat); p.textContent = `Chatting with ${ps.bot ? (ps.user ? `${ps.bot} as ${ps.user}` : ps.bot) : settings.model}`; }

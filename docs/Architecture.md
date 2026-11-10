@@ -37,6 +37,7 @@ The core never imports Electron or Capacitor. It takes what it needs as argument
 | [desktop.md](architecture/desktop.md) | the Electron main process, windows, packaging for Linux and Windows | `main.js`, `preload.js`, `package.json` |
 | [mobile.md](architecture/mobile.md) | the Android or iOS app, the Capacitor bundle, native plugins | `mobile/`, `android/`, `ios/` |
 | [build-ci.md](architecture/build-ci.md) | npm scripts, versions, GitHub Actions, releases, tests, lint | `package.json`, `.github/workflows/`, `test.js`, `mobile/smoke/` |
+| [page-look.md](architecture/page-look.md) | styling, the glass layers, the header and composer layout, accent colors and the Gradient switch | `index.html` (`<style>`), `renderer.js` (`applyTheme`) |
 | [security.md](architecture/security.md) | anything that touches keys, untrusted content, permissions or the bridge | everything above |
 
 ## Repository map
