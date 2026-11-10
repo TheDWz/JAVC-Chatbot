@@ -75,15 +75,17 @@ function rpc(send) {
       if (dead) return Promise.reject(dead);
       if (signal?.aborted) return Promise.reject(new Error('Stopped'));
       const id = ++seq;
+      const late = new AbortController(); // a timeout also stops the transport's work for this request (an HTTP fetch or stream)
+      const sig = signal ? AbortSignal.any([signal, late.signal]) : late.signal;
       return new Promise((resolve, reject) => {
-        const timer = ms ? setTimeout(() => { settle(id, (p) => p.reject(new Error(`No answer to ${method} after ${ms / 1000} s`))); }, ms) : null;
+        const timer = ms ? setTimeout(() => { settle(id, (p) => p.reject(new Error(`No answer to ${method} after ${ms / 1000} s`))); late.abort(); }, ms) : null;
         const onAbort = () => {
           settle(id, (p) => p.reject(new Error('Stopped')));
           post({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason: 'Stopped by the user' } }).catch(() => {});
         };
         signal?.addEventListener('abort', onAbort, { once: true });
         pending.set(id, { resolve, reject, cleanup: () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); } });
-        post({ jsonrpc: '2.0', id, method, ...(params && { params }) }, signal).catch((e) => settle(id, (p) => p.reject(signal?.aborted ? new Error('Stopped') : e)));
+        post({ jsonrpc: '2.0', id, method, ...(params && { params }) }, sig).catch((e) => settle(id, (p) => p.reject(signal?.aborted ? new Error('Stopped') : e)));
       });
     },
     /** Resolves once it's sent (or failed: a notification's failure is not an error). */
@@ -154,8 +156,8 @@ async function stdioTransport(spawn, entry, onMessage, onDead) {
 
 /**
  * Reads a text/event-stream body, handing each event's JSON to `onMessage`, until the stream ends or `doneId`'s answer
- * arrives. Resolves to {answered, lastId, retry}: the last event id and retry delay let the caller resume a stream the
- * server closed early.
+ * arrives. Resolves to {answered, lastId, retry, error}: the last event id and retry delay let the caller resume a stream
+ * the server closed early, or that dropped (`error` is why).
  */
 async function readSse(body, onMessage, doneId) {
   const reader = body.getReader(), dec = new TextDecoder();
@@ -166,12 +168,16 @@ async function readSse(body, onMessage, doneId) {
     data = [];
     for (const x of [].concat(m ?? [])) { onMessage(x); if (isObj(x) && x.id === doneId && x.method === undefined) done = true; }
   };
+  let error = null;
   try {
     while (!done) {
-      const { done: end, value } = await reader.read();
-      if (end) break;
-      buf += dec.decode(value, { stream: true });
-      for (let i; !done && (i = buf.indexOf('\n')) >= 0; ) {
+      let chunk;
+      try { chunk = await reader.read(); } catch (e) { error = e; break; } // the connection dropped: the caller may resume
+      if (chunk.done) break;
+      let from = buf.length; // only the new text can hold the next line break
+      buf += dec.decode(chunk.value, { stream: true });
+      if (buf.length > OUT_MAX) throw new Error(`The server sent a message larger than ${OUT_MAX / 1024 / 1024} MB.`);
+      for (let i; !done && (i = buf.indexOf('\n', from)) >= 0; from = 0) {
         const line = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1);
         const field = (f) => (line.startsWith(f + ':') ? line.slice(f.length + 1).replace(/^ /, '') : null);
         if (!line) dispatch();
@@ -180,14 +186,16 @@ async function readSse(body, onMessage, doneId) {
         else if (/^\d+$/.test(field('retry') ?? '')) retry = +field('retry');
       }
     }
-    if (!done) dispatch();
+    if (!done && !error) dispatch();
   } finally { reader.cancel().catch(() => {}); } // the answer is in: don't wait for a server that keeps the stream open
-  return { answered: done, lastId, retry };
+  return { answered: done, lastId, retry, error };
 }
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
-  const t = setTimeout(resolve, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Stopped')); }, { once: true });
+  const stop = () => { clearTimeout(t); reject(new Error('Stopped')); };
+  const t = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(undefined); }, ms);
+  if (signal?.aborted) return stop();
+  signal?.addEventListener('abort', stop, { once: true });
 });
 
 /**
@@ -195,60 +203,70 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
  * session id the server gives, and sends the negotiated protocol version once it's known.
  * With `token` ({get, refresh}, from a sign-in) it sends the access token, and on a 401 refreshes it once and tries again.
  * A 401 after that throws an error with `auth: true` and the server's `resourceMetadata` URL; a 404 on an open session
- * throws one with `expired: true`, so the caller can start a new session.
+ * throws one with `expired: true`. Both also end the connection through `onDead`, so the next use starts a new one.
+ * shortcut: the tool list is read once per connection (no notifications/tools/list_changed); Reload picks up new tools
  */
-function httpTransport(entry, fetchFn, onMessage, token) {
+function httpTransport(entry, fetchFn, onMessage, onDead, token) {
   let session = '', proto = '', bearer = '';
-  const host = new URL(entry.url).host;
+  const host = new URL(entry.url).host, life = new AbortController(); // close() stops everything still in flight
   const headers = () => ({
     'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
     ...(proto && { 'MCP-Protocol-Version': proto }), ...(session && { 'Mcp-Session-Id': session }),
     ...(bearer && { Authorization: 'Bearer ' + bearer }), ...entry.headers,
   });
+  const drain = (res) => { res.body?.cancel().catch(() => {}); };
+  const dead = (e) => { onDead(e); return e; };
+  /** fetch, stopped by `signal` or close(); a network error names the host. */
+  async function req(opts, signal) {
+    const sig = signal ? AbortSignal.any([signal, life.signal]) : life.signal;
+    try { return await fetchFn(entry.url, { ...opts, signal: sig }); }
+    catch (e) { throw sig.aborted ? new Error('Stopped') : new Error(`Couldn't reach ${host}: ${e.message}`, { cause: e }); }
+  }
   return {
     setVersion(v) { proto = v; },
     async send(m, signal) {
       let res;
       for (let retried = false; ; retried = true) {
         if (token) bearer = await token.get();
-        try { res = await fetchFn(entry.url, { method: 'POST', headers: headers(), body: JSON.stringify(m), signal }); }
-        catch (e) { throw signal?.aborted ? new Error('Stopped') : new Error(`Couldn't reach ${host}: ${e.message}`, { cause: e }); }
+        res = await req({ method: 'POST', headers: headers(), body: JSON.stringify(m) }, signal);
         if (res.status !== 401 || retried || !bearer || !(await token.refresh())) break;
-        res.body?.cancel().catch(() => {}); // the token was refused: refreshed, so send it again
+        drain(res); // the token was refused: refreshed, so send it again
       }
       if (res.status === 401) {
         const meta = /resource_metadata="([^"]+)"/.exec(res.headers.get('www-authenticate') || '')?.[1] || '';
-        res.body?.cancel().catch(() => {});
-        throw Object.assign(new Error('This server needs you to sign in.'), { auth: true, resourceMetadata: meta });
+        drain(res);
+        throw dead(Object.assign(new Error('This server needs you to sign in.'), { auth: true, resourceMetadata: meta }));
       }
-      if (res.status === 404 && session) { session = ''; res.body?.cancel().catch(() => {}); throw Object.assign(new Error('The server ended the session.'), { expired: true }); }
+      if (res.status === 404 && session) { session = ''; drain(res); throw dead(Object.assign(new Error('The server ended the session.'), { expired: true })); }
       if (!res.ok) throw new Error(`${host} answered HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
       const sid = res.headers.get('mcp-session-id'); if (sid) session = sid;
-      if (m.method === undefined || m.id === undefined) { res.body?.cancel().catch(() => {}); return; } // a notification or our answer: 202, no body
+      if (m.method === undefined || m.id === undefined) { drain(res); return; } // a notification or our answer: 202, no body
       if ((res.headers.get('content-type') || '').includes('text/event-stream')) {
         let r = await readSse(res.body, onMessage, m.id);
-        // The server may close the connection before answering and expect the client to resume from the last event id, after `retry` ms
-        for (let tries = 0; !r.answered && r.lastId && tries < 5; tries++) {
+        // The server may close the stream (or the connection may drop) before the answer; resume from the last event id after `retry` ms
+        for (let tries = 0; !r.answered && r.lastId && !signal?.aborted && !life.signal.aborted && tries < 5; tries++) {
           await sleep(Math.min(r.retry ?? 1000, 30000), signal);
-          let g;
-          try { g = await fetchFn(entry.url, { method: 'GET', headers: { ...headers(), Accept: 'text/event-stream', 'Last-Event-ID': r.lastId }, signal }); }
-          catch (e) { throw signal?.aborted ? new Error('Stopped') : new Error(`Couldn't reach ${host}: ${e.message}`, { cause: e }); }
-          if (!g.ok || !(g.headers.get('content-type') || '').includes('text/event-stream')) { g.body?.cancel().catch(() => {}); break; }
+          const g = await req({ method: 'GET', headers: { ...headers(), Accept: 'text/event-stream', 'Last-Event-ID': r.lastId } }, signal);
+          if (!g.ok || !(g.headers.get('content-type') || '').includes('text/event-stream')) { drain(g); break; }
           const next = await readSse(g.body, onMessage, m.id);
-          r = { answered: next.answered, lastId: next.lastId || r.lastId, retry: next.retry ?? r.retry };
+          r = { answered: next.answered, lastId: next.lastId || r.lastId, retry: next.retry ?? r.retry, error: next.error };
         }
-        if (!r.answered) throw new Error(`${host} closed the stream without answering`);
-        return;
+        if (r.answered) return;
+        if (signal?.aborted || life.signal.aborted) throw new Error('Stopped');
+        throw new Error(r.error ? `Couldn't reach ${host}: ${r.error.message}` : `${host} closed the stream without answering`);
       }
+      // shortcut: a JSON answer is read whole, unlike streams (capped at OUT_MAX); cap it too if a server sends huge ones
       const text = await res.text();
       let j; try { j = JSON.parse(text); } catch { throw new Error(`${host} didn't answer with JSON`); }
       for (const x of [].concat(j)) onMessage(x);
       if (![].concat(j).some((x) => isObj(x) && x.id === m.id)) throw new Error(`${host} answered without a reply to the request`);
     },
     async close() {
+      life.abort();
       if (!session) return;
       const h = headers(); session = '';
-      try { (await fetchFn(entry.url, { method: 'DELETE', headers: h })).body?.cancel().catch(() => {}); } catch {} // the server may not support it
+      // the server may not support it, or be unreachable: don't hold up Reload or quitting for long
+      try { drain(await fetchFn(entry.url, { method: 'DELETE', headers: h, signal: AbortSignal.timeout(5000) })); } catch {}
     },
   };
 }
@@ -262,7 +280,7 @@ async function connect(entry, { spawn, fetchFn, token, signal, started, ended })
   let r = null, deadErr = null;
   const onDead = (e) => { deadErr ||= e; r?.fail(e); ended?.(); };
   let t;
-  if (entry.type === 'http') t = httpTransport(entry, fetchFn, (m) => r.receive(m), token);
+  if (entry.type === 'http') t = httpTransport(entry, fetchFn, (m) => r.receive(m), onDead, token);
   else if (!spawn) throw new Error('Only the desktop app can run local servers.');
   else t = await stdioTransport(spawn, entry, (m) => r.receive(m), onDead);
   r = rpc(t.send);
@@ -542,7 +560,7 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts), auth }) {
             return resultText(await (await until(open(t.server), signal)).conn.request('tools/call', { name: t.tool, arguments: args }, signal));
           };
           try { return await call(); }
-          catch (e) { if (!e.expired) throw e; await drop(t.server); return call(); } // the HTTP session ended: start a new one, once
+          catch (e) { if (!e.expired) throw e; return call(); } // the HTTP session ended, and the hub forgot it: start a new one, once
         },
       };
     },
