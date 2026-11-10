@@ -80,6 +80,8 @@ async function copy(text) {
   bars.observe(head); bars.observe(foot);
 }
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
+// Animations started from script; the CSS reduced-motion rule doesn't reach these, so they check it themselves.
+const fade = (node, from, ms) => { if (!matchMedia('(prefers-reduced-motion: reduce)').matches) node.animate([{ opacity: from }, { opacity: 1 }], { duration: ms, easing: 'ease-out' }); };
 function push(node) { $('log').querySelector('.empty')?.remove(); $('log').append(node); scrollDown(); return node; }
 
 function miniBtn(icon, label, onclick) {
@@ -372,6 +374,7 @@ function addAssistant() {
     done(text, finalReasoning = reasoning, m) {
       cancelAnimationFrame(raf); raf = 0; row.classList.remove('thinking');
       render(b, text || '(The model returned no text.)');
+      if (cNode) fade(b, .55, 120); // streamed plain text becomes the formatted reply; soften the swap
       tb.classList.toggle('placeholder', !finalReasoning); tb.textContent = finalReasoning || NO_REASONING;
       body.append(msgActions(m, body, b, copyBtn(() => text))); scrollDown();
     },
@@ -702,6 +705,9 @@ function renderChat() {
     let k = 0;
     addUser(m.text || '', (m.files || []).map((f) => (f.kind === 'image' ? { ...f, url: urls[k++] } : f)), m);
   }
+  // A whole chat at once: skip each row's own entrance and fade the log in once instead
+  for (const a of $('log').getAnimations({ subtree: true })) if (a.animationName?.startsWith('rise')) a.finish(); // not the endless ones: finish() throws on those
+  fade($('log'), 0, 160);
 }
 function startNew() {
   if (busy) return;

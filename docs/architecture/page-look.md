@@ -26,3 +26,24 @@ The translucent layers use `--glass` / `--glass-strong`, `--glass-line`, `--glas
 ## Accent
 
 `applyTheme` sets `--a1` and `--a2`, and `--grad` blends them. With the Gradient switch off, `--a2` equals `--a1`, so every `var(--grad)` paints one flat color. Switches use `--a1` directly. Selected items (the open chat, the model row Enter would pick, the settings tab, the reasoning level) get a 14% accent tint. A hovered item gets the neutral `--fill`, so the two never look the same.
+
+## Motion
+
+Everything springs in with a slight overshoot that settles, and eases out faster. The tokens are in `:root`:
+- `--spring` for things appearing.
+- `--ease` for fades and exits.
+- `--sheet` for panels and anything that moves layout, such as the sidebar and the reasoning panel.
+- `--t-fast` (120ms), `--t-mid` (220ms) and `--t-slow` (320ms).
+
+**Showing and hiding.** Popovers (`[hidden]`), dialogs (`showModal` / `close`), the sidebar (`.nohist`), the reasoning block (`.row.open`), the drop overlay and the settings panes still hide with `display: none`. They animate both ways like this:
+- The resting rule lists `display` (and `overlay` for dialogs) in `transition` with `allow-discrete`, so the element stays displayed until its exit transition ends.
+- An `@starting-style` block gives the values to enter from.
+- The `[hidden] { display: none !important }` rule still works, because transitions outrank `!important` in the cascade.
+- `interpolate-size: allow-keywords` lets the reasoning block's height animate to `auto`.
+- Where a WebView lacks any of these, the element snaps instead. Nothing breaks.
+
+**Messages.** New rows run `rise` (assistant) or `rise-user` (user). `renderChat` draws a whole chat at once, so it finishes those entrances right away and fades the log in once instead. `reply.done` gives the bubble a short fade when the streamed text becomes the formatted reply.
+
+**Press feedback.** Buttons, chips, menu rows and list items scale down slightly while pressed and spring back. They share one `transition` list near the end of the `<style>` block. Add a new control there, or it loses its other transitions.
+
+**Reduced motion.** The `prefers-reduced-motion: reduce` rule turns off every CSS animation and transition. Animations started from script (`fade` in `renderer.js`) check the same media query themselves.
