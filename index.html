@@ -26,7 +26,7 @@
     --accent-text: color-mix(in oklab, var(--a1) 65%, var(--text)); /* accent for text/links: pulled toward the text color so any theme stays readable */
     /* Motion: things spring in (a slight overshoot that settles) and ease out quickly. --sheet is for panels and anything that moves layout. */
     --spring: cubic-bezier(.34, 1.4, .64, 1); --ease: cubic-bezier(.2, .8, .2, 1); --sheet: cubic-bezier(.32, .72, 0, 1);
-    --t-fast: 120ms; --t-mid: 220ms; --t-slow: 320ms;
+    --t-fast: 120ms; --t-mid: 220ms; --t-slow: 320ms; --t-panel: 380ms;
     interpolate-size: allow-keywords; /* lets height animate to auto (the reasoning block); where unsupported it just jumps */
   }
   /* Kept as a resolved value (not "light dark"): renderer.js passes it to sandboxed reply frames. */
@@ -50,7 +50,7 @@
   #history { width: 256px; flex-shrink: 0; margin: 8px 0 8px 8px; display: flex; flex-direction: column; border-radius: 20px;
     background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow); }
   /* Shown and hidden with .nohist: it slides out and the chat column glides wider. allow-discrete keeps it displayed until the slide ends. */
-  #history { transition: margin-left var(--t-slow) var(--sheet), translate var(--t-slow) var(--sheet), opacity var(--t-mid) var(--ease), display var(--t-slow) allow-discrete; }
+  #history { transition: margin-left var(--t-panel) var(--sheet), translate var(--t-panel) var(--sheet), opacity var(--t-mid) var(--ease), display var(--t-panel) allow-discrete; }
   .app.nohist #history { display: none; margin-left: -256px; opacity: 0; }
   @starting-style { .app:not(.nohist) #history { margin-left: -256px; opacity: 0; } }
   .hist-head { padding: 10px; }
@@ -77,7 +77,7 @@
       max-width: calc(100vw - 16px); background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); }
     .app.nohist #history { margin-left: 0; opacity: 1; translate: calc(-100% - 16px) 0; }
     @starting-style { .app:not(.nohist) #history { margin-left: 0; opacity: 1; translate: calc(-100% - 16px) 0; } }
-    #histscrim { position: fixed; inset: 0; z-index: 24; background: rgba(5,6,10,.4); opacity: 0; transition: opacity var(--t-mid) var(--ease), display var(--t-mid) allow-discrete; }
+    #histscrim { position: fixed; inset: 0; z-index: 24; background: rgba(5,6,10,.4); opacity: 0; transition: opacity var(--t-panel) var(--ease), display var(--t-panel) allow-discrete; }
     .app:not(.nohist) #histscrim { display: block; opacity: 1; }
     @starting-style { .app:not(.nohist) #histscrim { opacity: 0; } }
   }
@@ -281,10 +281,10 @@
   .ubody .att.thumb { padding: 0; border: 0; background: none; }
   .ubody .att.thumb img { width: 160px; height: 120px; border-radius: 14px; }
   /* Reasoning side panel */
-  #scrim { position: fixed; inset: 0; z-index: 30; background: rgba(5,6,10,.3); opacity: 0; pointer-events: none; transition: opacity var(--t-mid) var(--ease); }
+  #scrim { position: fixed; inset: 0; z-index: 30; background: rgba(5,6,10,.3); opacity: 0; pointer-events: none; transition: opacity var(--t-panel) var(--ease); }
   #scrim.on { opacity: 1; pointer-events: auto; }
   #side { position: fixed; top: 0; right: 0; bottom: 0; z-index: 31; width: min(340px, 100vw); border-width: 0 0 0 1px;
-    transform: translateX(100%); transition: transform var(--t-slow) var(--sheet); display: flex; flex-direction: column; }
+    transform: translateX(100%); transition: transform var(--t-panel) var(--sheet); display: flex; flex-direction: column; }
   #side.open { transform: none; }
   .side-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 18px 16px 8px 20px; }
   .side-head h2 { margin: 0; font-size: 18px; font-weight: 650; }
@@ -309,9 +309,10 @@
   dialog { width: min(460px, calc(100vw - 32px)); border-radius: 24px; padding: 0; color: var(--text);
     box-shadow: var(--glass-shadow), 0 30px 80px rgb(0 0 0 / .3); }
   /* Dialogs spring open and ease shut; overlay/display allow-discrete keep them in the top layer until the exit ends */
-  dialog { opacity: 0; scale: .97; transition: opacity var(--t-fast) var(--ease), scale var(--t-fast) var(--ease), overlay var(--t-fast) allow-discrete, display var(--t-fast) allow-discrete; }
-  dialog[open] { opacity: 1; scale: 1; transition: opacity var(--t-mid) var(--ease), scale var(--t-slow) var(--spring), overlay var(--t-slow) allow-discrete, display var(--t-slow) allow-discrete; }
-  @starting-style { dialog[open] { opacity: 0; scale: .94; } }
+  dialog { opacity: 0; scale: .95; translate: 0 8px; /* closing sinks away slightly, so it reads as an exit */
+    transition: opacity var(--t-mid) ease-in, scale var(--t-mid) var(--ease), translate var(--t-mid) var(--ease), overlay var(--t-mid) allow-discrete, display var(--t-mid) allow-discrete; } /* ease-in: stays visible while it moves */
+  dialog[open] { opacity: 1; scale: 1; translate: 0 0; transition: opacity var(--t-mid) var(--ease), scale var(--t-slow) var(--spring), overlay var(--t-slow) allow-discrete, display var(--t-slow) allow-discrete; }
+  @starting-style { dialog[open] { opacity: 0; scale: .94; translate: 0 0; } }
   dialog::backdrop { background: rgba(5,6,10,0); -webkit-backdrop-filter: blur(0); backdrop-filter: blur(0);
     transition: background var(--t-mid) var(--ease), -webkit-backdrop-filter var(--t-mid) var(--ease), backdrop-filter var(--t-mid) var(--ease), overlay var(--t-mid) allow-discrete, display var(--t-mid) allow-discrete; }
   dialog[open]::backdrop { background: rgba(5,6,10,.4); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
@@ -323,7 +324,27 @@
   .input { display: flex; align-items: center; background: var(--fill); border: 1px solid var(--line-soft); border-radius: 12px; transition: border-color .15s; }
   .input:focus-within { border-color: var(--accent-text); }
   .input select { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
-  .input option, .pill option { background: var(--surface); } /* desktop select lists take their background from here */
+  .input option, .pill option { background: var(--surface); } /* the native select lists (where base-select isn't supported) take their background from here */
+  /* Selects open an in-page glass picker instead of the platform's (Chromium 135+). The <select> keeps its value, options, events and keyboard,
+     so no script is involved; iOS and older WebViews ignore this block and keep their native picker. */
+  @supports (appearance: base-select) {
+    select, .pill select, ::picker(select) { appearance: base-select; } /* .pill select sets appearance: none, so it's named here too */
+    .pill select::picker-icon { display: none; } /* the pills draw their own chevron */
+    .input select::picker-icon { content: ""; width: 14px; height: 14px; background: var(--muted); transition: rotate var(--t-mid) var(--spring);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat; }
+    .input select:open::picker-icon { rotate: 180deg; }
+    ::picker(select) { margin-block: 6px; min-width: anchor-size(width); padding: 6px; border-radius: 16px; color: var(--text);
+      background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow);
+      transform-origin: top; opacity: 0; scale: .95;
+      transition: opacity var(--t-fast) var(--ease), scale var(--t-fast) var(--ease), overlay var(--t-fast) allow-discrete, display var(--t-fast) allow-discrete; }
+    select:open::picker(select) { opacity: 1; scale: 1;
+      transition: opacity var(--t-mid) var(--ease), scale var(--t-mid) var(--spring), overlay var(--t-mid) allow-discrete, display var(--t-mid) allow-discrete; }
+    @starting-style { select:open::picker(select) { opacity: 0; scale: .95; } }
+    .input option, .pill option, option { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px; font-size: 14px; background: transparent; cursor: pointer; }
+    option:hover, option:focus-visible { background: var(--fill); outline: 0; }
+    option:checked { color: var(--accent-text); font-weight: 600; }
+    option::checkmark { order: 1; margin-left: auto; }
+  }
   .input input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
   .input textarea { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); resize: vertical; min-height: 120px; }
   .input .icon-btn { width: 30px; height: 30px; margin-right: 4px; }
@@ -384,9 +405,9 @@
   #toast.show { opacity: 1; transform: translate(-50%, 0); scale: 1; }
 
   /* Press feedback: controls squish a little and spring back. One list, so each control keeps its color transitions too. */
-  .icon-btn, .send, .btn, .chip, .mini, .mopt, .chat-item, .level, .theme, .modelbtn {
+  .icon-btn, .send, .btn, .chip, .mini, .mopt, .chat-item, .level, .theme, .modelbtn, .pill select {
     transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast), filter var(--t-fast), box-shadow var(--t-fast), scale var(--t-mid) var(--spring); }
-  :is(.icon-btn, .send, .btn, .chip, .mini, .modelbtn):active:not(:disabled) { scale: .94; transition-duration: var(--t-fast); }
+  :is(.icon-btn, .send, .btn, .chip, .mini, .modelbtn, .pill select):active:not(:disabled) { scale: .94; transition-duration: var(--t-fast); }
   :is(.mopt, .level, .theme):active, .chat-item:has(.chat-title:active) { scale: .98; transition-duration: var(--t-fast); }
   .send:hover:not(:disabled):not(:active) { scale: 1.05; }
   /* Settings panes and the full-window rich view fade in when they appear */

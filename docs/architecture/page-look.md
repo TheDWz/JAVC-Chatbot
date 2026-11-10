@@ -13,7 +13,10 @@ The translucent layers use `--glass` / `--glass-strong`, `--glass-line`, `--glas
 - **With their own blur:** `header::before`, the composer, the toast, the popovers (`#modelpop`, `#morepop`), the reasoning panel (`#side`), dialogs, and the chat list when it's a phone overlay.
 - **Glass fill without a blur:** the header pills, the attachment chips and a rich reply's expand button. They sit on an already-blurred layer, or a blur would cost GPU time for no visible change. Don't stack blurs.
 - **Prefix:** always write `-webkit-backdrop-filter` beside `backdrop-filter`, because iOS 17 needs it.
-- **Select lists:** native select lists on the desktop take their background from `option`, so `.pill option` and `.input option` stay opaque.
+- **Dropdowns:** every `<select>` uses `appearance: base-select` (Chromium 135+), which turns its list into an in-page glass `::picker(select)`. The `<select>` keeps its value, options, events and keyboard handling, so no script is involved.
+  - `.pill select` sets `appearance: none`, so the rule names it as well. Otherwise the pill opens an empty list.
+  - The pills hide `::picker-icon`, because they draw their own chevron. Dialog selects use a mask-image chevron that flips while the list is open.
+  - iOS and older WebViews ignore the `@supports` block and keep their native picker. For those, `.pill option` and `.input option` stay opaque.
 
 ## The chat scrolls under the header and composer
 
@@ -33,7 +36,7 @@ Everything springs in with a slight overshoot that settles, and eases out faster
 - `--spring` for things appearing.
 - `--ease` for fades and exits.
 - `--sheet` for panels and anything that moves layout, such as the sidebar and the reasoning panel.
-- `--t-fast` (120ms), `--t-mid` (220ms) and `--t-slow` (320ms).
+- `--t-fast` (120ms), `--t-mid` (220ms) and `--t-slow` (320ms), plus `--t-panel` (380ms) for the two side panels and their scrims.
 
 **Showing and hiding.** Popovers (`[hidden]`), dialogs (`showModal` / `close`), the sidebar (`.nohist`), the reasoning block (`.row.open`), the drop overlay and the settings panes still hide with `display: none`. They animate both ways like this:
 - The resting rule lists `display` (and `overlay` for dialogs) in `transition` with `allow-discrete`, so the element stays displayed until its exit transition ends.
