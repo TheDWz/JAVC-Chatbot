@@ -55,6 +55,7 @@
   #history { transition: margin-left var(--t-panel) var(--sheet), translate var(--t-panel) var(--sheet), opacity var(--t-mid) var(--ease), display var(--t-panel) allow-discrete; }
   .app.nohist #history { display: none; margin-left: -256px; opacity: 0; }
   @starting-style { .app:not(.nohist) #history { margin-left: -256px; opacity: 0; } }
+  .app.boot #history, .app.boot #histscrim { transition: none; } /* the state set at launch appears without sliding */
   .hist-head { padding: 10px; }
   .persona-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
   .persona-row .pill { flex: 1; min-width: 0; }
@@ -242,6 +243,7 @@
   /* Popovers grow out of their button and shrink back into it; they're toggled with [hidden], which allow-discrete holds off until the exit ends */
   #modelpop, #morepop { transform-origin: top right;
     transition: opacity var(--t-mid) var(--ease), scale var(--t-mid) var(--spring), translate var(--t-mid) var(--spring), display var(--t-mid) allow-discrete; }
+  /* they stay displayed while they fade out; renderer.js makes them inert then, so Tab can't land in them */
   #modelpop[hidden], #morepop[hidden] { opacity: 0; scale: .95; translate: 0 -4px; pointer-events: none; transition-duration: var(--t-fast); transition-timing-function: var(--ease); }
   @starting-style { #modelpop:not([hidden]), #morepop:not([hidden]) { opacity: 0; scale: .95; translate: 0 -4px; } }
   /* Stats for nerds */
@@ -465,7 +467,7 @@
 </style>
 </head>
 <body>
-<div class="app">
+<div class="app boot">
 <aside id="history" aria-label="Chat history">
   <div class="hist-head"><button class="btn newbtn" id="histnew"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
     <div class="persona-row">
@@ -492,7 +494,7 @@
     <button type="button" class="modelbtn" id="modelbtn" aria-haspopup="listbox" aria-expanded="false"><span id="modellabel">No model selected</span></button>
     <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
     <select id="model" hidden aria-hidden="true" tabindex="-1"><option value="">No model selected</option></select>
-    <div id="modelpop" hidden>
+    <div id="modelpop" hidden inert>
       <input id="modelq" type="search" role="combobox" aria-expanded="false" aria-controls="modellist" aria-autocomplete="list" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false">
       <div id="modellist" role="listbox" aria-label="Models"></div>
       <div class="mcount" id="modelcount"></div>
@@ -502,7 +504,7 @@
   <button class="icon-btn" id="newchat" title="New chat" aria-label="New chat"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
   <div class="morewrap" id="morewrap">
     <button class="icon-btn" id="more" title="More" aria-label="More" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
-    <div id="morepop" role="menu" hidden><button type="button" class="mopt" role="menuitem" id="statsbtn">Stats for nerds</button></div>
+    <div id="morepop" role="menu" hidden inert><button type="button" class="mopt" role="menuitem" id="statsbtn">Stats for nerds</button></div>
   </div>
   <button class="icon-btn" id="gear" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
 </header>

@@ -57,6 +57,7 @@ function applyState(st) {
   $('profile').value = st.activeId; $('profile').disabled = busy || !st.profiles.length;
   applyTheme(st.theme);
   $('persona').replaceChildren(...st.personas.map((p) => new Option(p.name, p.id))); $('persona').value = st.personaId;
+  refreshSel($('profile'), $('persona'));
 }
 // A chat whose persona is missing or was deleted counts as Default.
 const personaIdOf = (c) => (state.personas.some((p) => p.id === c.personaId) ? c.personaId : 'default');
@@ -77,7 +78,7 @@ async function copy(text) {
   const head = document.querySelector('header'), foot = document.querySelector('footer'), bars = new ResizeObserver(() => {
     $('scroll').style.setProperty('--head-h', head.offsetHeight + 'px'); $('scroll').style.setProperty('--foot-h', foot.offsetHeight + 'px');
   });
-  bars.observe(head); bars.observe(foot);
+  bars.observe(head, { box: 'border-box' }); bars.observe(foot, { box: 'border-box' }); // the header's padding holds the status-bar inset
 }
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
 // Animations started from script; the CSS reduced-motion rule doesn't reach these, so they check it themselves.
@@ -431,8 +432,8 @@ $('reasonpop').addEventListener('beforetoggle', (e) => {
 $('reasonpop').addEventListener('toggle', () => { if ($('reasonpop').matches(':popover-open')) /** @type {HTMLElement|null} */ ($('levels').querySelector('[aria-checked="true"]'))?.focus(); });
 
 // ---- ⋯ menu and Stats for nerds (read from the stats saved on each reply) ----
-const closeMore = () => { $('morepop').hidden = true; $('more').setAttribute('aria-expanded', 'false'); };
-$('more').onclick = () => { const open = $('morepop').hidden; $('morepop').hidden = !open; $('more').setAttribute('aria-expanded', String(open)); if (open) $('statsbtn').focus(); };
+const closeMore = () => { $('morepop').hidden = $('morepop').inert = true; $('more').setAttribute('aria-expanded', 'false'); };
+$('more').onclick = () => { const open = $('morepop').hidden; $('morepop').hidden = $('morepop').inert = !open; $('more').setAttribute('aria-expanded', String(open)); if (open) $('statsbtn').focus(); };
 $('morewrap').onkeydown = (e) => { if (e.key === 'Escape' && !$('morepop').hidden) { e.stopPropagation(); closeMore(); $('more').focus(); } };
 document.addEventListener('mousedown', (e) => { if (!$('morepop').hidden && !$('morewrap').contains(e.target)) closeMore(); });
 $('statsbtn').onclick = () => { closeMore(); openStats(); };
@@ -489,7 +490,7 @@ function renderStats() {
 function openStats() {
   const { models } = Lib.chatStats(chat), sel = $('statsmodel'), keep = sel.value;
   sel.replaceChildren(new Option('All models', ''), ...models.map((m) => new Option(m, m)));
-  sel.value = models.includes(keep) ? keep : '';
+  sel.value = models.includes(keep) ? keep : ''; refreshSel(sel);
   $('statsfilter').hidden = models.length < 2; // the filter only matters once the chat has used more than one model
   try { $('statschart').checked = localStorage.getItem('statsChart') === '1'; } catch {}
   renderStats(); $('statsdlg').showModal();
@@ -501,12 +502,12 @@ $('statschart').onchange = () => { try { localStorage.setItem('statsChart', $('s
 let modelHi = 0, modelShown = [];
 const MODEL_CAP = 200; // rendering hundreds of rows on every keystroke is slow; the count line tells the user to keep typing
 function renderModelBtn() { $('modellabel').textContent = $('model').selectedOptions[0]?.text || 'No model selected'; }
-function closeModelPop() { $('modelpop').hidden = true; $('modelbtn').setAttribute('aria-expanded', 'false'); $('modelq').setAttribute('aria-expanded', 'false'); $('modelq').removeAttribute('aria-activedescendant'); }
+function closeModelPop() { $('modelpop').hidden = $('modelpop').inert = true; $('modelbtn').setAttribute('aria-expanded', 'false'); $('modelq').setAttribute('aria-expanded', 'false'); $('modelq').removeAttribute('aria-activedescendant'); }
 /** Opens the model picker (or the new-profile dialog when there is no profile yet); on phones it spans the screen under the pill. */
 function openModelPop() {
   if (!state.activeId) return openProfileDialog(true);
   if (narrow()) $('modelpop').style.setProperty('--pop-top', $('modelpill').getBoundingClientRect().bottom + 8 + 'px'); // phones: full-width, under the pill
-  $('modelpop').hidden = false; $('modelbtn').setAttribute('aria-expanded', 'true'); $('modelq').setAttribute('aria-expanded', 'true'); $('modelq').value = ''; filterModels(); $('modelq').focus();
+  $('modelpop').hidden = $('modelpop').inert = false; $('modelbtn').setAttribute('aria-expanded', 'true'); $('modelq').setAttribute('aria-expanded', 'true'); $('modelq').value = ''; filterModels(); $('modelq').focus();
 }
 function setHi(i) {
   const rows = $('modellist').querySelectorAll('.mopt'); if (!rows.length) return;
@@ -552,7 +553,11 @@ function placePop(pop, btn, cap = 320) {
   Object.assign(pop.style, { left: r.left + 'px', top: (up ? r.top - 6 : r.bottom + 6) + 'px', minWidth: r.width + 'px', maxWidth: innerWidth - r.left - 8 + 'px', maxHeight: Math.min(cap, up ? above : below) + 'px' });
 }
 // ---- Every other <select> opens the same glass list as the model picker. Each stays hidden as the source of truth: code still sets its options, value and disabled. ----
-const selectValue = /** @type {any} */ (Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value'));
+/** @type {Map<HTMLSelectElement, () => void>} */
+const selSync = new Map();
+/** Shows a select's value on its button. Setting `.value` fires no event, so call this after, as renderModelBtn is for the model; options and disabled are watched.
+ * @param {...HTMLSelectElement} sels */
+const refreshSel = (...sels) => { for (const s of sels) selSync.get(s)?.(); };
 /** @param {HTMLSelectElement} sel */
 function glassSelect(sel) {
   const btn = el('button', sel.closest('.pill') ? 'modelbtn selbtn' : 'selbtn'), label = el('span'), pop = el('div', 'selpop');
@@ -560,35 +565,39 @@ function glassSelect(sel) {
   btn.type = 'button'; btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false'); btn.append(label); btn.popoverTargetElement = pop;
   pop.popover = 'auto'; pop.setAttribute('role', 'listbox'); pop.setAttribute('aria-label', name);
   const sync = () => { label.textContent = sel.selectedOptions[0]?.text ?? ''; btn.disabled = sel.disabled; btn.setAttribute('aria-label', `${name}: ${label.textContent}`); };
-  // .value = fires no event or mutation, so the button would go stale; options and disabled are caught by the observer
-  Object.defineProperty(sel, 'value', { get() { return selectValue.get.call(this); }, set(v) { selectValue.set.call(this, v); sync(); } });
+  selSync.set(sel, sync);
   new MutationObserver(sync).observe(sel, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled'] });
   pop.addEventListener('beforetoggle', (e) => {
     const open = /** @type {ToggleEvent} */ (e).newState === 'open'; btn.setAttribute('aria-expanded', String(open)); if (!open) return;
     pop.replaceChildren(...[...sel.options].map((o) => {
       const b = el('button', 'mopt' + (o.selected ? ' cur' : ''), o.text); b.type = 'button'; b.setAttribute('role', 'option'); b.setAttribute('aria-selected', String(o.selected)); b.disabled = o.disabled;
       if (o.selected) b.append(svg(['M5 12l5 5L20 7']));
-      b.onclick = () => { pop.hidePopover(); btn.focus(); if (sel.value !== o.value) { sel.value = o.value; for (const t of ['input', 'change']) sel.dispatchEvent(new Event(t, { bubbles: true })); } };
+      b.onclick = () => { pop.hidePopover(); btn.focus(); if (sel.value !== o.value) { sel.value = o.value; sync(); for (const t of ['input', 'change']) sel.dispatchEvent(new Event(t, { bubbles: true })); } };
       return b;
     }));
     placePop(pop, btn);
   });
-  pop.addEventListener('toggle', () => { if (pop.matches(':popover-open')) /** @type {HTMLElement|null} */ (pop.querySelector('.mopt.cur') || pop.querySelector('.mopt'))?.focus(); });
+  pop.addEventListener('toggle', () => { if (pop.matches(':popover-open')) /** @type {HTMLElement|null} */ (pop.querySelector('.mopt.cur:not(:disabled)') || pop.querySelector('.mopt:not(:disabled)'))?.focus(); });
   pop.onkeydown = (e) => {
     const rows = [...pop.querySelectorAll('.mopt:not(:disabled)')], i = rows.indexOf(/** @type {Element} */ (document.activeElement));
-    const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: rows.length - 1 }[e.key];
+    const to = { ArrowDown: i + 1, ArrowUp: i < 0 ? -1 : i - 1, Home: 0, End: rows.length - 1 }[e.key]; // from no row, Up goes to the last
     if (to !== undefined) { e.preventDefault(); /** @type {HTMLElement|undefined} */ (rows[(to + rows.length) % rows.length])?.focus(); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pop.hidePopover(); btn.focus(); } // only the list, not the dialog it's in
   };
   btn.onkeydown = (e) => { if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !pop.matches(':popover-open')) { e.preventDefault(); pop.showPopover(); } };
-  sel.hidden = true; sel.setAttribute('aria-hidden', 'true'); sel.tabIndex = -1; sel.before(btn); sel.after(pop); sync();
+  sel.hidden = true; sel.setAttribute('aria-hidden', 'true'); sel.tabIndex = -1; sel.before(btn); (sel.closest('label') || sel).after(pop); sync(); // outside a <label>, whose clicks would reach the button and toggle the list
 }
 document.querySelectorAll('select:not(#model)').forEach((s) => glassSelect(/** @type {HTMLSelectElement} */ (s)));
-const openSelPop = () => /** @type {HTMLElement|null} */ (document.querySelector('.selpop:popover-open'));
-const closeSelPop = () => { const p = openSelPop(); p?.hidePopover(); return !!p; };
+/** @type {HTMLElement|null} */
+let shownPop = null; // the open .selpop, kept here so the scroll handler below costs nothing while none is open
+document.addEventListener('beforetoggle', (e) => {
+  const t = /** @type {HTMLElement} */ (e.target); if (!t.classList?.contains('selpop')) return;
+  if (/** @type {ToggleEvent} */ (e).newState === 'open') shownPop = t; else if (shownPop === t) shownPop = null;
+}, true); // beforetoggle doesn't bubble, so listen while it's captured
+const closeSelPop = () => { const p = shownPop; p?.hidePopover(); return !!p; };
 // a fixed list would drift off its field: close it when something around it scrolls (not the chat streaming elsewhere), follow it on resize (the phone keyboard)
-document.addEventListener('scroll', (e) => { const p = openSelPop(); if (p && e.target !== p && e.target instanceof Node && e.target.contains(p)) p.hidePopover(); }, true);
-addEventListener('resize', () => { const p = openSelPop(), b = p && popBtn.get(p); if (b) placePop(p, ...b); });
+document.addEventListener('scroll', (e) => { const p = shownPop; if (p && e.target !== p && e.target instanceof Node && e.target.contains(p)) p.hidePopover(); }, true);
+addEventListener('resize', () => { const p = shownPop, b = p && popBtn.get(p); if (b) placePop(p, ...b); });
 
 function setModels(infos) {
   modelInfo = Object.fromEntries(infos.map((m) => [m.id, m]));
@@ -754,9 +763,8 @@ function renderChat() {
     let k = 0;
     addUser(m.text || '', (m.files || []).map((f) => (f.kind === 'image' ? { ...f, url: urls[k++] } : f)), m);
   }
-  // A whole chat at once: skip each row's own entrance and fade the log in once instead
+  // A whole chat at once: skip each row's own entrance (openChat fades the log in once instead)
   for (const a of $('log').getAnimations({ subtree: true })) if (a.animationName?.startsWith('rise')) a.finish(); // not the endless ones: finish() throws on those
-  fade($('log'), 0, 160);
 }
 function startNew() {
   if (busy) return;
@@ -766,7 +774,7 @@ function startNew() {
 async function openChat(id) {
   if (busy || id === chat.id) return;
   try { chat = await window.api.loadChat(id); } catch (e) { return showError('Could not open chat: ' + cleanErr(e)); }
-  renderChat(); refreshPersonaUi(); renderList(); focusInput();
+  renderChat(); fade($('log'), 0, 160); refreshPersonaUi(); renderList(); focusInput();
   if (narrow()) applyHist(false);
 }
 
@@ -806,6 +814,9 @@ function renderList() {
 const narrow = () => matchMedia('(max-width: 720px)').matches;
 const applyHist = (open) => document.querySelector('.app').classList.toggle('nohist', !open);
 function savedHist() { try { return localStorage.getItem('hist') !== '0'; } catch { return true; } }
+// Set before settings load, with .boot (in the markup) holding the slide off until it has painted, so launch doesn't animate the list in and out
+applyHist(narrow() ? false : savedHist());
+requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector('.app').classList.remove('boot')));
 $('histbtn').onclick = () => {
   const open = document.querySelector('.app').classList.contains('nohist'); applyHist(open);
   try { localStorage.setItem('hist', open ? '1' : '0'); } catch {}
@@ -880,7 +891,7 @@ function openDup(c) {
   dupSource = c; $('duperr').hidden = true;
   $('dupsub').textContent = `Copy “${c.title || 'New chat'}” into:`;
   $('dupsel').replaceChildren(...state.personas.map((p) => new Option(p.name, p.id)));
-  $('dupsel').value = state.personas.find((p) => p.id !== personaIdOf(c))?.id ?? personaIdOf(c);
+  $('dupsel').value = state.personas.find((p) => p.id !== personaIdOf(c))?.id ?? personaIdOf(c); refreshSel($('dupsel'));
   $('dupdlg').showModal();
 }
 $('dupcancel').onclick = () => $('dupdlg').close();
@@ -901,7 +912,7 @@ async function openProfileDialog(isNew, id = state.activeId) {
   $('templates').hidden = !isNew; $('pdelete').hidden = isNew;
   clearTimeout(delTimer); $('pdelete').textContent = 'Delete profile'; $('perr').hidden = true;
   const p = isNew ? { name: '', endpoint: '', format: 'auto' } : state.profiles.find((x) => x.id === editingId);
-  $('pname').value = p.name; $('endpoint').value = p.endpoint; $('format').value = p.format || 'auto'; $('key').type = 'password';
+  $('pname').value = p.name; $('endpoint').value = p.endpoint; $('format').value = p.format || 'auto'; refreshSel($('format')); $('key').type = 'password';
   keyDirty = false;
   try { $('key').value = isNew ? '' : await window.api.getProfileKey(editingId); }
   catch (e) { $('key').value = ''; $('perr').textContent = cleanErr(e); $('perr').hidden = false; } // saving without typing a key keeps the stored one
@@ -1150,7 +1161,7 @@ window.api.onToolApproval?.((/** @type {{server: string, tool: string, args: obj
 /** Fills a picker with `s` ({profileId, model}) chosen. Errors go to `err`, since toasts sit under the modal dialog. */
 function fillSumPicker(prof, model, s, err) {
   prof.replaceChildren(new Option('Chat model', ''), ...state.profiles.map((p) => new Option(p.name, p.id)));
-  prof.value = state.profiles.some((p) => p.id === s.profileId) ? s.profileId : '';
+  prof.value = state.profiles.some((p) => p.id === s.profileId) ? s.profileId : ''; refreshSel(prof);
   return fillSumModels(prof, model, prof.value ? s.model : '', err);
 }
 /** Lists the chosen profile's models, with `want` selected; a saved model the profile no longer lists stays, marked, as in the main picker. */
@@ -1164,7 +1175,7 @@ async function fillSumModels(prof, model, want, err) {
   if (prof.value !== pid || model.dataset.seq !== seq) return; // another profile or a newer load came along meanwhile
   model.replaceChildren(new Option("The profile's chat model", ''), ...ids.map((id) => new Option(id, id)));
   if (want && !ids.includes(want)) model.add(new Option(`${want} (not in list)`, want), 1);
-  model.value = want; model.disabled = false;
+  model.value = want; model.disabled = false; refreshSel(model);
 }
 
 function syncContextLimit() {
@@ -1197,7 +1208,6 @@ $('ctxtokens').onchange = () => {
   if (settings.model) $('model').replaceChildren(new Option(settings.model, settings.model));
   renderModelBtn();
   showEmpty(); renderLevels();
-  applyHist(narrow() ? false : savedHist());
   refreshList().catch((e) => showError('Could not load chats: ' + cleanErr(e)));
   if (!state.activeId) { openProfileDialog(true); if (first.notice) { $('perr').textContent = first.notice; $('perr').hidden = false; } } // toasts sit under the modal dialog
   else { focusInput(); if (first.notice) showError(first.notice); }
