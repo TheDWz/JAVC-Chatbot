@@ -13,11 +13,10 @@ The translucent layers use `--glass` / `--glass-strong`, `--glass-line`, `--glas
 - **With their own blur:** `header::before`, the composer, the toast, the popovers (`#modelpop`, `#morepop`), the reasoning panel (`#side`), dialogs, and the chat list when it's a phone overlay.
 - **Glass fill without a blur:** the header pills, the attachment chips and a rich reply's expand button. They sit on an already-blurred layer, or a blur would cost GPU time for no visible change. Don't stack blurs.
 - **Prefix:** always write `-webkit-backdrop-filter` beside `backdrop-filter`, because iOS 17 needs it.
-- **Dropdowns:** every `<select>` uses `appearance: base-select` (Chromium 135+), which turns its list into an in-page glass `::picker(select)`. The `<select>` keeps its value, options, events and keyboard handling, so no script is involved.
-  - `.pill select` sets `appearance: none`, so the rule names it as well. Otherwise the pill opens an empty list.
-  - Selects stay on one line (`white-space: nowrap`) and are clipped at their content box. A stylable select would otherwise wrap a long name, and its built-in text can't take an ellipsis.
-  - Because of that clip, `::picker-icon` is hidden everywhere. The pills draw their own chevron, and `.input` fields draw a mask-image chevron on `::after` that flips while the list is open.
-  - iOS and older WebViews ignore the `@supports` block and keep their native picker. For those, `.pill option` and `.input option` stay opaque.
+- **Dropdowns:** every `<select>` except the model's goes through `glassSelect` in `renderer.js`, so all dropdowns share the model picker's look (`.modelbtn` on the pills, `.mopt` rows). It works the same on every platform, iOS included.
+  - The `<select>` stays, hidden, as the source of truth. Code still sets its options, `.value` and `disabled`, and listens for `change`. A `MutationObserver` and a per-select `value` setter keep the visible `.selbtn` label in step, because setting `.value` fires no event.
+  - The list is a `popover` (`.selpop`), so it sits in the top layer and a dialog can't clip it. It also stays a child of the dialog, so it isn't made inert. It's positioned from the button's rect, opens upward when there's more room above, follows its field on resize (the phone keyboard), and closes when something around it scrolls. A pick fires bubbling `input` and `change` events, like a real select. Escape and `closeTopLayer()` close the list before the dialog.
+  - The pills are `<div>`s, not `<label>`s, and `-webkit-tap-highlight-color` is transparent on `:root`, so Android doesn't flash a highlight box when one is tapped.
 
 ## The chat scrolls under the header and composer
 

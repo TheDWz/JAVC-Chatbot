@@ -541,6 +541,52 @@ $('modelq').onkeydown = (e) => {
 };
 document.addEventListener('mousedown', (e) => { if (!$('modelpop').hidden && !$('modelpill').contains(e.target)) closeModelPop(); });
 
+/** Fixed, from its button's rect: the list is in the top layer, so a dialog can't clip it. It opens upward when there's more room above. @param {HTMLElement} pop */
+function placeSelPop(pop) {
+  const r = /** @type {HTMLElement} */ (pop.previousElementSibling.previousElementSibling).getBoundingClientRect(); // button, hidden select, list
+  const below = innerHeight - r.bottom - 14, above = r.top - 14, up = below < 200 && above > below;
+  pop.classList.toggle('up', up);
+  Object.assign(pop.style, { left: r.left + 'px', top: (up ? r.top - 6 : r.bottom + 6) + 'px', minWidth: r.width + 'px', maxWidth: innerWidth - r.left - 8 + 'px', maxHeight: Math.min(320, up ? above : below) + 'px' });
+}
+// ---- Every other <select> opens the same glass list as the model picker. Each stays hidden as the source of truth: code still sets its options, value and disabled. ----
+const selectValue = /** @type {any} */ (Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value'));
+/** @param {HTMLSelectElement} sel */
+function glassSelect(sel) {
+  const btn = el('button', sel.closest('.pill') ? 'modelbtn selbtn' : 'selbtn'), label = el('span'), pop = el('div', 'selpop');
+  const name = sel.getAttribute('aria-label') || sel.closest('label')?.firstChild?.textContent?.trim() || '';
+  btn.type = 'button'; btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false'); btn.append(label); btn.popoverTargetElement = pop;
+  pop.popover = 'auto'; pop.setAttribute('role', 'listbox'); pop.setAttribute('aria-label', name);
+  const sync = () => { label.textContent = sel.selectedOptions[0]?.text ?? ''; btn.disabled = sel.disabled; btn.setAttribute('aria-label', `${name}: ${label.textContent}`); };
+  // .value = fires no event or mutation, so the button would go stale; options and disabled are caught by the observer
+  Object.defineProperty(sel, 'value', { get() { return selectValue.get.call(this); }, set(v) { selectValue.set.call(this, v); sync(); } });
+  new MutationObserver(sync).observe(sel, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled'] });
+  pop.addEventListener('beforetoggle', (e) => {
+    const open = /** @type {ToggleEvent} */ (e).newState === 'open'; btn.setAttribute('aria-expanded', String(open)); if (!open) return;
+    pop.replaceChildren(...[...sel.options].map((o) => {
+      const b = el('button', 'mopt' + (o.selected ? ' cur' : ''), o.text); b.type = 'button'; b.setAttribute('role', 'option'); b.setAttribute('aria-selected', String(o.selected)); b.disabled = o.disabled;
+      if (o.selected) b.append(svg(['M5 12l5 5L20 7']));
+      b.onclick = () => { pop.hidePopover(); btn.focus(); if (sel.value !== o.value) { sel.value = o.value; for (const t of ['input', 'change']) sel.dispatchEvent(new Event(t, { bubbles: true })); } };
+      return b;
+    }));
+    placeSelPop(pop);
+  });
+  pop.addEventListener('toggle', () => { if (pop.matches(':popover-open')) /** @type {HTMLElement|null} */ (pop.querySelector('.mopt.cur') || pop.querySelector('.mopt'))?.focus(); });
+  pop.onkeydown = (e) => {
+    const rows = [...pop.querySelectorAll('.mopt:not(:disabled)')], i = rows.indexOf(/** @type {Element} */ (document.activeElement));
+    const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: rows.length - 1 }[e.key];
+    if (to !== undefined) { e.preventDefault(); /** @type {HTMLElement|undefined} */ (rows[(to + rows.length) % rows.length])?.focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pop.hidePopover(); btn.focus(); } // only the list, not the dialog it's in
+  };
+  btn.onkeydown = (e) => { if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !pop.matches(':popover-open')) { e.preventDefault(); pop.showPopover(); } };
+  sel.hidden = true; sel.setAttribute('aria-hidden', 'true'); sel.tabIndex = -1; sel.before(btn); sel.after(pop); sync();
+}
+document.querySelectorAll('select:not(#model)').forEach((s) => glassSelect(/** @type {HTMLSelectElement} */ (s)));
+const openSelPop = () => /** @type {HTMLElement|null} */ (document.querySelector('.selpop:popover-open'));
+const closeSelPop = () => { const p = openSelPop(); p?.hidePopover(); return !!p; };
+// a fixed list would drift off its field: close it when something around it scrolls (not the chat streaming elsewhere), follow it on resize (the phone keyboard)
+document.addEventListener('scroll', (e) => { const p = openSelPop(); if (p && e.target !== p && e.target instanceof Node && e.target.contains(p)) p.hidePopover(); }, true);
+addEventListener('resize', () => { const p = openSelPop(); if (p) placeSelPop(p); });
+
 function setModels(infos) {
   modelInfo = Object.fromEntries(infos.map((m) => [m.id, m]));
   const ids = infos.map((m) => m.id), saved = settings.model, sel = $('model');
@@ -766,6 +812,7 @@ $('histscrim').onclick = () => applyHist(false); // narrow screens: tapping besi
 /** The Android back button: closes whatever is on top. Returns false when nothing was open. */
 /* exported closeTopLayer */
 function closeTopLayer() {
+  if (closeSelPop()) return true;
   const rich = /** @type {HTMLElement|null} */ (document.querySelector('.richview')); if (rich) { /** @type {HTMLElement|null} */ (rich.querySelector('.richview-bar .btn'))?.click(); return true; }
   // Settings is the only dialog that opens another (the profile editor) on top of itself, so close any other one first.
   const open = [.../** @type {NodeListOf<HTMLDialogElement>} */ (document.querySelectorAll('dialog[open]'))], dlg = open.find((d) => d.id !== 'prefs') || open[0];
