@@ -61,8 +61,10 @@ function finishState(state, raw) {
   const allow = Object.fromEntries(Object.entries(m.allow && typeof m.allow === 'object' ? m.allow : {}).filter(([, v]) => Array.isArray(v)).map(([k, v]) => [k, v.filter((t) => typeof t === 'string')]));
   const auth = Object.fromEntries(Object.entries(m.auth && typeof m.auth === 'object' ? m.auth : {}).filter(([, v]) => v && typeof v === 'object' && hasKey(v)).map(([k, v]) => [k, keyOf(v)]));
   const mcp = { enabled: m.enabled === true, ...keyOf(m), names: Array.isArray(m.names) ? m.names.filter((n) => typeof n === 'string') : [], allow, auth };
+  // Aurora was the default before the gradient switch existed; a theme saved without `gradient` is from then, so it moves to the new default once.
+  const oldDefault = raw?.theme?.id === 'aurora' && !('gradient' in raw.theme);
   const summarizer = cleanSummarizer(raw?.summarizer) || { profileId: '', model: '' }, contextLimit = cleanContextLimit(raw?.contextLimit) || { on: false, tokens: Lib.DEFAULT_CTX };
-  return { ...state, search, mcp, summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(raw?.theme) || { id: 'aurora' } };
+  return { ...state, search, mcp, summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(oldDefault ? null : raw?.theme) || { id: 'indigo', gradient: false } };
 }
 
 const newId = () => 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);

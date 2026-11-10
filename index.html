@@ -13,7 +13,7 @@
     --bg: light-dark(#f6f6f9, #0f1014); --surface: light-dark(#fff, #17181e); --surface-2: light-dark(#f0f0f5, #1f2129);
     --line: light-dark(#e2e3ea, #2a2c36); --line-soft: light-dark(#ececf2, #22242c);
     --text: light-dark(#1a1b22, #ecedf2); --muted: light-dark(#666a78, #8d91a0); --faint: light-dark(#9a9daa, #5d6170);
-    --a1: #8b5cf6; --a2: #3b82f6; --grad: linear-gradient(135deg, var(--a1), var(--a2));
+    --a1: #4f46e5; --a2: #4f46e5; --grad: linear-gradient(135deg, var(--a1), var(--a2));
     --err: light-dark(#dc2626, #f87171); --err-bg: light-dark(rgb(220 38 38 / .06), rgb(248 113 113 / .08));
     --err-line: light-dark(rgb(220 38 38 / .25), rgb(248 113 113 / .3));
     --code-bg: light-dark(#f3f3f7, #0b0c10); --shadow: 0 10px 30px light-dark(rgb(20 20 40 / .08), rgb(0 0 0 / .35));
@@ -511,12 +511,13 @@
       <button type="button" class="icon-btn prefs-close" id="prefsclose" title="Close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
       <section role="tabpanel" id="pane-appearance" aria-labelledby="tab-appearance" tabindex="0">
         <h3>Theme</h3>
-        <p class="sub">Accent colors for buttons, bubbles and highlights. Light or dark follows your system.</p>
+        <p class="sub">The accent color for buttons, bubbles and highlights. Light or dark follows your system.</p>
         <div id="themegrid" class="themegrid" role="radiogroup" aria-label="Theme"></div>
+        <label class="opt"><input type="checkbox" class="sw" id="gradon"><span>Gradient<small>Blend the accent into a second color.</small></span></label>
         <h3>Custom colors</h3>
         <div class="customrow">
-          <label>From <input type="color" id="c1" aria-label="Gradient start color"></label>
-          <label>To <input type="color" id="c2" aria-label="Gradient end color"></label>
+          <label>Color <input type="color" id="c1" aria-label="Custom color"></label>
+          <label id="c2wrap">To <input type="color" id="c2" aria-label="Gradient end color"></label>
         </div>
         <p class="sub">Very light colors can make white text hard to read.</p>
       </section>

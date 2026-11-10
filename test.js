@@ -502,23 +502,35 @@ test('render setting: all on by default, old rich:false migrates, only booleans 
   fs.rmSync(dir, { recursive: true });
 });
 
-test('theme setting: Aurora by default; presets and valid custom colors accepted, anything else ignored', async () => {
-  assert.deepStrictEqual(profiles.migrate({}).theme, { id: 'aurora' });
+test('theme setting: solid Indigo by default; presets and valid custom colors accepted, anything else ignored', async () => {
+  assert.deepStrictEqual(profiles.migrate({}).theme, { id: 'indigo', gradient: false });
   const { dir, file, store } = tmpStore();
   assert.strictEqual((await store.patch({ theme: { id: 'sunset' } })).theme.id, 'sunset');
   assert.strictEqual((await store.patch({ theme: { id: 'nope' } })).theme.id, 'sunset');
   assert.strictEqual((await store.patch({ theme: { id: 'custom', a1: 'red', a2: '#123456' } })).theme.id, 'sunset');
   assert.strictEqual((await store.patch({ theme: { id: 'custom', a1: '#ABCDEF', a2: '#123456', evil: '<x>' } })).theme.id, 'custom');
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).theme, { id: 'custom', a1: '#abcdef', a2: '#123456' });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).theme, { id: 'custom', a1: '#abcdef', a2: '#123456', gradient: false });
   fs.writeFileSync(file, JSON.stringify({ version: 2, profiles: [], theme: { id: 'custom', a1: 'url(javascript:1)', a2: '#fff' } }));
-  assert.deepStrictEqual((await store.get()).theme, { id: 'aurora' }); // a damaged theme falls back instead of reaching the CSS
+  assert.deepStrictEqual((await store.get()).theme, { id: 'indigo', gradient: false }); // a damaged theme falls back instead of reaching the CSS
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('theme gradient: only true turns it on, it survives a preset change, and old Aurora saves move to the default once', async () => {
+  const { dir, file, store } = tmpStore();
+  assert.deepStrictEqual((await store.patch({ theme: { id: 'ocean', gradient: true } })).theme, { id: 'ocean', gradient: true });
+  assert.deepStrictEqual((await store.patch({ theme: { id: 'rose', gradient: true } })).theme, { id: 'rose', gradient: true });
+  assert.deepStrictEqual((await store.patch({ theme: { id: 'rose', gradient: 'yes' } })).theme, { id: 'rose', gradient: false });
+  fs.writeFileSync(file, JSON.stringify({ version: 2, profiles: [], theme: { id: 'aurora' } })); // saved before the switch existed
+  assert.deepStrictEqual((await store.get()).theme, { id: 'indigo', gradient: false });
+  assert.deepStrictEqual((await store.patch({ theme: { id: 'aurora', gradient: false } })).theme, { id: 'aurora', gradient: false });
+  assert.deepStrictEqual((await store.get()).theme, { id: 'aurora', gradient: false }); // picked again after the move, so it sticks
   fs.rmSync(dir, { recursive: true });
 });
 
 test('every preset theme keeps white text at least as readable as the weakest end of Aurora (3.68:1)', () => {
   const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
   const contrastWhite = (h) => 1.05 / (lum(h) + .05);
-  const floor = Math.min(...[Lib.THEMES[0].a1, Lib.THEMES[0].a2].map(contrastWhite));
+  const aurora = Lib.THEMES.find((t) => t.id === 'aurora'), floor = Math.min(contrastWhite(aurora.a1), contrastWhite(aurora.a2));
   for (const t of Lib.THEMES) for (const c of [t.a1, t.a2]) assert.ok(contrastWhite(c) >= floor, `${t.name} ${c} contrast ${contrastWhite(c).toFixed(2)} < ${floor.toFixed(2)}`);
 });
 
