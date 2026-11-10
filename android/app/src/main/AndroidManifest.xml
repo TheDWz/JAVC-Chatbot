@@ -25,12 +25,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- MCP sign-in: the browser comes back to io.github.thedwz.javcchatbot:/oauth (a reverse-domain scheme, as OAuth asks of apps) -->
+            <!-- MCP sign-in: the browser comes back to io.github.thedwz.javcchatbot:/oauth (a reverse-domain scheme, as OAuth asks of apps).
+                 This matches the whole scheme (a path needs a host to count); mobile/main.js checks the address. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="io.github.thedwz.javcchatbot" android:path="/oauth" />
+                <data android:scheme="io.github.thedwz.javcchatbot" />
             </intent-filter>
 
         </activity>

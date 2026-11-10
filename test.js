@@ -1409,7 +1409,8 @@ const oauthWorld = (o = {}) => {
   const f = async (url, opt = {}) => {
     const u = new URL(url), h = opt.headers || {};
     if (u.href === base + '/mcp') {
-      if (!seen.valid || h.Authorization !== 'Bearer ' + seen.valid) return new Response('no', { status: 401, headers: { 'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp", scope="read"` } });
+      const authz = Object.entries(h).filter(([k]) => k.toLowerCase() === 'authorization').map(([, v]) => v).join(', '); // as fetch joins them
+      if (!seen.valid || authz !== 'Bearer ' + seen.valid) return new Response('no', { status: 401, headers: { 'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp", scope="read"` } });
       const m = JSON.parse(opt.body);
       if (m.id === undefined) return new Response(null, { status: 202 });
       return json(200, { jsonrpc: '2.0', id: m.id, result: m.method === 'initialize' ? { protocolVersion: '2025-11-25', capabilities: {} }
@@ -1417,7 +1418,7 @@ const oauthWorld = (o = {}) => {
     }
     if (u.href === base + '/.well-known/oauth-protected-resource/mcp') return json(200, { resource: o.resource || base + '/mcp', authorization_servers: [as], scopes_supported: ['ignored'] });
     if (u.href === 'https://auth.example/.well-known/oauth-authorization-server/tenant') {
-      return json(200, { issuer: as, authorization_endpoint: as + '/authorize', token_endpoint: as + '/token', ...(!o.noRegistration && { registration_endpoint: as + '/register' }),
+      return json(200, { issuer: o.issuer || as, authorization_endpoint: as + '/authorize', token_endpoint: o.httpToken ? 'http://auth.example/token' : as + '/token', ...(!o.noRegistration && { registration_endpoint: as + '/register' }),
         code_challenge_methods_supported: o.noS256 ? ['plain'] : ['S256'], authorization_response_iss_parameter_supported: true });
     }
     if (u.href === as + '/register') { const b = JSON.parse(opt.body); seen.regs.push(b); return json(201, { client_id: 'cid-' + seen.regs.length, ...b }); }
@@ -1426,9 +1427,13 @@ const oauthWorld = (o = {}) => {
       if (b.grant_type === 'authorization_code') {
         const challenge = nodeCrypto.createHash('sha256').update(b.code_verifier || '').digest('base64url');
         if (b.code !== 'the-code' || b.client_id !== codeFor.clientId || b.redirect_uri !== codeFor.redirect || b.resource !== (o.resource || base + '/mcp') || challenge !== codeFor.challenge) return json(400, { error: 'invalid_grant', error_description: 'bad exchange' });
-      } else if (o.refuseRefresh || b.refresh_token !== 'r' + issued || b.resource !== (o.resource || base + '/mcp')) return json(400, { error: 'invalid_grant' });
+      } else {
+        if (o.refreshGate) await o.refreshGate;
+        if (o.refreshDown) throw new TypeError('fetch failed');
+        if (o.refuseRefresh || b.refresh_token !== 'r' + issued || b.resource !== (o.resource || base + '/mcp')) return json(400, { error: 'invalid_grant' });
+      }
       issued++; seen.valid = 'a' + issued;
-      return json(200, { access_token: 'a' + issued, refresh_token: 'r' + issued, expires_in: 3600, token_type: 'Bearer' });
+      return json(200, { access_token: 'a' + issued, refresh_token: 'r' + issued, expires_in: o.expiresIn ?? 3600, token_type: 'Bearer' });
     }
     return new Response('not found', { status: 404 });
   };
@@ -1470,7 +1475,7 @@ test('mcp sign-in: an expired or refused token is refreshed once; a refused refr
   const set = await w.hub.tools();
   w.seen.valid = 'revoked'; // the server stops taking a1: refreshed on the 401, and the call is sent again
   assert.strictEqual(await set.run('mcp__rh__quote', {}), 'quoted with a2');
-  w.mem.rh.expiresAt = Date.now() - 1; // expired: refreshed before it's sent
+  Object.assign(w.mem.rh, { expiresAt: Date.now() - 1, refreshAt: Date.now() - 1 }); // expired: refreshed before it's sent
   assert.strictEqual(await set.run('mcp__rh__quote', {}), 'quoted with a3');
   assert.deepStrictEqual(w.seen.tokens.slice(1).map((t) => [t.grant_type, t.refresh_token, t.client_id, t.resource]),
     [['refresh_token', 'r1', 'cid-1', 'https://srv.example/mcp'], ['refresh_token', 'r2', 'cid-1', 'https://srv.example/mcp']]);
@@ -1492,6 +1497,8 @@ test('mcp sign-in: answers that do not match, other servers, no PKCE and refusal
     [{ resource: 'https://other.example/mcp' }, /are for https:\/\/other\.example\/mcp, not https:\/\/srv\.example\/mcp/],
     [{ resource: 'https://srv.example/mc' }, /are for https:\/\/srv\.example\/mc,/], // a sibling path, not a parent
     [{ noRegistration: true }, /doesn't let new apps register/],
+    [{ httpToken: true }, /token endpoint isn't on https/],
+    [{ issuer: 'https://evil.example' }, /details are for https:\/\/evil\.example, not https:\/\/auth\.example\/tenant/], // RFC 8414
   ];
   for (const [opts, err] of cases) {
     const w = oauthWorld(opts);
@@ -1503,6 +1510,48 @@ test('mcp sign-in: answers that do not match, other servers, no PKCE and refusal
   assert.strictEqual(parent.seen.auth.resource, 'https://srv.example/');
   const slow = oauthWorld(); // the browser never comes back
   await assert.rejects(Mcp.signIn({ url: slow.base + '/mcp', headers: {} }, { fetchFn: slow.f, openUrl: () => {}, listen: slow.ways.listen, timeoutMs: 10 }), /Sign-in timed out/);
+});
+
+test('mcp sign-in: the 401 hint is reused, the sign-in replaces a configured Authorization, and token lifetimes are read safely', async () => {
+  const w = oauthWorld({ expiresIn: '3600' }); // as text
+  w.hub.configure({ rh: { type: 'http', url: w.base + '/mcp', headers: { authorization: 'Bearer stale' } } });
+  await w.hub.status(); // its 401 says where the details are
+  const before = [];
+  const counting = Mcp.makeHub({ fetchFn: async (url, opt) => { before.push(opt?.method + ' ' + url); return w.f(url, opt); }, auth: { get: async () => null, save: async () => {} } });
+  counting.configure({ rh: { type: 'http', url: w.base + '/mcp', headers: {} } });
+  await counting.status(); before.length = 0;
+  await counting.signIn('rh', w.ways);
+  assert.ok(!before.includes('POST ' + w.base + '/mcp'), 'sign-in used the 401 it already had instead of asking the server again');
+  await counting.closeAll();
+  await w.hub.signIn('rh', w.ways);
+  assert.strictEqual(await (await w.hub.tools()).run('mcp__rh__quote', {}), 'quoted with ' + w.mem.rh.accessToken); // not "Bearer stale"
+  assert.ok(w.mem.rh.expiresAt > Date.now() + 3500e3 && w.mem.rh.refreshAt === w.mem.rh.expiresAt - 60000);
+  const short = oauthWorld({ expiresIn: 30 });
+  await short.hub.signIn('rh', short.ways);
+  assert.strictEqual(short.mem.rh.expiresAt - short.mem.rh.refreshAt, 15000); // refreshed halfway, not on every request
+  await w.hub.closeAll(); await short.hub.closeAll();
+});
+
+test('mcp sign-in: a refresh that finishes after sign-out is not saved; one that cannot reach the server keeps the current token', { timeout: 10000 }, async () => {
+  let open; const gate = new Promise((r) => { open = r; });
+  const w = oauthWorld({ refreshGate: gate });
+  await w.hub.signIn('rh', w.ways);
+  const set = await w.hub.tools();
+  w.seen.valid = 'revoked';
+  const call = set.run('mcp__rh__quote', {}); // its 401 starts a refresh, held at the gate
+  await new Promise((r) => setTimeout(r, 20));
+  await w.hub.signOut('rh');
+  open();
+  await assert.rejects(call, /needs you to sign in/);
+  assert.strictEqual(w.mem.rh, undefined); // the late refresh didn't sign back in
+  const down = oauthWorld({ refreshDown: true });
+  await down.hub.signIn('rh', down.ways);
+  Object.assign(down.mem.rh, { refreshAt: Date.now() - 1 }); // due for a refresh, but the token still works
+  assert.strictEqual(await (await down.hub.tools()).run('mcp__rh__quote', {}), 'quoted with a1');
+  down.seen.valid = 'revoked';
+  await down.hub.reload();
+  assert.match((await down.hub.status())[0].error, /Couldn't reach auth\.example/); // a network error, not "sign in again"
+  await w.hub.closeAll(); await down.hub.closeAll();
 });
 
 test('mcp sign-in settings: tokens are encrypted, kept per server, and dropped when that server changes or is removed', async () => {

@@ -101,7 +101,7 @@ const listen = () => new Promise((resolve, reject) => {
     got(new URL(req.url || '/', `http://127.0.0.1:${/** @type {any} */ (srv.address()).port}`).href);
   });
   srv.on('error', reject);
-  srv.listen(0, '127.0.0.1', () => resolve({ uri: `http://127.0.0.1:${/** @type {any} */ (srv.address()).port}/callback`, next, close: () => srv.close() }));
+  srv.listen(0, '127.0.0.1', () => resolve({ uri: `http://127.0.0.1:${/** @type {any} */ (srv.address()).port}/callback`, next, close: () => { srv.close(); srv.closeAllConnections(); } })); // the browser may keep its connection open
 });
 const openUrl = (url) => { if (!/^https?:/i.test(url)) throw new Error("The sign-in page isn't a web address"); return shell.openExternal(url); };
 const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };

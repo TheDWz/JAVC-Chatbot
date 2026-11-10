@@ -18,11 +18,17 @@ const chats = makeChats(makeNativeDisk(Javc, 'chats'));
 const hub = Mcp.makeHub({ fetchFn: nativeFetch, auth: { get: (name) => store.mcpTokens(name), save: (name, tokens) => store.saveMcpTokens(name, tokens) } });
 // Sign-in: the browser comes back to the app through this address (an intent filter in AndroidManifest.xml), which Capacitor reports as appUrlOpen
 const REDIRECT = 'io.github.thedwz.javcchatbot:/oauth';
-let returned = null; // resolves the sign-in that is waiting for the browser
-App.addListener('appUrlOpen', ({ url }) => { if (url.startsWith(REDIRECT)) returned?.(url); });
+let waiting = null; // the sign-in waiting for the browser; a newer one replaces it, since every sign-in shares the address
+App.addListener('appUrlOpen', ({ url }) => { if (url.startsWith(REDIRECT)) waiting?.resolve(url); });
 const signInWays = {
   openUrl: (url) => Javc.openUrl({ url }),
-  listen: async () => ({ uri: REDIRECT, next: new Promise((r) => { returned = r; }), close: () => { returned = null; } }),
+  async listen() {
+    waiting?.reject(new Error('Another sign-in started, so this one stopped.'));
+    let me = null;
+    const next = new Promise((resolve, reject) => { me = waiting = { resolve, reject }; });
+    next.catch(() => {}); // it may be replaced before the sign-in waits on it
+    return { uri: REDIRECT, next, close: () => { if (waiting === me) waiting = null; } };
+  },
 };
 const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
 /** @type {(info: object) => Promise<string>} */
