@@ -118,8 +118,10 @@
     return out.join(' ');
   };
 
-  // Accent gradients. 'aurora' is the default; a custom theme is {id: 'custom', a1, a2} with two #rrggbb colors.
+  // Accent colors. 'indigo' is the default; a custom theme is {id: 'custom', a1, a2} with two #rrggbb colors.
+  // `gradient` turns on the a1→a2 blend; off, the page uses a1 alone.
   const THEMES = [
+    { id: 'indigo', name: 'Indigo', a1: '#4f46e5', a2: '#0284c7' },
     { id: 'aurora', name: 'Aurora', a1: '#8b5cf6', a2: '#3b82f6' },
     { id: 'ocean', name: 'Ocean', a1: '#0891b2', a2: '#2563eb' },
     { id: 'emerald', name: 'Emerald', a1: '#059669', a2: '#0891b2' },
@@ -130,8 +132,9 @@
   const HEX = /^#[0-9a-f]{6}$/i;
   // Returns the normalized theme for a patch, or null when it isn't valid (callers ignore invalid input).
   function cleanTheme(t) {
-    if (t && THEMES.some((x) => x.id === t.id)) return { id: t.id };
-    if (t && t.id === 'custom' && HEX.test(t.a1) && HEX.test(t.a2)) return { id: 'custom', a1: t.a1.toLowerCase(), a2: t.a2.toLowerCase() };
+    const gradient = t?.gradient === true;
+    if (t && THEMES.some((x) => x.id === t.id)) return { id: t.id, gradient };
+    if (t && t.id === 'custom' && HEX.test(t.a1) && HEX.test(t.a2)) return { id: 'custom', a1: t.a1.toLowerCase(), a2: t.a2.toLowerCase(), gradient };
     return null;
   }
   const themeColors = (t) => THEMES.find((x) => x.id === t?.id) || (t?.id === 'custom' && cleanTheme(t)) || THEMES[0];

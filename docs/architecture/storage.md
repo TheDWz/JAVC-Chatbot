@@ -34,12 +34,13 @@ The app used to be called "chatbot". `migrateLegacy` (`disk.js`, called at start
 { version: 2, activeId, effort,
   profiles: [{ id, name, endpoint, model, format, meta, noTools, ctx, keyEnc | keyPlain }],
   personas: [{ id, name, user, bot, prompt, summarizer? }],   // 'default' always exists
-  personaId, render: { markdown, html, css, js }, theme,
+  personaId, render: { markdown, html, css, js }, theme: { id, a1?, a2?, gradient },   // a1/a2 only for id 'custom'
   search: { enabled, keyEnc | keyPlain },
   mcp: { enabled, keyEnc | keyPlain /* the pasted config */, names, allow: { server: [tool] }, auth: { server: { keyEnc | keyPlain } } },
   summarizer: { profileId, model }, contextLimit: { on, tokens } }
 ```
 
+- **Theme.** `Lib.cleanTheme` keeps a preset id (`indigo` is the default) or `custom` with two `#rrggbb` colors, plus `gradient` (true only when exactly `true`). With `gradient` off the page sets `--a2` to `--a1`, so every gradient paints one color. A saved `aurora` theme with no `gradient` key dates from before the switch, when Aurora was the default; `finishState` moves it to the default once, and picking Aurora again saves `gradient` so it sticks.
 - **Templates** (NanoGPT, OpenRouter, Venice, OpenAI) are not profiles. They only prefill the New profile dialog.
 - **`profiles.js`** is pure: `migrate` (old single-endpoint files and the old `rich` switch become v2), `known` (does this version understand a parsed file), `upsert`, `remove`, `publicView`, `cleanSummarizer`, `cleanContextLimit`. `upsert` makes a *new* profile active but never switches the active profile when editing another one.
 - **`publicView`** is what the page gets: no keys, only `hasKey`; MCP shows `names` and `allow`.

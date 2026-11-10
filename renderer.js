@@ -20,9 +20,10 @@ const ICON = {
   alert: ['M12 8v5', 'M12 16.5v.01', 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'],
 };
 // Accent colors are two CSS variables on <html>; every gradient, ring and tint in index.html derives from them.
+// With the gradient off, --a2 is a1 too, so every var(--grad) paints one flat color.
 function applyTheme(t) {
   const c = Lib.themeColors(t), r = document.documentElement.style;
-  r.setProperty('--a1', c.a1); r.setProperty('--a2', c.a2);
+  r.setProperty('--a1', c.a1); r.setProperty('--a2', t?.gradient ? c.a2 : c.a1);
   try { localStorage.setItem('theme', JSON.stringify(t)); } catch {} // only a start-up cache; settings.json is the source of truth
 }
 try { const t = JSON.parse(localStorage.getItem('theme')); if (Lib.cleanTheme(t)) applyTheme(t); } catch {}
@@ -41,7 +42,7 @@ const fitBox = CSS.supports('field-sizing', 'content') ? () => {} : (/** @type {
 document.addEventListener('input', (e) => { if (e.target instanceof HTMLTextAreaElement && e.target.matches('#input, .edit textarea')) fitBox(e.target); });
 
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
-let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: Lib.DEFAULT_CTX } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
+let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'indigo', gradient: false }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: Lib.DEFAULT_CTX } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
 
 // Red pop-up for failures; long server messages stay a little longer so they can be read.
 function showError(text) {
@@ -923,7 +924,7 @@ function showPane(name, focus) {
   if (name === 'tools') showMcpStatus(); // only here, since it starts the servers
 }
 function openPrefs(pane) {
-  const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
+  const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; $('gradon').checked = state.theme.gradient; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
   renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); loadMcpPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
 }
 for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
@@ -942,18 +943,23 @@ async function saveTheme(theme) {
   try { applyState(await window.api.patchSettings({ theme })); } catch (e) { showError(cleanErr(e)); applyState(state); }
   renderThemes();
 }
+// Every theme built here carries the Gradient switch, so picking a color never turns the gradient off.
+const pickTheme = (t) => ({ ...t, gradient: $('gradon').checked });
+const customTheme = () => pickTheme({ id: 'custom', a1: $('c1').value, a2: $('c2').value });
 function renderThemes() {
-  const tiles = [...Lib.THEMES, { id: 'custom', name: 'Custom', a1: $('c1').value, a2: $('c2').value }];
+  const g = $('gradon').checked, tiles = [...Lib.THEMES, { id: 'custom', name: 'Custom', a1: $('c1').value, a2: $('c2').value }];
+  $('c2wrap').hidden = !g;
   $('themegrid').replaceChildren(...tiles.map((t) => {
     const b = el('button', 'theme'), sw = el('i'); b.type = 'button'; b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(t.id === state.theme.id));
-    sw.style.background = `linear-gradient(135deg, ${t.a1}, ${t.a2})`; b.append(sw, t.name);
-    b.onclick = () => saveTheme(t.id === 'custom' ? { id: 'custom', a1: $('c1').value, a2: $('c2').value } : { id: t.id }); return b;
+    sw.style.background = g ? `linear-gradient(135deg, ${t.a1}, ${t.a2})` : t.a1; b.append(sw, t.name);
+    b.onclick = () => saveTheme(t.id === 'custom' ? customTheme() : pickTheme({ id: t.id })); return b;
   }));
 }
 for (const c of [$('c1'), $('c2')]) { // live preview while dragging; saved when the picker commits
-  c.oninput = () => applyTheme({ id: 'custom', a1: $('c1').value, a2: $('c2').value });
-  c.onchange = () => saveTheme({ id: 'custom', a1: $('c1').value, a2: $('c2').value });
+  c.oninput = () => applyTheme(customTheme());
+  c.onchange = () => saveTheme(customTheme());
 }
+$('gradon').onchange = () => saveTheme(pickTheme(state.theme));
 
 function renderProfiles() {
   const host = (u) => { try { return new URL(u).host; } catch { return u; } };
