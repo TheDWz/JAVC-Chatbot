@@ -1,0 +1,40 @@
+# Temporary: iOS-only runs while the port is built. Folded into build.yml (and this file removed) before merging.
+name: iOS (port in progress)
+
+on:
+  push:
+    branches: [ios-port]
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Toolchain
+        run: xcodebuild -version && xcrun simctl list runtimes
+      - name: Build the unsigned IPA
+        run: npm run dist:ios
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.ipa
+          archive: false
+          if-no-files-found: error
+      - name: Simulator build with the self-test
+        run: node mobile/build.mjs --selftest && npx cap sync ios && node mobile/ipa.mjs --simulator
+      - name: Self-test on the simulator
+        run: node mobile/smoke/ios.mjs ios/build/sim/Build/Products/Debug-iphonesimulator/App.app
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ios-smoke
+          path: dist/ios-smoke*
+          if-no-files-found: ignore

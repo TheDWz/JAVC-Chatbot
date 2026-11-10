@@ -3,7 +3,7 @@ import js from '@eslint/js';
 import globals from 'globals';
 
 export default [
-  { ignores: ['www/', 'android/', 'dist/'] }, // build output and the Android copy of it
+  { ignores: ['www/', 'android/', 'ios/', 'dist/'] }, // build output and the phone projects' copies of it
   js.configs.recommended,
   { rules: { 'no-empty': ['error', { allowEmptyCatch: true }] } }, // `catch {}` marks a failure that's fine to ignore
   { files: ['**/*.js'], languageOptions: { sourceType: 'commonjs', globals: globals.node } },

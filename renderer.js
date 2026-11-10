@@ -32,6 +32,12 @@ try { const t = JSON.parse(localStorage.getItem('theme')); if (Lib.cleanTheme(t)
 const touch = matchMedia('(pointer: coarse)');
 /** Puts the cursor in the message box, except on touch screens, where that would open the keyboard over the chat. */
 const focusInput = () => { if (!touch.matches) $('input').focus(); };
+/** Grows a message box to its text where CSS field-sizing is missing (Safari before 26.2); its max-height still caps it. A no-op elsewhere. */
+const fitBox = CSS.supports('field-sizing', 'content') ? () => {} : (/** @type {HTMLTextAreaElement} */ t) => {
+  const cs = getComputedStyle(t); t.style.height = 'auto';
+  t.style.height = (cs.boxSizing === 'border-box' ? t.scrollHeight + t.offsetHeight - t.clientHeight : t.scrollHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) + 'px';
+};
+document.addEventListener('input', (e) => { if (e.target instanceof HTMLTextAreaElement) fitBox(e.target); });
 
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
 let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: Lib.DEFAULT_CTX } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
@@ -316,7 +322,7 @@ function editMsg(m, body, bubble, actions) {
     chat.updated = Date.now(); setMsg(m, Lib.addVersion(m, user ? Lib.editUser(m, text) : { content: text, reasoning: m.reasoning }));
   };
   for (const n of hide) n.style.display = 'none';
-  actions.before(box); ta.focus();
+  actions.before(box); fitBox(ta); ta.focus();
 }
 const NO_REASONING = "This model didn't return any reasoning.";
 const nearBottom = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 40;
@@ -373,7 +379,7 @@ function showEmpty() {
   else { const a = el('button', 'linkish', 'Open settings'); a.onclick = openSettings; p.append(a, ' and fetch models to get started.'); }
   const chips = el('div', 'chips');
   for (const s of ['Explain a concept simply', 'Write a bash one-liner', 'Brainstorm project ideas']) {
-    const c = el('button', 'chip', s); c.onclick = () => { $('input').value = s + ': '; $('input').focus(); }; chips.append(c);
+    const c = el('button', 'chip', s); c.onclick = () => { $('input').value = s + ': '; fitBox($('input')); $('input').focus(); }; chips.append(c);
   }
   box.append(p, chips); $('log').replaceChildren(box);
 }
@@ -625,7 +631,7 @@ async function send() {
   const text = $('input').value.trim();
   if ((!text && !pending.length) || busy || !ready()) return;
   const atts = pending; pending = []; renderChips();
-  $('input').value = '';
+  $('input').value = ''; fitBox($('input'));
   const m = { role: 'user', content: Lib.buildContent(text, atts), text, files: atts.map(({ name, size, kind }) => ({ name, size, kind })) };
   chat.messages.push(m);
   const userRow = addUser(text, atts, m);
@@ -637,7 +643,7 @@ async function send() {
   } catch {
     // drop the failed turn and put the draft back in front of whatever was typed meanwhile
     chat.messages.pop(); userRow.remove();
-    $('input').value = [text, $('input').value].filter(Boolean).join('\n');
+    $('input').value = [text, $('input').value].filter(Boolean).join('\n'); fitBox($('input'));
     pending = [...atts, ...pending].slice(0, MAX_FILES); renderChips();
     if (chat.messages.length) persist(); // keeps a summary made before the reply failed, and the tokens it used
   }
