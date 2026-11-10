@@ -49,7 +49,7 @@ ipcMain.handle('profiles:activate', (_e, id) => store.activate(id));
 ipcMain.handle('profiles:key', (_e, id) => store.key(id));
 ipcMain.handle('search:save', (_e, p) => store.saveSearch(p));
 ipcMain.handle('search:key', () => store.searchKey());
-ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text)));
+ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text ?? '')));
 ipcMain.handle('models:list', async (_e, profileId) => { const s = await store.load({ profileId }); return api.listModelsDetailed(s.endpoint, s.key); });
 
 const running = new Map(); // request id -> AbortController, so the Stop button can cancel a reply

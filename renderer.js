@@ -60,9 +60,9 @@ function toast(text) {
   $('toast').textContent = text; $('toast').classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 1800);
 }
-/** Copies text and says so. Android copies through the app, since a WebView's clipboard access isn't guaranteed. */
+/** Copies text and says so. Both apps copy through native code (Electron's main process, the Android plugin), since the page's own clipboard access is blocked or unreliable. */
 async function copy(text) {
-  try { await (window.api.copyText ? window.api.copyText(text) : navigator.clipboard.writeText(text)); toast('Copied'); } catch { toast('Copy failed'); }
+  try { await window.api.copyText(text); toast('Copied'); } catch { toast('Copy failed'); }
 }
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
 function push(node) { $('log').querySelector('.empty')?.remove(); $('log').append(node); scrollDown(); return node; }
