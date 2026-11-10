@@ -606,7 +606,7 @@ async function generate(base) {
       else { if (pauseAt) { paused += now - pauseAt; pauseAt = 0; } t1 ||= now; sawReasoning ||= !!d.reasoning; }
       reply.delta(d);
     };
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), onDelta, { search: toolsOk() });
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), onDelta, { search: toolsOk(), mcp: toolsOk() && state.mcp.enabled });
     const t2 = performance.now(); if (pauseAt) paused += t2 - pauseAt;
     const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, sent: out.sent, text: out.content + out.reasoning, sawReasoning });
     chat.used = (chat.used || 0) + (stats.total || 0); // a running total: it stays when this reply is later replaced or dropped
@@ -903,8 +903,8 @@ addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').classList.remove('on'); attach([...e.dataTransfer.files]); });
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
-// ---- Settings dialog: Appearance / Profiles / Search / Replies / Summaries ----
-const PANES = ['appearance', 'profiles', 'search', 'replies', 'summaries'];
+// ---- Settings dialog: Appearance / Profiles / Search / Tools / Replies / Summaries ----
+const PANES = ['appearance', 'profiles', 'search', 'tools', 'replies', 'summaries'];
 let prefsDirty = false; // a Replies switch changed: redraw the open chat when the dialog closes
 function showPane(name, focus) {
   for (const n of PANES) {
@@ -913,10 +913,11 @@ function showPane(name, focus) {
     if (on && focus) tab.focus();
   }
   if (name === 'summaries') loadSummaryPane(); // only here, since it fetches a model list
+  if (name === 'tools') showMcpStatus(); // only here, since it starts the servers
 }
 function openPrefs(pane) {
   const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
-  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
+  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); loadMcpPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
 }
 for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
 $('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
@@ -998,6 +999,58 @@ $('searchsave').onclick = async () => {
   if ($('searchkey').value === sent) searchKeyDirty = false; // typed again while saving: stays unsaved
   toast(sent.trim() ? 'Key saved' : 'Key removed');
 };
+
+// ---- Tools pane: MCP servers. The config is fetched when the dialog opens; an untouched field never overwrites the stored one. ----
+let mcpDirty = false, mcpLoad = 0, mcpStatusSeq = 0;
+async function loadMcpPane() {
+  const mine = ++mcpLoad; mcpDirty = false; $('mcperr').hidden = true;
+  $('mcpon').checked = state.mcp.enabled; $('mcpconfig').value = '';
+  if (settings.model && !toolsOk()) { $('mcperr').textContent = "The current model doesn't support tools, so it can't use these."; $('mcperr').hidden = false; }
+  try { const c = await window.api.getMcpConfig(); if (mine === mcpLoad && !mcpDirty) $('mcpconfig').value = c; }
+  catch (e) { if (mine === mcpLoad && !mcpDirty) { $('mcperr').textContent = cleanErr(e); $('mcperr').hidden = false; } }
+}
+const mcpRow = (name, text, err) => { const row = el('div', 'prow'), info = el('div'); info.append(el('strong', null, name), el('small', err ? 'perr' : null, text)); row.append(info); return row; };
+/** Lists each server's state; asking starts the ones that aren't running yet. `reload` restarts them all first. */
+async function showMcpStatus(reload = false) {
+  const mine = ++mcpStatusSeq;
+  if (!state.mcp.enabled || !state.mcp.servers.length) { $('mcplist').replaceChildren(); return; }
+  $('mcplist').replaceChildren(...state.mcp.servers.map((n) => mcpRow(n, 'Starting…')));
+  let list;
+  try { list = await (reload ? window.api.reloadMcp() : window.api.mcpStatus()); }
+  catch (e) { if (mine === mcpStatusSeq) $('mcplist').replaceChildren(mcpRow('Servers', cleanErr(e), true)); return; }
+  if (mine !== mcpStatusSeq) return;
+  $('mcplist').replaceChildren(...list.map((s) => (s.state === 'ok' ? mcpRow(s.name, s.tools === 1 ? '1 tool' : `${s.tools} tools`)
+    : s.state === 'desktop-only' ? mcpRow(s.name, 'Desktop only: runs a command on a computer') : mcpRow(s.name, s.error || 'Not working', true))));
+}
+async function saveMcp(p) {
+  $('mcperr').hidden = true;
+  try { applyState(await window.api.saveMcp(p)); showMcpStatus(); return true; }
+  catch (e) { $('mcperr').textContent = cleanErr(e); $('mcperr').hidden = false; applyState(state); return false; }
+}
+$('mcpconfig').oninput = () => { mcpDirty = true; };
+$('mcpon').onchange = async () => {
+  if (!(await saveMcp({ enabled: $('mcpon').checked }))) $('mcpon').checked = state.mcp.enabled;
+  else if ($('mcpon').checked && !state.mcp.hasConfig && !mcpDirty) { $('mcperr').textContent = 'Paste your servers below and save.'; $('mcperr').hidden = false; }
+};
+$('mcpsave').onclick = async () => {
+  const sent = $('mcpconfig').value;
+  if (!(await saveMcp({ config: sent, ...(sent.trim() && { enabled: true }) }))) return; // saving servers turns MCP on
+  $('mcpon').checked = state.mcp.enabled;
+  if ($('mcpconfig').value === sent) mcpDirty = false; // typed again while saving: stays unsaved
+  toast(sent.trim() ? 'Servers saved' : 'Servers removed');
+};
+$('mcpreload').onclick = () => showMcpStatus(true);
+
+// Before a tool runs: Deny, Allow once or Always allow. Escape, Back and anything else that closes the dialog mean Deny.
+window.api.onToolApproval?.((/** @type {{server: string, tool: string, args: object}} */ info) => new Promise((resolve) => {
+  const d = $('tooldlg');
+  $('toolsub').textContent = `${info.server} wants to run ${info.tool} with:`;
+  $('toolargs').textContent = JSON.stringify(info.args, null, 2);
+  $('toolwarn').hidden = !/order|trade|buy|sell|transfer|withdraw|delete|remove|write|send|pay/i.test(info.tool);
+  d.returnValue = 'deny';
+  d.addEventListener('close', () => resolve(d.returnValue || 'deny'), { once: true });
+  d.showModal(); $('tooldeny').focus();
+}));
 
 // ---- Summary model pickers (Settings → Summaries and the persona dialog): a profile, "Chat model" first, then one of that profile's models ----
 /** Fills a picker with `s` ({profileId, model}) chosen. Errors go to `err`, since toasts sit under the modal dialog. */

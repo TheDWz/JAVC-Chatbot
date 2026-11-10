@@ -79,13 +79,13 @@ function reasoningParams(endpoint, effort, /** @type {{format?: string, meta?: b
   return { reasoning_effort: effort };
 }
 
-/** What one chat or summary request sends: the model, the extra params and the search config ({key}). A summary goes to its own profile and model, with no reasoning level and no search.
+/** What one chat or summary request sends: the model, the extra params, the search config ({key}) and whether MCP tools are offered. A summary goes to its own profile and model, with no reasoning level and no tools.
  * @param {{model?: string, endpoint?: string, effort?: string, format?: string, meta?: boolean, search?: {key: string}}} s
- * @param {{summary?: {profileId: string, model?: string}, search?: boolean}} [opts]
+ * @param {{summary?: {profileId: string, model?: string}, search?: boolean, mcp?: boolean}} [opts]
  */
 function requestArgs(s, opts) {
   const sum = opts?.summary;
-  return { model: sum?.model || s.model, extra: sum ? {} : reasoningParams(s.endpoint, s.effort, s), search: !sum && opts?.search ? s.search : null };
+  return { model: sum?.model || s.model, extra: sum ? {} : reasoningParams(s.endpoint, s.effort, s), search: !sum && opts?.search ? s.search : null, mcp: !sum && !!opts?.mcp };
 }
 
 // Local R1-style models put reasoning in content as <think>…</think>. Only a block at the very start counts,
@@ -125,7 +125,8 @@ const SEARCH_TOOL = { type: 'function', function: {
   description: 'Search the web for current information, recent events or facts you are unsure about. Returns titles, URLs and page excerpts.',
   parameters: { type: 'object', properties: { query: { type: 'string', description: 'A natural-language search query' } }, required: ['query'] },
 } };
-const SEARCH_ROUNDS = 4; // Linkup requests (and tool rounds) per reply; after that the model must answer
+const SEARCH_ROUNDS = 4; // Linkup requests per reply, and the tool rounds when web search is the only tool; after that the model must answer
+const TOOL_ROUNDS = 20; // tool rounds per reply when MCP tools are offered
 
 /**
  * @param {string} key
@@ -232,9 +233,9 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
   return cut ? { ...out, ...cut } : out;
 }
 
-// Streams a reply. Without `search` ({key}) this is a single request. With it, the model may call web_search up to SEARCH_ROUNDS times
-// before answering; text and reasoning from every round are joined. shortcut: the tool exchange stays inside this call and isn't saved
-// with the chat, so later turns see only the final answer, not the raw search results.
+// Streams a reply. Without tools (`search` ({key}) or `mcp`) this is a single request. With them, the model may call tools over
+// several rounds before answering; text and reasoning from every round are joined. shortcut: the tool exchange stays inside this
+// call and isn't saved with the chat, so later turns see only the final answer, not the raw tool results.
 /**
  * @param {string} endpoint
  * @param {string} key
@@ -245,12 +246,17 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
  * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
  * @param {AbortSignal} [signal]
  * @param {{key: string}} [search]
+ * @param {{defs: object[], has: (name: string) => boolean, label: (name: string) => string, call: (name: string, argsJson: string, signal?: AbortSignal) => Promise<string>}} [mcp] MCP tools (see mcp.js `gated`)
  */
-async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search) {
-  if (!search) return streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []);
+async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search, mcp) {
+  if (!mcp?.defs.length) mcp = null;
+  if (!search && !mcp) return streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []);
+  const tools = [...(search ? [SEARCH_TOOL] : []), ...(mcp ? mcp.defs : [])], rounds = mcp ? TOOL_ROUNDS : SEARCH_ROUNDS;
   const total = { content: '', reasoning: '' }, msgs = /** @type {object[]} */ ([...messages]);
   let searches = 0; // Linkup requests so far in this reply, across rounds and parallel calls
   const add = (r, c) => { total.reasoning += r; total.content += c; };
+  const note = (text) => { add(text, ''); onDelta({ reasoning: text, content: '', note: true }); }; // our own text, so stats don't time it as the model's
+  const stopped = (e) => { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped', { cause: e }); };
   // every round is billed, so token counts add up; the last round's total is the context size
   const addUsage = (u) => {
     if (!u) return;
@@ -260,9 +266,9 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     total.sent ??= u.prompt_tokens; // the first round's prompt is the chat itself; later rounds add search results that aren't sent again
   };
   for (let round = 0; ; round++) {
-    const final = round >= SEARCH_ROUNDS, calls = [];
+    const final = round >= rounds, calls = [];
     // tools stay in the request on the last round (tool_choice none): some backends reject tool messages when no tools are defined
-    const out = await streamOnce(endpoint, key, model, msgs, { ...extra, tools: [SEARCH_TOOL], tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
+    const out = await streamOnce(endpoint, key, model, msgs, { ...extra, tools, tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
       .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
     add(out.reasoning, out.content); addUsage(out.usage);
     if (out.error || out.stopped || final || !calls.length) return { ...total, ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) };
@@ -270,16 +276,23 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     msgs.push({ role: 'assistant', content: out.content, tool_calls: calls, ...(THINKING_SWITCH.test(endpoint) && out.reasoning && { reasoning_content: out.reasoning }) });
     for (const c of calls) {
       let q = '', result;
+      if (mcp?.has(c.function.name)) {
+        note(`Using ${mcp.label(c.function.name)}\n`);
+        try { result = await mcp.call(c.function.name, c.function.arguments, signal); }
+        catch (e) { if (signal?.aborted) return stopped(e); result = 'Tool failed: ' + e.message; } // the model can still answer without it
+        msgs.push({ role: 'tool', tool_call_id: c.id, content: result });
+        continue;
+      }
       try { q = String(JSON.parse(c.function.arguments || '{}').query || '').trim(); } catch {}
-      if (c.function.name !== 'web_search' || !q) result = 'Error: call web_search with a JSON object like {"query": "..."}.';
+      if (!search) result = `Error: there is no tool called "${c.function.name}".`;
+      else if (c.function.name !== 'web_search' || !q) result = 'Error: call web_search with a JSON object like {"query": "..."}.';
       else if (searches >= SEARCH_ROUNDS) result = 'Search limit reached. Answer with what you already have.';
       else {
         searches++;
-        const note = `Searching the web: ${q}\n`;
-        add(note, ''); onDelta({ reasoning: note, content: '', note: true }); // note: our own text, so stats don't time it as the model's
+        note(`Searching the web: ${q}\n`);
         try { result = await linkupSearch(search.key, q, fetchFn, signal); }
         catch (e) {
-          if (signal?.aborted) { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped', { cause: e }); }
+          if (signal?.aborted) return stopped(e);
           result = 'Search failed: ' + e.message; // the model can still answer without it
         }
       }

@@ -6,12 +6,19 @@ const api = require('../api');
 const Lib = require('../lib');
 const makeStore = require('../store');
 const makeChats = require('../chats');
+const Mcp = require('../mcp');
 const { makeNativeFetch, makeNativeDisk, makeNativeCrypto } = require('./native');
 
 const Javc = registerPlugin('Javc');
 const nativeFetch = makeNativeFetch(Javc);
 const store = makeStore({ io: makeNativeDisk(Javc), crypto: makeNativeCrypto(Javc) });
 const chats = makeChats(makeNativeDisk(Javc, 'chats'));
+
+// MCP: no local (command) servers on a phone, so those report 'desktop-only'
+const hub = Mcp.makeHub({});
+const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
+/** @type {(info: object) => Promise<string>} */
+let approve = async () => 'deny'; // until the page registers its dialog
 
 let current = null; // the reply in progress; the page runs one at a time and locks everything else meanwhile
 let pdfParse = null;
@@ -46,8 +53,9 @@ window.api = {
     try {
       const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
       // Linkup goes through nativeFetch too
-      const { model, extra, search } = api.requestArgs(s, opts);
-      return await api.chatStream(s.endpoint, s.key, model, messages, extra, (/** @type {object} */ d) => onDelta?.(d), nativeFetch, ctl.signal, search);
+      const { model, extra, search, mcp } = api.requestArgs(s, opts);
+      const delta = (/** @type {object} */ d) => onDelta?.(d);
+      return await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: (i) => approve(i), onDelta: delta, signal: ctl.signal }) : undefined);
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),
@@ -63,6 +71,12 @@ window.api = {
     finally { await parser.destroy(); }
   },
   copyText: (text) => Javc.copyText({ text }),
+  getMcpConfig: () => store.mcpConfig(),
+  saveMcp: async (p) => { const v = await store.saveMcp(p); await mcpReady(); return v; },
+  mcpStatus: async () => (await mcpReady()).status(),
+  reloadMcp: async () => { await (await mcpReady()).reload(); return hub.status(); },
+  /** fn({server, tool, args}) resolves to 'once' | 'always' | 'deny' before a tool runs; anything else, or an error, denies. */
+  onToolApproval: (fn) => { approve = async (info) => { try { const a = await fn(info); return ['once', 'always'].includes(a) ? a : 'deny'; } catch { return 'deny'; } }; },
 };
 
 // Back closes whatever is open (a dialog, the options panel, the history…); with nothing open, the app goes to the background.
