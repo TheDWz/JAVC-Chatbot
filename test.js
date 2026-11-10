@@ -260,6 +260,17 @@ test('store: a damaged settings file is quarantined, not overwritten', async () 
   fs.rmSync(dir, { recursive: true });
 });
 
+test('store: settings.json that parses to null or an array is quarantined, not overwritten', async () => {
+  for (const text of ['null', '[]']) {
+    const { dir, file, store } = tmpStore();
+    fs.writeFileSync(file, text);
+    assert.deepStrictEqual((await store.get()).profiles, []);
+    assert.strictEqual(fs.readFileSync(file + '.bad', 'utf8'), text);
+    assert.ok(store.takeNotice());
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
 test('store: saving a profile without `key` keeps the stored key; `key: ""` clears it; errors never wipe it', async () => {
   const { dir, store } = tmpStore();
   const st = await store.saveProfile({ name: 'P', endpoint: 'http://x/v1/', key: 'sk-1' });

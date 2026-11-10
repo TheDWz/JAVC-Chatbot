@@ -44,7 +44,7 @@ module.exports = ({ io, crypto }) => {
     let raw = {};
     const text = await io.read(FILE);
     if (text !== null) {
-      try { raw = JSON.parse(text) ?? {}; }
+      try { const j = JSON.parse(text); if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('not an object'); raw = j; }
       catch { await quarantine(); } // damaged file: keep it for recovery instead of treating this as a first run and overwriting it
     }
     const st = profiles.migrate(raw);
