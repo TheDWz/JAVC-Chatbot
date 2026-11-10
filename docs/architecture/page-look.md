@@ -22,6 +22,7 @@ The translucent layers use `--glass` / `--glass-strong`, `--glass-line`, `--glas
 
 - **Header:** `<header>` is `position: absolute` over `#scroll`, with z-index 20.
   - Don't put it inside the scroller: the scroller would clip its popovers, and the sticky composer would paint over them.
+  - It reaches behind the phone's status bar: `body` has no top safe-area padding, and the header adds `env(safe-area-inset-top)` to its own top padding so its glass runs to the screen edge. The desktop chat list adds the inset to its top margin instead. Capacitor's SystemBars plugin passes the insets to CSS on Android WebView 140+; older WebViews are padded natively and show the window background behind the status bar.
   - Its blur is on `header::before`, not on the header itself. A blurred header would stop the popovers inside it from blurring the chat, and would become the containing block of the phone's fixed `#modelpop`.
 - **Composer:** `<footer>` is `position: sticky; bottom: 0` inside `#scroll`, so it keeps its own space. It fades into `--bg` below the composer, so the hint stays readable.
 - **Bar heights:** a `ResizeObserver` in `renderer.js` writes the header's and footer's heights to `--head-h` and `--foot-h` on `#scroll`. These set `padding-top` (so the first message starts below the header) and `scroll-padding` (so focus and paging don't land under either bar). The header is taller on phones, where it wraps into two rows.

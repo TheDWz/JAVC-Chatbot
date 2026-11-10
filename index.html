@@ -34,7 +34,9 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   /* iPhone notch and home bar (viewport-fit=cover); every inset is 0 on the desktop and Android */
-  body, #side, .richview { box-sizing: border-box; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #side, .richview { box-sizing: border-box; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  /* No top inset on the body: the header's glass reaches up behind the status bar and pads its own contents down (see header) */
+  body { box-sizing: border-box; padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.6 Inter, "Segoe UI", system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
   button, input, select, textarea { font: inherit; color: inherit; }
@@ -47,7 +49,7 @@
 
   /* Chat history sidebar */
   /* A floating glass panel, inset from the window edge */
-  #history { width: 256px; flex-shrink: 0; margin: 8px 0 8px 8px; display: flex; flex-direction: column; border-radius: 20px;
+  #history { width: 256px; flex-shrink: 0; margin: calc(8px + env(safe-area-inset-top)) 0 8px 8px; display: flex; flex-direction: column; border-radius: 20px;
     background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow); }
   /* Shown and hidden with .nohist: it slides out and the chat column glides wider. allow-discrete keeps it displayed until the slide ends. */
   #history { transition: margin-left var(--t-panel) var(--sheet), translate var(--t-panel) var(--sheet), opacity var(--t-mid) var(--ease), display var(--t-panel) allow-discrete; }
@@ -100,7 +102,7 @@
   /* The chat scrolls under the header and the composer. The header floats over #scroll (inside it, the scroller would clip
      its popovers and the composer would paint over them); the composer is sticky inside #scroll, so it keeps its own space. */
   .main { position: relative; }
-  header { position: absolute; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--glass-line); }
+  header { position: absolute; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 6px; padding: calc(10px + env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid var(--glass-line); }
   /* The blur sits on a layer behind the header, not on the header itself: a blurred parent would stop the
      popovers inside it from blurring the chat, and would make it the containing block of the phone's fixed #modelpop. */
   header::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); }
@@ -455,7 +457,7 @@
 
   /* Phones: the header wraps into two rows, with profile and model on the second */
   @media (max-width: 600px) {
-    header { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+    header { flex-wrap: wrap; gap: 6px; padding: calc(8px + env(safe-area-inset-top)) 10px 8px; }
     header::after { content: ''; order: 5; flex-basis: 100%; }
     #profilepill { order: 6; flex: 1 1 0; min-width: 0; }
     #profilepill select { flex: 1; min-width: 0; max-width: none; }
