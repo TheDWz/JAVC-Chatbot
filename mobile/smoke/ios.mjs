@@ -20,11 +20,13 @@ const requests = [];
 const server = http.createServer(async (req, res) => { if (!(await handleApi(req, res, requests))) { res.writeHead(404); res.end(); } });
 await new Promise((r) => server.listen(8787, '127.0.0.1', r)); // the simulator shares the Mac's network
 
-// the newest iPhone simulator on the newest iOS runtime
+// a Pro Max iPhone (the size the app is used on) on the newest iOS runtime; numeric sort so iOS-26-10 beats iOS-26-9
 const { devices } = JSON.parse(simctl('list', 'devices', 'available', '-j'));
-const runtime = Object.keys(devices).filter((k) => /iOS/.test(k) && devices[k].some((d) => /iPhone/.test(d.name))).sort().at(-1);
+const runtime = Object.keys(devices).filter((k) => /iOS/.test(k) && devices[k].some((d) => /iPhone/.test(d.name)))
+  .sort((a, b) => a.localeCompare(b, 'en', { numeric: true })).at(-1);
 if (!runtime) throw new Error('No iPhone simulator found');
-const device = devices[runtime].filter((d) => /iPhone/.test(d.name)).at(-1);
+const phones = devices[runtime].filter((d) => /iPhone/.test(d.name));
+const device = phones.find((d) => /Pro Max/.test(d.name)) ?? phones.at(-1);
 log('Simulator', device.name, runtime.split('.').at(-1));
 
 let failed = null;

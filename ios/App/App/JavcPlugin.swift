@@ -144,21 +144,29 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
     private static let keyService = "io.github.thedwz.javcchatbot"
     private static let keyAccount = "javc-api-keys"
 
+    private var key: SymmetricKey? // read once; plugin calls run one at a time on Capacitor's bridge queue
+
     /// The app's AES key from the Keychain, created on first use.
     private func secretKey() throws -> SymmetricKey {
+        if let key { return key }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.keyService,
                                     kSecAttrAccount as String: Self.keyAccount, kSecReturnData as String: true]
         var out: CFTypeRef?
         let found = SecItemCopyMatching(query as CFDictionary, &out)
-        if found == errSecSuccess, let data = out as? Data, data.count == 32 { return SymmetricKey(data: data) }
+        if found == errSecSuccess, let data = out as? Data, data.count == 32 {
+            let stored = SymmetricKey(data: data)
+            key = stored
+            return stored
+        }
         if found != errSecItemNotFound { throw JavcError("The Keychain can't be read (error \(found))") }
-        let key = SymmetricKey(size: .bits256)
+        let fresh = SymmetricKey(size: .bits256)
         let add: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.keyService,
-                                  kSecAttrAccount as String: Self.keyAccount, kSecValueData as String: key.withUnsafeBytes { Data($0) },
+                                  kSecAttrAccount as String: Self.keyAccount, kSecValueData as String: fresh.withUnsafeBytes { Data($0) },
                                   kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let added = SecItemAdd(add as CFDictionary, nil)
         guard added == errSecSuccess else { throw JavcError("The Keychain can't save a key (error \(added))") }
-        return key
+        key = fresh
+        return fresh
     }
 
     /// Encrypts `text` with a fresh nonce; returns base64(nonce | ciphertext | tag), the same layout as the Android app.
@@ -169,7 +177,7 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
 
     /// Decrypts what encryptText produced; throws if the data was changed or the key is not the one it was made with.
     private func decryptText(_ data: String) throws -> String {
-        guard let all = Data(base64Encoded: data), all.count > 28 else { throw JavcError("Not an encrypted key") }
+        guard let all = Data(base64Encoded: data), all.count >= 28 else { throw JavcError("Not an encrypted key") } // nonce + tag, so "" works too
         let plain = try AES.GCM.open(AES.GCM.SealedBox(combined: all), using: secretKey())
         guard let text = String(data: plain, encoding: .utf8) else { throw JavcError("Not an encrypted key") }
         return text

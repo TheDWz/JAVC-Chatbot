@@ -32,12 +32,13 @@ try { const t = JSON.parse(localStorage.getItem('theme')); if (Lib.cleanTheme(t)
 const touch = matchMedia('(pointer: coarse)');
 /** Puts the cursor in the message box, except on touch screens, where that would open the keyboard over the chat. */
 const focusInput = () => { if (!touch.matches) $('input').focus(); };
-/** Grows a message box to its text where CSS field-sizing is missing (Safari before 26.2); its max-height still caps it. A no-op elsewhere. */
+/** Grows a message box to its text where CSS field-sizing is missing (Safari before 26.2); its max-height still caps it. A no-op elsewhere.
+ * Only the message box and the edit box: the settings boxes have no max-height and keep the height the user drags them to. */
 const fitBox = CSS.supports('field-sizing', 'content') ? () => {} : (/** @type {HTMLTextAreaElement} */ t) => {
   const cs = getComputedStyle(t); t.style.height = 'auto';
   t.style.height = (cs.boxSizing === 'border-box' ? t.scrollHeight + t.offsetHeight - t.clientHeight : t.scrollHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) + 'px';
 };
-document.addEventListener('input', (e) => { if (e.target instanceof HTMLTextAreaElement) fitBox(e.target); });
+document.addEventListener('input', (e) => { if (e.target instanceof HTMLTextAreaElement && e.target.matches('#input, .edit textarea')) fitBox(e.target); });
 
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
 let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'aurora' }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: Lib.DEFAULT_CTX } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;

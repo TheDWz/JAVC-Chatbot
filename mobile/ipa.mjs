@@ -22,7 +22,8 @@ run('xcodebuild', [
   '-project', path.join(root, 'ios', 'App', 'App.xcodeproj'), '-scheme', 'App', '-configuration', sim ? 'Debug' : 'Release',
   '-sdk', sim ? 'iphonesimulator' : 'iphoneos', '-destination', sim ? 'generic/platform=iOS Simulator' : 'generic/platform=iOS',
   '-derivedDataPath', derived,
-  `MARKETING_VERSION=${version}`, `CURRENT_PROJECT_VERSION=${major * 10000 + minor * 100 + patch}`, // as Android's versionCode
+  // iOS takes only numbers (1.1.0-beta.1 -> 1.1.0); the build number is Android's versionCode
+  `MARKETING_VERSION=${major}.${minor}.${patch}`, `CURRENT_PROJECT_VERSION=${major * 10000 + minor * 100 + patch}`,
   // the device build is left unsigned for the user's signing tool; the simulator build is signed ad hoc, which the Keychain needs there
   ...(sim ? ['CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY=-', 'DEVELOPMENT_TEAM='] : ['CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_IDENTITY=']),
   'build',
