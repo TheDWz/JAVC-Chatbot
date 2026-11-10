@@ -34,5 +34,5 @@
 ## Platform notes
 
 - Settings and chats live in Electron's per-app data folder (see [storage.md](storage.md)).
-- Keys use `safeStorage`; on Linux without a keyring they fall back to a plaintext field in the owner-only settings file.
+- Keys and the chat key use `safeStorage` (the `keyring` object in `main.js`); on Linux without a keyring they fall back to a plaintext field in the owner-only file. `package.json`'s two `files` lists must name every shipped module, `seal.js` included.
 - The Windows installer isn't code-signed; the AppImage and tar.gz may need `--no-sandbox` where unprivileged user namespaces are restricted (see the README).

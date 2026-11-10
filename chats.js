@@ -1,10 +1,12 @@
 // One JSON file per chat, plus _index.json (id, title, updated, personaId) so listing doesn't open every chat.
 // Each chat holds only its own messages, which is what keeps chats isolated.
-// `io` is the chats folder (see disk.js); the same code runs on the desktop and on Android.
+// `io` is the chats folder (see disk.js); the same code runs on the desktop and on Android. Hosts pass it sealed (seal.js),
+// so every file is encrypted; `ready` and `needsSeal` come from there.
 
 /**
  * The chat history store.
- * @param {import('./disk').DiskIo} io The chats folder: { read, write, remove, list } as in disk.js.
+ * @param {import('./disk').DiskIo & {ready?(): Promise<void>, needsSeal?(name: string): Promise<boolean>}} io The chats folder:
+ *   { read, write, remove, list } as in disk.js, optionally sealed.
  */
 module.exports = (io) => {
   /** The file name of chat `id`; rejects anything that isn't a plain id, so a name can never point outside the folder. */
@@ -46,6 +48,7 @@ module.exports = (io) => {
      * chat or list a deleted one: entries without a file are dropped and files missing from the index are added.
      */
     list: serial(async () => {
+      await io.ready?.(); // a key that can't be unlocked is an error, not an empty list: the reads below skip what they can't read
       const names = await chatFiles(), saved = await readIndex();
       if (!names) return sorted(saved ?? []); // can't see the folder: show what the index says
       let ix = saved;
@@ -70,6 +73,13 @@ module.exports = (io) => {
       const f = file(chat.id);
       await io.write(f, JSON.stringify(chat));
       await io.write(INDEX, JSON.stringify([...(await index()).filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title, updated: chat.updated, personaId: chat.personaId }]));
+    }),
+    /** Seals any file still saved as plain text (from before encryption). Returns how many it sealed. */
+    upgrade: serial(async () => {
+      if (!io.needsSeal) return 0;
+      let n = 0;
+      for (const name of (await io.list()).filter((x) => x.endsWith('.json'))) if (await io.needsSeal(name)) { await io.write(name, await io.read(name)); n++; }
+      return n;
     }),
     /** Deletes the chat, then its index entry. */
     remove: serial(async (id) => {

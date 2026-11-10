@@ -60,7 +60,11 @@ test('custom gateway: metadata or manual format selects the request shape', () =
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const makeChats = require('./chats');
 const { makeDisk, migrateLegacy } = require('./disk');
-const tmpChats = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chats-')); return { dir, store: makeChats(makeDisk(dir)) }; };
+const { makeChatSeal, PREFIX } = require('./seal');
+const b64Keyring = { available: () => true, enc: (t) => Buffer.from(t).toString('base64'), dec: (b) => Buffer.from(b, 'base64').toString() };
+/** A chats folder in a temp dir, encrypted as the hosts do it (chatkey.json goes in `<dir>-set`). */
+const sealFor = (dir, /** @type {import('./store').KeyCrypto} */ crypto = b64Keyring) => makeChatSeal({ io: makeDisk(dir + '-set'), crypto, chats: makeDisk(dir) });
+const tmpChats = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chats-')); return { dir, store: makeChats(sealFor(dir).io) }; };
 
 test('chat store keeps chats separate, sorted, deletable, and rejects bad ids', async () => {
   const { dir, store } = tmpChats();
@@ -74,6 +78,85 @@ test('chat store keeps chats separate, sorted, deletable, and rejects bad ids', 
   await assert.rejects(store.load('../x'), /Invalid chat id/);
   await assert.rejects(store.save({ id: '../../evil' }), /Invalid chat id/);
   fs.rmSync(dir, { recursive: true });
+});
+
+// ---- chat encryption (seal.js) ----
+const sealDirs = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seal-')); return { dir, keyFile: path.join(dir + '-set', 'chatkey.json'), done: () => { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(dir + '-set', { recursive: true, force: true }); } }; };
+
+test('seal: chats are encrypted on disk, readable by the next launch, and bound to their file name', async () => {
+  const { dir, keyFile, done } = sealDirs();
+  const store = makeChats(sealFor(dir).io);
+  await store.save({ id: 'a1', title: 'Secret title', updated: 1, messages: [{ role: 'user', content: 'my password is hunter2' }] });
+  for (const n of fs.readdirSync(dir)) {
+    const raw = fs.readFileSync(path.join(dir, n), 'utf8');
+    assert.ok(raw.startsWith(PREFIX), n); assert.ok(!/hunter2|Secret title/.test(raw), n);
+  }
+  assert.ok(!/hunter2/.test(fs.readFileSync(keyFile, 'utf8')));
+  assert.ok(JSON.parse(fs.readFileSync(keyFile, 'utf8')).keyEnc); // wrapped by the keyring
+  const next = makeChats(sealFor(dir).io); // a second launch: same key file
+  assert.strictEqual((await next.load('a1')).messages[0].content, 'my password is hunter2');
+  assert.deepStrictEqual((await next.list()).map((c) => c.title), ['Secret title']);
+  fs.copyFileSync(path.join(dir, 'a1.json'), path.join(dir, 'b2.json')); // a file can't be passed off as another chat
+  await assert.rejects(sealFor(dir).io.read('b2.json'), /could not be decrypted/);
+  done();
+});
+
+test('seal: upgrade encrypts chats saved before encryption, once, and plain files still read meanwhile', async () => {
+  const { dir, done } = sealDirs();
+  await makeChats(makeDisk(dir)).save({ id: 'old1', title: 'Old', updated: 5, messages: [{ role: 'user', content: 'from before' }] });
+  const store = makeChats(sealFor(dir).io);
+  assert.strictEqual((await store.load('old1')).messages[0].content, 'from before'); // plain text passes through
+  assert.strictEqual(await store.upgrade(), 2); // the chat and the index
+  assert.ok(fs.readdirSync(dir).every((n) => fs.readFileSync(path.join(dir, n), 'utf8').startsWith(PREFIX)));
+  assert.strictEqual(await store.upgrade(), 0);
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['old1']);
+  done();
+});
+
+test('seal: a key that cannot be unlocked is an error, and nothing is written or listed as empty', async () => {
+  const { dir, keyFile, done } = sealDirs();
+  await makeChats(sealFor(dir).io).save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  const keyBefore = fs.readFileSync(keyFile, 'utf8'), files = fs.readdirSync(dir).map((n) => fs.readFileSync(path.join(dir, n), 'utf8'));
+  const locked = sealFor(dir, { ...b64Keyring, dec: () => { throw new Error('keyring locked'); } }), store = makeChats(locked.io);
+  await assert.rejects(store.list(), /couldn't unlock the chat key \(keyring locked\)/);
+  await assert.rejects(store.save({ id: 'b2', title: 'B', updated: 2, messages: [] }), /couldn't unlock/);
+  assert.match((await locked.status()).error, /couldn't unlock/);
+  assert.strictEqual(fs.readFileSync(keyFile, 'utf8'), keyBefore); // the key file is never replaced
+  assert.deepStrictEqual(fs.readdirSync(dir).map((n) => fs.readFileSync(path.join(dir, n), 'utf8')), files);
+  fs.writeFileSync(keyFile, '{"version":1,"keyEnc":'); // damaged: also left alone
+  await assert.rejects(makeChats(sealFor(dir).io).list(), /chatkey\.json\) is damaged/);
+  assert.strictEqual(fs.readFileSync(keyFile, 'utf8'), '{"version":1,"keyEnc":');
+  done();
+});
+
+test('seal: with no keyring the key is kept plain, and moved into the keyring once one works', async () => {
+  const { dir, keyFile, done } = sealDirs();
+  const none = sealFor(dir, { ...b64Keyring, available: () => false });
+  await makeChats(none.io).save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  assert.deepStrictEqual(await none.status(), { keyring: false });
+  assert.ok(JSON.parse(fs.readFileSync(keyFile, 'utf8')).keyPlain);
+  const broken = sealFor(dir, { ...b64Keyring, dec: () => 'not what was stored' }); // a keyring that doesn't read back is not used
+  assert.deepStrictEqual(await broken.status(), { keyring: false });
+  assert.ok(JSON.parse(fs.readFileSync(keyFile, 'utf8')).keyPlain);
+  const later = sealFor(dir, { available: async () => true, enc: async (t) => b64Keyring.enc(t), dec: async (b) => b64Keyring.dec(b) });
+  assert.deepStrictEqual(await later.status(), { keyring: true });
+  const rec = JSON.parse(fs.readFileSync(keyFile, 'utf8')); assert.ok(rec.keyEnc && !rec.keyPlain);
+  assert.deepStrictEqual((await makeChats(later.io).list()).map((c) => c.id), ['a1']); // same key, so the chats still open
+  done();
+});
+
+test('seal: a lost key file means a new key and a notice, and the old encrypted chats are kept', async () => {
+  const { dir, keyFile, done } = sealDirs();
+  await makeChats(sealFor(dir).io).save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  fs.rmSync(keyFile);
+  const fresh = sealFor(dir), store = makeChats(fresh.io);
+  assert.deepStrictEqual(await fresh.status(), { keyring: true });
+  assert.match(fresh.takeNotice(), /^1 saved chat was encrypted with a key this device no longer has\. It is kept on disk/); assert.strictEqual(fresh.takeNotice(), '');
+  assert.deepStrictEqual(await store.list(), []); // unreadable files are skipped, not deleted
+  assert.ok(fs.existsSync(path.join(dir, 'a1.json')));
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2']);
+  done();
 });
 
 // Fake streaming fetch: SSE text cut into awkward 7-byte pieces.
@@ -686,7 +769,7 @@ test('chat list follows the files: a chat missing from the index appears, a dele
   fs.rmSync(path.join(dir, 'b2.json')); // as if the app stopped between deleting the file and updating the index
   fs.writeFileSync(path.join(dir, 'c3.json'), JSON.stringify({ id: 'c3', title: 'C', updated: 3, messages: [] })); // saved, index not yet updated
   assert.deepStrictEqual((await store.list()).map((c) => c.id), ['c3', 'a1']);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, '_index.json'), 'utf8')).map((c) => c.id).sort(), ['a1', 'c3']); // repaired on disk
+  assert.deepStrictEqual(JSON.parse(await sealFor(dir).io.read('_index.json')).map((c) => c.id).sort(), ['a1', 'c3']); // repaired on disk (read as a second launch would)
   const before = fs.statSync(path.join(dir, '_index.json')).mtimeMs;
   await store.list(); assert.strictEqual(fs.statSync(path.join(dir, '_index.json')).mtimeMs, before); // nothing changed: not rewritten
   fs.rmSync(dir, { recursive: true });

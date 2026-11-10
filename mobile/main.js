@@ -6,13 +6,17 @@ const api = require('../api');
 const Lib = require('../lib');
 const makeStore = require('../store');
 const makeChats = require('../chats');
+const { makeChatSeal } = require('../seal');
 const Mcp = require('../mcp');
 const { makeNativeFetch, makeNativeDisk, makeNativeCrypto } = require('./native');
 
 const Javc = registerPlugin('Javc');
 const nativeFetch = makeNativeFetch(Javc);
-const store = makeStore({ io: makeNativeDisk(Javc), crypto: makeNativeCrypto(Javc) });
-const chats = makeChats(makeNativeDisk(Javc, 'chats'));
+const keyring = makeNativeCrypto(Javc); // the Android Keystore or the iOS Keychain: wraps API keys and the chat key
+const store = makeStore({ io: makeNativeDisk(Javc), crypto: keyring });
+const seal = makeChatSeal({ io: makeNativeDisk(Javc), crypto: keyring, chats: makeNativeDisk(Javc, 'chats') }); // chats are encrypted (seal.js)
+const chats = makeChats(seal.io);
+chats.upgrade().catch((e) => console.error('Could not encrypt the saved chats:', e)); // seals chats saved before encryption
 
 // MCP: no local (command) servers on a phone, so those report 'desktop-only'; url servers go through nativeFetch, which has no CORS
 const hub = Mcp.makeHub({ fetchFn: nativeFetch, auth: { get: (name) => store.mcpTokens(name), save: (name, tokens) => store.saveMcpTokens(name, tokens) } });
@@ -44,7 +48,10 @@ const loadPdfParse = () => (pdfParse ??= import(asset('vendor/pdf-parse.es.js'))
 ));
 
 window.api = {
-  getSettings: async () => { const st = await store.get(); return { ...st, notice: store.takeNotice() }; },
+  getSettings: async () => {
+    const st = await store.get(); await seal.status(); // loading the chat key here gets any notice about it in too
+    return { ...st, notice: [store.takeNotice(), seal.takeNotice()].filter(Boolean).join(' ') };
+  },
   patchSettings: (patch) => store.patch(patch),
   saveProfile: (p) => store.saveProfile(p),
   savePersona: (p) => store.savePersona(p),
@@ -74,6 +81,7 @@ window.api = {
   },
   stopChat: async () => current?.abort(),
   listChats: () => chats.list(),
+  chatsStatus: async () => ({ ...(await seal.status()), device: true }),
   loadChat: (id) => chats.load(id),
   saveChat: (chat) => chats.save(chat),
   deleteChat: (id) => chats.remove(id),

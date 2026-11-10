@@ -1,14 +1,15 @@
 # Storage: settings, profiles, chats, keys
 
 **Scope:** what is saved, where, in what shape, and how it survives damage and upgrades.
-**Source:** `store.js`, `profiles.js`, `chats.js`, `disk.js`; the phone versions of `io`/`crypto` in `mobile/native.js`.
+**Source:** `store.js`, `profiles.js`, `chats.js`, `seal.js`, `disk.js`; the phone versions of `io`/`crypto` in `mobile/native.js`.
 
 ## Layers
 
 ```
 store.js (settings logic)  ─┐
-chats.js (history logic)   ─┴─> io  (flat files)  ─> desktop: disk.js makeDisk | phones: native plugin fs*
-store.js                   ───> crypto (enc/dec)  ─> desktop: safeStorage      | phones: Keystore / Keychain
+chats.js (history logic)  ──> seal.js io (AES-GCM) ─┤
+                                                     └─> io  (flat files)  ─> desktop: disk.js makeDisk | phones: native plugin fs*
+store.js, seal.js (chat key) ─> crypto (enc/dec)  ─> desktop: safeStorage      | phones: Keystore / Keychain
 profiles.js                    pure state functions, no I/O
 ```
 
@@ -49,6 +50,18 @@ The app used to be called "chatbot". `migrateLegacy` (`disk.js`, called at start
 - **Encrypted extras.** The search key, the pasted MCP config (it often holds tokens) and each server's OAuth tokens are stored with the same `keyEnc`/`keyPlain` scheme.
 - **Damaged files.** If `settings.json` doesn't parse, or `profiles.known` rejects it (not an object, an array, a v2 file without a profile list, a newer version), `quarantine` renames it to `settings.json.bad`, then `.bad-2`, `.bad-3`... and sets a one-time notice. A read error propagates and leaves the file alone. A missing file is never written back, so a first run leaves nothing on disk until something is saved.
 - **Changing a server** in the MCP config drops its "Always allow" tools and its sign-in.
+
+## Chat encryption (`seal.js`)
+
+Every file in `chats/` (each chat and `_index.json`) is encrypted. `makeChatSeal({io, crypto, chats})` takes the settings folder, the host keyring and the plain chats folder, and returns `{io, status, takeNotice}`. The hosts pass `seal.io` to `makeChats`.
+
+- **One chat key** per install: 256 random bits, kept in `chatkey.json` beside `settings.json` (never inside it, so quarantining a damaged settings file can't lose it), as `{version: 1, keyEnc}`. With no working keyring it's `keyPlain`, and moved to `keyEnc` on a later launch once one works. A wrapping is only used if it decrypts back to the key, so a broken keyring can't lock chats away. In WebCrypto the key is not extractable.
+- **Sealed file:** `JAVC-SEALED-1\n` + `base64(iv[12] | ciphertext | tag)`, AES-256-GCM, with the file name as additional data, so a file can't be passed off as another chat or as the index. `rename` re-seals under the new name.
+- **WebCrypto** (`globalThis.crypto.subtle`) does the work, so the same code runs in Electron's main process, in the phone web views and in tests; big chats never cross the native bridge.
+- **Loaded lazily:** the key loads on the first sealed read or write (or `status()`), not when the module is built. Linux's keyring only works once Electron is ready. `getSettings` calls `status()` so a notice about the key is ready with the settings.
+- **Upgrade:** `chats.upgrade()` seals any file still saved as plain text, through the chat store's queue, so it can't race a save. Desktop runs it in `app.whenReady`, phones at start-up. Until then, plain files are read as they are.
+- **Failures never lose chats.** A key the keyring can't decrypt, or a damaged `chatkey.json`, is an error and is never replaced: `list` rejects (through `io.ready()`, since `list` skips files it can't read), saves reject, and nothing is written. Only a *missing* `chatkey.json` makes a new key. If sealed chats are already there, they're kept on disk and a one-time notice says how many can't be opened. A single file that fails to decrypt is skipped by `list` like a corrupt one.
+- **Status:** `chatsStatus()` gives `{keyring}` or `{error}` (phones add `device: true`); Settings → Chats shows it. On Linux, `safeStorage`'s `basic_text` store uses a fixed built-in key, so the desktop host reports it as no keyring.
 
 ## Chats (`chats.js`)
 

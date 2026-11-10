@@ -103,6 +103,8 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   await page.waitForFunction(() => document.querySelectorAll('.chat-item').length === 1, null, { timeout: 10_000 });
   const saved = await page.evaluate(async () => (await window.api.loadChat((await window.api.listChats())[0].id)).messages.length);
   check(saved >= 2, `the saved chat loads with its messages (got ${saved})`);
+  const sec = await page.evaluate(() => window.api.chatsStatus());
+  check(sec.keyring === true && sec.device === true, `chats are encrypted with a key in the Keystore (${JSON.stringify(sec)})`);
 
   log('Regenerate adds a version of the reply, and the arrows switch between them');
   const vcount = (row) => page.textContent(`.row.${row} .vcount`);

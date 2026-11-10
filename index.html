@@ -572,6 +572,7 @@
       <button type="button" role="tab" id="tab-tools" data-pane="tools" aria-controls="pane-tools">Tools</button>
       <button type="button" role="tab" id="tab-replies" data-pane="replies" aria-controls="pane-replies">Replies</button>
       <button type="button" role="tab" id="tab-summaries" data-pane="summaries" aria-controls="pane-summaries">Summaries</button>
+      <button type="button" role="tab" id="tab-chats" data-pane="chats" aria-controls="pane-chats">Chats</button>
     </div>
     <div class="prefs-body">
       <button type="button" class="icon-btn prefs-close" id="prefsclose" title="Close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
@@ -643,6 +644,11 @@
           <span class="input"><input id="ctxtokens" type="number" min="1000" step="1000" inputmode="numeric"></span>
         </label>
         <p id="sumerr" class="perr" role="alert" hidden></p>
+      </section>
+      <section role="tabpanel" id="pane-chats" aria-labelledby="tab-chats" tabindex="0" hidden>
+        <h3>Saved chats</h3>
+        <p class="sub" id="chatsec"></p>
+        <p id="chatsecerr" class="perr" role="alert" hidden></p>
       </section>
     </div>
   </div>

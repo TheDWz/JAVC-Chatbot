@@ -7,6 +7,7 @@ const api = require('./api');
 const Lib = require('./lib');
 const makeChats = require('./chats');
 const makeStore = require('./store');
+const { makeChatSeal } = require('./seal');
 const Mcp = require('./mcp');
 const { makeDisk, migrateLegacy } = require('./disk');
 
@@ -29,17 +30,21 @@ try { // the app was called "chatbot" before the JAVC rename; bring its settings
   if (moved.length) console.log('Moved from the old chatbot folder:', moved.join(', '));
 } catch (e) { console.error('Could not move data from the old chatbot folder:', e); }
 
-const store = makeStore({
-  io: makeDisk(app.getPath('userData')),
-  crypto: {
-    available: () => safeStorage.isEncryptionAvailable(),
-    enc: (t) => safeStorage.encryptString(t).toString('base64'),
-    dec: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
-  },
-});
+/** The OS keyring (DPAPI on Windows, the Secret Service or KWallet on Linux): wraps API keys and the chat key. */
+const keyring = {
+  available: () => safeStorage.isEncryptionAvailable(),
+  enc: (t) => safeStorage.encryptString(t).toString('base64'),
+  dec: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
+};
+const store = makeStore({ io: makeDisk(app.getPath('userData')), crypto: keyring });
+// Chats are encrypted with a key the keyring wraps (seal.js). It loads on first use, after the app is ready, as Linux's keyring needs.
+const seal = makeChatSeal({ io: makeDisk(app.getPath('userData')), crypto: keyring, chats: makeDisk(path.join(app.getPath('userData'), 'chats')) });
 
 /** The settings for the page, with any one-time notice (such as a damaged settings file). */
-ipcMain.handle('settings:get', async () => { const st = await store.get(); return { ...st, notice: store.takeNotice() }; });
+ipcMain.handle('settings:get', async () => {
+  const st = await store.get(); await seal.status(); // loading the chat key here gets any notice about it in too
+  return { ...st, notice: [store.takeNotice(), seal.takeNotice()].filter(Boolean).join(' ') };
+});
 ipcMain.handle('settings:patch', (_e, patch) => store.patch(patch));
 ipcMain.handle('profiles:save', (_e, p) => store.saveProfile(p));
 ipcMain.handle('personas:save', (_e, p) => store.savePersona(p));
@@ -133,7 +138,13 @@ app.on('before-quit', (e) => { // stop the servers first; before-quit doesn't wa
   Promise.race([hub.closeAll(), new Promise((r) => setTimeout(r, 5000))]).finally(() => app.quit());
 });
 
-const chats = makeChats(makeDisk(path.join(app.getPath('userData'), 'chats')));
+const chats = makeChats(seal.io);
+/** Whether chats are encrypted and the key is really protected. Linux's 'basic_text' store uses a fixed built-in key, so it doesn't count. */
+ipcMain.handle('chats:status', async () => {
+  const s = await seal.status();
+  if (s.keyring && process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') s.keyring = false;
+  return s;
+});
 ipcMain.handle('chats:list', () => chats.list());
 ipcMain.handle('chats:load', (_e, id) => chats.load(id));
 ipcMain.handle('chats:save', (_e, chat) => chats.save(chat));
@@ -147,6 +158,7 @@ ipcMain.handle('pdf:extract', async (_e, buf) => {
 });
 
 app.whenReady().then(() => {
+  chats.upgrade().then((n) => { if (n) console.log(`Encrypted ${n} chat files`); }, (e) => console.error('Could not encrypt the saved chats:', e));
   const win = new BrowserWindow({
     width: 900, height: 700, backgroundColor: '#15161a', autoHideMenuBar: true,
     // shortcut: Wayland ignores this and uses the .desktop file's icon; it matters on Windows and X11.

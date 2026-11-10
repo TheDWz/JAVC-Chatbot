@@ -985,7 +985,7 @@ addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); 
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
 // ---- Settings dialog: Appearance / Profiles / Search / Tools / Replies / Summaries ----
-const PANES = ['appearance', 'profiles', 'search', 'tools', 'replies', 'summaries'];
+const PANES = ['appearance', 'profiles', 'search', 'tools', 'replies', 'summaries', 'chats'];
 let prefsDirty = false; // a Replies switch changed: redraw the open chat when the dialog closes
 function showPane(name, focus) {
   for (const n of PANES) {
@@ -996,9 +996,21 @@ function showPane(name, focus) {
   if (name === 'summaries') loadSummaryPane(); // only here, since it fetches a model list
   if (name === 'tools') showMcpStatus(); // only here, since it starts the servers
 }
+/** Says how saved chats are protected here: the host reports whether the chat key is in a real keyring (seal.js). */
+async function loadChatsPane() {
+  $('chatsecerr').hidden = true; $('chatsec').textContent = '';
+  let s;
+  try { s = await window.api.chatsStatus(); } catch (e) { s = { error: cleanErr(e) }; }
+  if (s.error) { $('chatsecerr').textContent = `Saved chats can't be opened: ${s.error}`; $('chatsecerr').hidden = false; return; }
+  $('chatsec').textContent = s.keyring
+    ? (s.device ? 'Chats are encrypted on this device with a key held by its keystore. Copies of the files can\'t be read.'
+      : 'Chats are encrypted with a key held by your system keyring. Other users and copies of the disk can\'t read them; programs you run can.')
+    : (s.device ? 'Chats are encrypted, but this device\'s keystore isn\'t working, so the key is kept unprotected in the app\'s private folder.'
+      : 'Chats are encrypted, but no system keyring was found, so the key is stored unprotected beside them. Unlock or install a keyring (GNOME Keyring or KWallet) and restart the app to protect it.');
+}
 function openPrefs(pane) {
   const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; $('gradon').checked = state.theme.gradient; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
-  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); loadMcpPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
+  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); loadMcpPane(); loadChatsPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
 }
 for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
 $('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
