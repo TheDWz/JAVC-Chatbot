@@ -84,7 +84,8 @@ Settings → Tools takes the same `mcpServers` JSON you would give Claude, and o
 ```
 
 - **Approval.** Every tool call shows a dialog first: **Deny**, **Allow once** or **Always allow**. <kbd>Esc</kbd> or the back button denies. "Always allow" is remembered per server and tool, and forgotten if that server's entry changes.
-- **Local servers run on the desktop.** Servers with a `command` run as child processes of the desktop app. `npx` and `uvx` are found through your login shell's `PATH`, so nvm and `~/.local/bin` installs work even when the app is started from the desktop menu. Remote servers (`"type": "http"` with a `"url"`) are accepted but not connected yet.
+- **Local servers run on the desktop.** Servers with a `command` run as child processes of the desktop app. `npx` and `uvx` are found through your login shell's `PATH`, so nvm and `~/.local/bin` installs work even when the app is started from the desktop menu.
+- **Remote servers** use Streamable HTTP: `{"mcpServers": {"name": {"type": "http", "url": "https://…/mcp", "headers": {"Authorization": "Bearer …"}}}}`. They work on the desktop and on Android. `headers` is optional; servers that need a browser sign-in (OAuth) aren't supported yet.
 - **Other forms.** A bare `{"name": {...}}` object, or a single entry on its own, works too.
 - **Limits.** The model must support tools. Tool results aren't saved with the chat, so later turns see only the model's answer.
 
@@ -168,7 +169,7 @@ To sign a local build, set the same names as environment variables, with `ANDROI
 | `index.html` / `renderer.js` | User interface, shared by the desktop and Android apps |
 | `lib.js` | Shared pure logic: prompts, attachments, model search, rich-reply splitting and sandbox pages |
 | `api.js` | OpenAI-compatible streaming client and reasoning support |
-| `mcp.js` | MCP client: reads the pasted config, runs local servers and offers their tools to the model |
+| `mcp.js` | MCP client: reads the pasted config, runs local servers, connects to remote ones and offers their tools to the model |
 | `profiles.js` / `store.js` | Connection profiles, personas and encrypted settings |
 | `chats.js` | Chat history |
 | `disk.js` | Desktop file access for settings and chats, and the move from the old `chatbot` folder |

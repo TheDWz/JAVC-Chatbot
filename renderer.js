@@ -1020,7 +1020,9 @@ async function showMcpStatus(reload = false) {
   catch (e) { if (mine === mcpStatusSeq) $('mcplist').replaceChildren(mcpRow('Servers', cleanErr(e), true)); return; }
   if (mine !== mcpStatusSeq) return;
   $('mcplist').replaceChildren(...list.map((s) => (s.state === 'ok' ? mcpRow(s.name, s.tools === 1 ? '1 tool' : `${s.tools} tools`)
-    : s.state === 'desktop-only' ? mcpRow(s.name, 'Desktop only: runs a command on a computer') : mcpRow(s.name, s.error || 'Not working', true))));
+    : s.state === 'desktop-only' ? mcpRow(s.name, 'Desktop only: runs a command on a computer')
+    : s.state === 'auth' ? mcpRow(s.name, "Needs sign-in, which this app can't do yet. A server that takes a token can get it in \"headers\".", true)
+    : mcpRow(s.name, s.error || 'Not working', true))));
 }
 async function saveMcp(p) {
   $('mcperr').hidden = true;

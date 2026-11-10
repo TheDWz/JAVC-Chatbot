@@ -1172,10 +1172,9 @@ test('mcp hub: a changed or removed server is stopped', async () => {
 
 test('mcp hub: a reply refuses calls to a server changed or removed meanwhile; a server that floods stdout is stopped', async () => {
   const hub = Mcp.makeHub({ spawn: nodeSpawn });
-  hub.configure({ ed: testServer(), rh: { type: 'http', url: 'https://x.example/mcp', headers: {} } });
+  hub.configure({ ed: testServer() });
   try {
     const set = await hub.tools();
-    assert.deepStrictEqual(set.failed, []); // remote servers are skipped until they're supported, not reported on every reply
     hub.configure({ ed: testServer({ X: '1' }) });
     await assert.rejects(set.run('mcp__ed__echo', { t: 'x' }), /"ed" was changed or removed/);
     hub.configure({});
@@ -1281,4 +1280,118 @@ test('mcp hub: Stop while a server is still starting ends the wait at once; the 
     await assert.rejects(hub.tools(ctl.signal), /Stopped/);
     assert.ok(Date.now() - t0 < 2000);
   } finally { await hub.closeAll(); }
+});
+
+// A fake Streamable HTTP MCP server, as a fetch: sessions, JSON and event-stream answers, a ping from the server, an expiring session.
+const mcpHttp = (opts = {}) => {
+  const log = [], state = { session: 0, expireNext: false };
+  const reply = (status, body, headers = {}) => new Response(body, { status, headers });
+  const f = async (url, o) => {
+    const h = o.headers || {}; log.push({ method: o.method, headers: h, body: o.body ? JSON.parse(o.body) : null });
+    if (opts.auth) return reply(401, 'authentication required', { 'www-authenticate': 'Bearer resource_metadata="https://x.example/.well-known/oauth-protected-resource/mcp"' });
+    if (o.method === 'DELETE') return reply(200, '');
+    const m = o.body ? JSON.parse(o.body) : {};
+    if (m.method === 'initialize') {
+      if (opts.slowInit) await new Promise((_, no) => o.signal.addEventListener('abort', () => no(new DOMException('aborted', 'AbortError'))));
+      state.session++;
+      return reply(200, JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-11-25', capabilities: {}, serverInfo: { name: 'h', version: '1' } } }), { 'content-type': 'application/json', 'mcp-session-id': 's' + state.session });
+    }
+    if (!h['Mcp-Session-Id']) return reply(400, 'missing session');
+    if (h['Mcp-Session-Id'] !== 's' + state.session) return reply(404, 'session gone'); // ended by the server
+    if (o.method === 'GET' && !['resume', 'reset'].includes(opts.drop)) return reply(405, ''); // resuming is handled below
+    if (state.expireNext) { state.expireNext = false; return reply(404, 'session gone'); }
+    if (o.method !== 'GET' && (m.method === undefined || m.id === undefined)) return reply(202, null);
+    if (m.method === 'tools/list') return reply(200, JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { tools: [{ name: 'quote', inputSchema: { type: 'object' } }] } }), { 'content-type': 'application/json' });
+    const enc = new TextEncoder(), sseRes = (text, close) => new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(text)); if (close) c.close(); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const answer = (id) => `data: ${JSON.stringify({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'resumed' }] } })}\n\n`;
+    if (opts.drop === 'silent') return sseRes(`data: ${JSON.stringify({ jsonrpc: '2.0', id: 'srv1', method: 'ping' })}\n\n`, true); // closes, nothing to resume from
+    if (opts.drop === 'resume' || opts.drop === 'reset') { // a priming event with an id and retry, then the connection closes (or drops); the answer comes on the GET
+      if (o.method === 'GET') { state.resumedFrom = h['Last-Event-ID']; return sseRes('id: e2\n' + answer(state.pendingId), true); }
+      state.pendingId = m.id;
+      if (opts.drop === 'resume') return sseRes('id: e1\nretry: 5\ndata: \n\n', true);
+      let n = 0;
+      return new Response(new ReadableStream({ pull(c) { if (n++) c.error(new TypeError('terminated')); else c.enqueue(enc.encode('id: e1\nretry: 5\ndata: \n\n')); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+    if (opts.drop === 'flood') { let n = 0; return new Response(new ReadableStream({ pull(c) { if (n++ < 40) c.enqueue(enc.encode('data: ' + 'x'.repeat(1024 * 1024))); else c.close(); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }); }
+    // tools/call: an event stream with a ping first, the answer's data over two lines, and a stream left open
+    return new Response(new ReadableStream({ start(c) {
+      c.enqueue(enc.encode(`event: message\r\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 'srv1', method: 'ping' })}\r\n\r\n`));
+      c.enqueue(enc.encode(`data: {"jsonrpc":"2.0","id":${m.id},\ndata: "result":{"content":[{"type":"text","text":"AAPL ${m.params.arguments.n}"}]}}\n\n`));
+    } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  return { f, log, state };
+};
+const remote = { rh: { type: 'http', url: 'https://x.example/mcp', headers: { 'X-Key': 'k' } } };
+
+test('mcp http: session and version headers, JSON and event-stream answers, ping answered, an ended session is started again', async () => {
+  const { f, log, state } = mcpHttp(), hub = Mcp.makeHub({ fetchFn: f }); // no spawn, as on a phone: url servers still work
+  hub.configure(remote);
+  assert.deepStrictEqual(await hub.status(), [{ name: 'rh', type: 'http', state: 'ok', tools: 1, error: '' }]);
+  const set = await hub.tools();
+  assert.strictEqual(await set.run('mcp__rh__quote', { n: 1 }), 'AAPL 1');
+  const [init, initialized, list] = log;
+  assert.strictEqual(init.body.method, 'initialize'); assert.strictEqual(init.headers['Mcp-Session-Id'], undefined); assert.strictEqual(init.headers['MCP-Protocol-Version'], undefined);
+  assert.strictEqual(init.headers.Accept, 'application/json, text/event-stream'); assert.strictEqual(init.headers['X-Key'], 'k');
+  assert.strictEqual(initialized.body.method, 'notifications/initialized'); assert.strictEqual(list.body.method, 'tools/list'); // in that order
+  assert.strictEqual(list.headers['MCP-Protocol-Version'], '2025-11-25'); assert.strictEqual(list.headers['Mcp-Session-Id'], 's1');
+  assert.ok(log.some((e) => e.body?.id === 'srv1' && e.body.result && e.headers['Mcp-Session-Id'] === 's1'), 'the ping was answered');
+  state.expireNext = true;
+  assert.strictEqual(await set.run('mcp__rh__quote', { n: 2 }), 'AAPL 2');
+  assert.strictEqual(state.session, 2);
+  await hub.closeAll();
+  assert.deepStrictEqual(log.filter((e) => e.method === 'DELETE').map((e) => e.headers['Mcp-Session-Id']), ['s2']);
+});
+
+test('mcp http: a server that wants sign-in, one that is down, and one that answers an error are told apart', async () => {
+  const hub = Mcp.makeHub({ fetchFn: mcpHttp({ auth: true }).f });
+  hub.configure(remote);
+  const [s] = await hub.status();
+  assert.strictEqual(s.state, 'auth'); assert.match(s.error, /sign in/);
+  const down = Mcp.makeHub({ fetchFn: async () => { throw new TypeError('fetch failed'); } });
+  down.configure(remote);
+  assert.match((await down.status())[0].error, /Couldn't reach x\.example: fetch failed/);
+  const broken = Mcp.makeHub({ fetchFn: async () => new Response('oops', { status: 500 }) });
+  broken.configure(remote);
+  assert.match((await broken.status())[0].error, /x\.example answered HTTP 500: oops/);
+});
+
+test('mcp http: a server removed while connecting is stopped; an ended session is started again once for every call that used it', { timeout: 10000 }, async () => {
+  const slow = mcpHttp({ slowInit: true }), hub = Mcp.makeHub({ fetchFn: slow.f });
+  hub.configure(remote);
+  const starting = hub.status();
+  await new Promise((r) => setTimeout(r, 10));
+  hub.configure({});
+  assert.match((await starting)[0].error, /Stopped/);
+  assert.deepStrictEqual(slow.log.map((e) => e.body?.method), ['initialize']); // nothing after the cancelled initialize
+
+  const { f, log, state } = mcpHttp(), h2 = Mcp.makeHub({ fetchFn: f });
+  h2.configure(remote);
+  const set = await h2.tools();
+  state.session++; // the server forgets session s1
+  assert.deepStrictEqual(await Promise.all([set.run('mcp__rh__quote', { n: 1 }), set.run('mcp__rh__quote', { n: 2 })]), ['AAPL 1', 'AAPL 2']);
+  assert.strictEqual(log.filter((e) => e.body?.method === 'initialize').length, 2); // one new session, shared by both calls
+  await h2.closeAll();
+});
+
+test('mcp http: a dropped stream is resumed too, and one that never ends a line is cut off', async () => {
+  const reset = mcpHttp({ drop: 'reset' }), hub = Mcp.makeHub({ fetchFn: reset.f });
+  hub.configure(remote);
+  assert.strictEqual(await (await hub.tools()).run('mcp__rh__quote', {}), 'resumed');
+  assert.strictEqual(reset.state.resumedFrom, 'e1');
+  const flood = Mcp.makeHub({ fetchFn: mcpHttp({ drop: 'flood' }).f });
+  flood.configure(remote);
+  await assert.rejects((await flood.tools()).run('mcp__rh__quote', {}), /larger than 32 MB/);
+});
+
+test('mcp http: a stream closed before the answer is resumed from its last event id, or fails instead of hanging', async () => {
+  const resume = mcpHttp({ drop: 'resume' }), hub = Mcp.makeHub({ fetchFn: resume.f });
+  hub.configure(remote);
+  const set = await hub.tools();
+  assert.strictEqual(await set.run('mcp__rh__quote', { n: 1 }), 'resumed');
+  assert.strictEqual(resume.state.resumedFrom, 'e1');
+  const get = resume.log.find((e) => e.method === 'GET');
+  assert.strictEqual(get.headers.Accept, 'text/event-stream'); assert.strictEqual(get.headers['Mcp-Session-Id'], 's1');
+  const silent = Mcp.makeHub({ fetchFn: mcpHttp({ drop: 'silent' }).f });
+  silent.configure(remote);
+  await assert.rejects((await silent.tools()).run('mcp__rh__quote', { n: 1 }), /closed the stream without answering/);
 });
