@@ -331,10 +331,15 @@
      so no script is involved; iOS and older WebViews ignore this block and keep their native picker. */
   @supports (appearance: base-select) {
     select, .pill select, ::picker(select) { appearance: base-select; } /* .pill select sets appearance: none, so it's named here too */
-    .pill select::picker-icon { display: none; } /* the pills draw their own chevron */
-    .input select::picker-icon { content: ""; width: 14px; height: 14px; background: var(--muted); transition: rotate var(--t-mid) var(--spring);
+    /* One line, cut at the padding: the selected text can't get an ellipsis here, and wrapping made the pills two lines tall */
+    select { white-space: nowrap; overflow: clip; overflow-clip-margin: content-box; }
+    select::picker-icon { display: none; } /* the clip would hide it; the pills draw their own chevron, .input draws one below */
+    .input:has(> select) { position: relative; }
+    .input select { padding-right: 34px; }
+    .input:has(> select)::after { content: ""; position: absolute; right: 12px; top: calc(50% - 7px); width: 14px; height: 14px; pointer-events: none;
+      background: var(--muted); transition: rotate var(--t-mid) var(--spring);
       mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat; }
-    .input select:open::picker-icon { rotate: 180deg; }
+    .input:has(> select:open)::after { rotate: 180deg; }
     ::picker(select) { margin-block: 6px; min-width: anchor-size(width); padding: 6px; border-radius: 16px; color: var(--text);
       background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow);
       transform-origin: top; opacity: 0; scale: .95;

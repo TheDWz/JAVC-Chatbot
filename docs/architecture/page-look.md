@@ -15,7 +15,8 @@ The translucent layers use `--glass` / `--glass-strong`, `--glass-line`, `--glas
 - **Prefix:** always write `-webkit-backdrop-filter` beside `backdrop-filter`, because iOS 17 needs it.
 - **Dropdowns:** every `<select>` uses `appearance: base-select` (Chromium 135+), which turns its list into an in-page glass `::picker(select)`. The `<select>` keeps its value, options, events and keyboard handling, so no script is involved.
   - `.pill select` sets `appearance: none`, so the rule names it as well. Otherwise the pill opens an empty list.
-  - The pills hide `::picker-icon`, because they draw their own chevron. Dialog selects use a mask-image chevron that flips while the list is open.
+  - Selects stay on one line (`white-space: nowrap`) and are clipped at their content box. A stylable select would otherwise wrap a long name, and its built-in text can't take an ellipsis.
+  - Because of that clip, `::picker-icon` is hidden everywhere. The pills draw their own chevron, and `.input` fields draw a mask-image chevron on `::after` that flips while the list is open.
   - iOS and older WebViews ignore the `@supports` block and keep their native picker. For those, `.pill option` and `.input option` stay opaque.
 
 ## The chat scrolls under the header and composer
