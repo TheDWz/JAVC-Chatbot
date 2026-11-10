@@ -55,7 +55,8 @@
   #chatlist.locked { opacity: .55; pointer-events: none; }
   .grp { padding: 14px 10px 6px; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
   .chat-item { display: flex; align-items: center; border-radius: 12px; }
-  .chat-item:hover, .chat-item.active { background: var(--fill); }
+  .chat-item:hover { background: var(--fill); }
+  .chat-item.active { background: color-mix(in srgb, var(--a1) 14%, transparent); }
   .chat-item.active .chat-title { font-weight: 550; }
   .chat-title { flex: 1; min-width: 0; text-align: left; padding: 8px 10px; background: none; border: 0; cursor: pointer; font-size: 14px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -85,8 +86,10 @@
   .perr { margin: 0; color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
 
   /* Top bar */
-  /* Header and composer sit inside #scroll, sticky, so the chat scrolls under their glass */
-  header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--glass-line); }
+  /* The chat scrolls under the header and the composer. The header floats over #scroll (inside it, the scroller would clip
+     its popovers and the composer would paint over them); the composer is sticky inside #scroll, so it keeps its own space. */
+  .main { position: relative; }
+  header { position: absolute; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--glass-line); }
   /* The blur sits on a layer behind the header, not on the header itself: a blurred parent would stop the
      popovers inside it from blurring the chat, and would make it the containing block of the phone's fixed #modelpop. */
   header::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); }
@@ -96,8 +99,9 @@
   .mark { display: grid; place-items: center; color: var(--text); }
   .mark svg { width: 24px; height: 24px; stroke-width: 1.8; }
   /* Capsule controls: header pills, the composer and the toast are clear glass; popovers, panels and dialogs are frosted more heavily so text stays readable */
-  .pill select, .modelbtn, .composer, #toast { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-    border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow); }
+  .pill select, .modelbtn, .composer, #toast { background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow); }
+  .composer, #toast { -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); } /* the pills sit on the header's blur already */
+  .att, .rich-exp { background: var(--glass-strong); border: 1px solid var(--glass-line); }
   #modelpop, #morepop, #side, dialog { background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
     border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow); }
   .pill { position: relative; display: flex; align-items: center; min-width: 0; }
@@ -110,11 +114,12 @@
   #modelpop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; width: min(380px, calc(100vw - 32px)); display: flex; flex-direction: column;
     border-radius: 18px; overflow: hidden; animation: rise .15s ease-out; }
   #modelq { margin: 8px; padding: 8px 12px; border: 1px solid transparent; border-radius: 12px; background: var(--fill); outline: 0; font-size: 14px; }
-  #modelq:focus { border-color: var(--line); }
+  #modelq:focus { border-color: var(--accent-text); }
   #modellist { max-height: 320px; overflow-y: auto; padding: 0 6px 6px; }
   .mopt { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: 10px;
     background: transparent; cursor: pointer; font-size: 13.5px; overflow-wrap: anywhere; }
-  .mopt.hi, .mopt:hover { background: var(--fill); }
+  .mopt:hover { background: var(--fill); }
+  .mopt.hi { background: color-mix(in srgb, var(--a1) 14%, transparent); } /* the row Enter picks; kept apart from the hovered one */
   .mopt.cur { color: var(--accent-text); font-weight: 600; }
   .mopt svg { width: 14px; height: 14px; }
   .mnote { padding: 12px 14px; font-size: 13px; color: var(--muted); }
@@ -128,7 +133,8 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* Conversation */
-  #scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  /* --head-h and --foot-h are measured in renderer.js; focus and paging keep content out from under the glass */
+  #scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding-top: var(--head-h, 55px); scroll-padding: var(--head-h, 55px) 0 var(--foot-h, 90px); }
   #log { flex: 1 0 auto; width: 100%; max-width: 780px; margin: 0 auto; padding: 26px 20px 12px; display: flex; flex-direction: column; gap: 20px; }
   .row { display: flex; gap: 12px; animation: rise .22s ease-out; }
   /* Where a chat's summary starts: a hairline with a quiet label that opens the summary. */
@@ -204,8 +210,8 @@
   /* Composer */
   /* A floating capsule, kept clear of the window edge */
   footer { position: sticky; bottom: 0; z-index: 10; padding: 6px 20px 12px; background: linear-gradient(transparent, var(--bg) 70%); } /* the chat fades out under the composer, so the hint stays readable */
-  .composer { max-width: 760px; margin: 0 auto; display: flex; align-items: flex-end; gap: 2px; padding: 6px; border-radius: 26px; transition: box-shadow .15s; }
-  .composer:focus-within { box-shadow: var(--glass-shadow), 0 0 0 1px var(--line); }
+  .composer { max-width: 760px; margin: 0 auto; display: flex; align-items: flex-end; gap: 2px; padding: 6px; border-radius: 26px; transition: border-color .15s; }
+  .composer:focus-within { border-color: var(--ring); }
   .composer textarea { flex: 1; border: 0; outline: 0; background: transparent; resize: none; field-sizing: content; min-height: 36px; max-height: 200px; overflow-y: auto; padding: 6px 8px; line-height: 1.5; }
   .composer textarea::placeholder { color: var(--faint); }
   .send { width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--grad); color: #fff; display: grid; place-items: center;
@@ -238,7 +244,7 @@
   .attachments { max-width: 760px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 8px; }
   .attachments:empty { display: none; }
   .att { display: inline-flex; align-items: center; gap: 8px; max-width: 240px; padding: 5px 6px 5px 8px; font-size: 12.5px;
-    background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border: 1px solid var(--glass-line); border-radius: 14px; animation: rise .2s ease-out; }
+    border-radius: 14px; animation: rise .2s ease-out; }
   .att img { width: 28px; height: 28px; border-radius: 7px; object-fit: cover; }
   .att .ico { width: 28px; height: 28px; border-radius: 7px; background: var(--surface-2); display: grid; place-items: center; color: var(--muted); }
   .att .ico svg { width: 15px; height: 15px; }
@@ -287,7 +293,7 @@
   .input { display: flex; align-items: center; background: var(--fill); border: 1px solid var(--line-soft); border-radius: 12px; transition: border-color .15s; }
   .input:focus-within { border-color: var(--accent-text); }
   .input select { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
-  .input option { background: var(--surface); }
+  .input option, .pill option { background: var(--surface); } /* desktop select lists take their background from here */
   .input input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); }
   .input textarea { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 12px; font-size: 14px; color: var(--text); resize: vertical; min-height: 120px; }
   .input .icon-btn { width: 30px; height: 30px; margin-right: 4px; }
@@ -368,7 +374,7 @@
   /* HTML/CSS/JS from the model: sandboxed frame inside the reply, expandable to the full window */
   .rich { position: relative; margin: 10px 0; border: 1px solid var(--line-soft); border-radius: 14px; overflow: hidden; white-space: normal; }
   .rich iframe { display: block; width: 100%; height: 60px; border: 0; }
-  .rich-exp { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; opacity: 0; background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border: 1px solid var(--glass-line); }
+  .rich-exp { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; opacity: 0; }
   .rich:hover .rich-exp, .rich-exp:focus-visible { opacity: 1; }
   .rich-exp svg { width: 15px; height: 15px; }
   .richview { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); }
@@ -425,7 +431,6 @@
 </aside>
 <div id="histscrim"></div>
 <div class="main">
-<div id="scroll">
 <header>
   <button class="icon-btn" id="histbtn" title="Chat history" aria-label="Toggle chat history"><svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M9 5v14"/></svg></button>
   <div class="brand"><span class="mark"><svg viewBox="0 0 24 24"><path d="M15.08 12.87C13.77 15.67 10.44 16.88 7.63 15.58C4.83 14.27 3.62 10.94 4.92 8.13C6.23 5.33 9.56 4.12 12.37 5.42"/><path d="M8.92 11.13C10.23 8.33 13.56 7.12 16.37 8.42C19.17 9.73 20.38 13.06 19.08 15.87C17.77 18.67 14.44 19.88 11.63 18.58"/></svg></span><span class="brand-name">JAVC Chatbot</span></div>
@@ -452,6 +457,7 @@
   <button class="icon-btn" id="gear" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
 </header>
 
+<div id="scroll">
 <main id="log"></main>
 
 <footer>

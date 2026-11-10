@@ -72,6 +72,13 @@ function toast(text) {
 async function copy(text) {
   try { await window.api.copyText(text); toast('Copied'); } catch { toast('Copy failed'); }
 }
+// The header floats over the chat and the composer is sticky at its bottom; their heights keep content from starting, or landing on focus, under them.
+{
+  const head = document.querySelector('header'), foot = document.querySelector('footer'), bars = new ResizeObserver(() => {
+    $('scroll').style.setProperty('--head-h', head.offsetHeight + 'px'); $('scroll').style.setProperty('--foot-h', foot.offsetHeight + 'px');
+  });
+  bars.observe(head); bars.observe(foot);
+}
 function scrollDown() { $('scroll').scrollTop = $('scroll').scrollHeight; }
 function push(node) { $('log').querySelector('.empty')?.remove(); $('log').append(node); scrollDown(); return node; }
 
