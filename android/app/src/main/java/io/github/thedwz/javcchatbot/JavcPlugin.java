@@ -414,15 +414,16 @@ public class JavcPlugin extends Plugin {
     private void saveFileDone(PluginCall call, ActivityResult result) {
         if (call == null) return;
         Uri uri = result.getResultCode() == Activity.RESULT_OK && result.getData() != null ? result.getData().getData() : null;
+        String data = call.getString("data", "");
+        getBridge().releaseCall(call); // Capacitor keeps a call saved for an activity; drop it so the export text isn't held
         if (uri == null) {
             JSObject r = new JSObject();
             r.put("saved", false);
             call.resolve(r);
             return;
         }
-        String data = call.getString("data", "");
         http.execute(() -> { // off the main thread: an export with images can be many megabytes
-            try (OutputStream out = getContext().getContentResolver().openOutputStream(uri, "wt")) {
+            try (OutputStream out = getContext().getContentResolver().openOutputStream(uri, "w")) { // a new document starts empty; some providers (Drive) refuse "wt"
                 if (out == null) throw new IOException("Could not open the file");
                 out.write(data.getBytes(StandardCharsets.UTF_8));
                 JSObject r = new JSObject();
