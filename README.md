@@ -4,10 +4,10 @@
 
 # JAVC Chatbot
 
-**A fast, private client for any OpenAI-compatible API, on Linux, Windows and Android.**
+**A fast, private client for any OpenAI-compatible API, on Linux, Windows, Android and iOS.**
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-6d28d9?style=flat-square)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20Android-4f46e5?style=flat-square)](#download)
+[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20Android%20%7C%20iOS-4f46e5?style=flat-square)](#download)
 [![Electron](https://img.shields.io/badge/Electron-45-2563eb?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Build](https://img.shields.io/github/actions/workflow/status/TheDWz/JAVC-Chatbot/build.yml?style=flat-square&label=build)](https://github.com/TheDWz/JAVC-Chatbot/actions/workflows/build.yml)
 
@@ -37,7 +37,7 @@
 - **Model picker.** Fetch your provider's model list and search it as you type.
 - **Themes.** Six accent gradients (Aurora purple-to-blue is the default) or your own two colors, in dark or light mode following your system setting.
 - **One settings panel.** Appearance, connection profiles and reply formats in one place, opened from the gear.
-- **Phone-ready.** The Android app is the same app, with a layout that fits a phone screen and the back button closing whatever is open.
+- **Phone-ready.** The Android and iOS apps are the same app, with a layout that fits a phone screen (and, on Android, the back button closing whatever is open).
 
 ## Download
 
@@ -51,12 +51,15 @@ Prebuilt packages are produced by [GitHub Actions](https://github.com/TheDWz/JAV
 | Linux, portable | `javc-chatbot-<version>.tar.gz` | Extract and run `./javc-chatbot` |
 | Windows 10 / 11 | `JAVC-Chatbot-Setup-<version>.exe` | Run the installer (per-user, no admin needed) |
 | Android 8.0 or later | `JAVC-Chatbot-<version>.apk` | Open the file on your phone and allow your browser or file manager to install apps |
+| iOS / iPadOS 17.5 or later | `JAVC-Chatbot-<version>.ipa` | Sign and install it with [Sideloadly](https://sideloadly.io/), [AltStore](https://altstore.io/) or another signing tool |
 
 > [!NOTE]
 > The Windows installer isn't code-signed yet, so SmartScreen may show "Windows protected your PC". Choose **More info → Run anyway**.
 > On distros that restrict unprivileged user namespaces (for example Ubuntu 24.04), the AppImage and tar.gz builds may need `--no-sandbox`. The `.deb` and `.rpm` packages don't.
 >
 > The Android app isn't on the Play Store, so Android asks you to allow installs from the app you open the APK with. It needs an up-to-date **Android System WebView** (version 123 or later), which the Play Store keeps updated on most phones; if yours is too old, the app tells you and links to the update.
+>
+> The iOS app isn't on the App Store and the `.ipa` is **unsigned**: your signing tool signs it with your own Apple ID when it installs it. With a free Apple ID, iOS stops apps signed that way after 7 days unless the tool refreshes them (AltStore does this for you). Saved API keys are encrypted with a key in the iPhone's Keychain that belongs to the signer, so if you re-sign the app with a *different* Apple ID, the app asks you to type your keys again; your chats and other settings stay.
 
 ## Getting started
 
@@ -92,11 +95,12 @@ Settings → Tools takes the same `mcpServers` JSON you would give Claude, and o
 ## Privacy & security
 
 - **No telemetry.** The app only talks to the API endpoint you configure. The one exception is web search, which is off until you turn it on: then the queries the model writes are sent to Linkup (linkup.so) with your Linkup key. MCP servers you add run on your computer with your user's permissions and talk to whatever they're built for; the model can only use their tools after you allow each call.
-- **Encrypted keys.** API keys (including the Linkup key) are encrypted with your OS keychain through Electron's `safeStorage` and are only ever sent to the service they belong to: your provider, or Linkup for the search key. The MCP server config is encrypted the same way, since its `env` and `headers` often hold tokens. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device.
+- **Encrypted keys.** API keys (including the Linkup key) are encrypted with your OS keychain through Electron's `safeStorage` and are only ever sent to the service they belong to: your provider, or Linkup for the search key. The MCP server config is encrypted the same way, since its `env` and `headers` often hold tokens. On a Linux desktop with no keyring, the key is stored in a file only your user can read. On Android, keys are encrypted with a key held by the Android Keystore, which never leaves the device. On iOS, they are encrypted with a key kept in the Keychain for this device only.
 - **Local data.** Settings and chats are stored in plain files on your machine:
   - Linux: `~/.config/javc-chatbot/`
   - Windows: `%APPDATA%\javc-chatbot\`
   - Android: the app's private storage, which other apps can't read. It's left out of cloud backups, and uninstalling the app deletes it.
+  - iOS: the app's private storage, likewise left out of iCloud and computer backups and deleted with the app.
   - Settings and chats from an older `chatbot` folder are moved here automatically on first launch.
 - **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn HTML, or just its CSS and JavaScript, off in Settings → Replies.
 - **No tracking pixels.** Remote images in Markdown are never loaded automatically. They show as links instead.
@@ -120,11 +124,12 @@ npm run dist:linux     # AppImage, .deb, .rpm and .tar.gz in dist/
 npm run dist:win       # Windows installer in dist/
 npm run dist           # both
 npm run dist:android   # Android APK in dist/
+npm run dist:ios       # unsigned iOS .ipa in dist/ (macOS with Xcode only)
 ```
 
 - Building the `.rpm` needs `rpmbuild` (`sudo dnf install rpm-build` or `sudo apt install rpm`).
 - `dist:win` is meant to run on Linux. It needs Wine and a Bash shell.
-- **Continuous integration:** pushing a `v*` tag, or running the **Build packages** workflow manually, builds every package on GitHub-hosted runners and attaches them to the workflow run. The Android APK is also installed on an emulator and tested there: a profile, a streamed reply, a rich reply, PDF text, the back button and the encrypted key on disk.
+- **Continuous integration:** pushing a `v*` tag, or running the **Build packages** workflow manually, builds every package on GitHub-hosted runners and attaches them to the workflow run. The Android APK is also installed on an emulator and tested there: a profile, a streamed reply, a rich reply, PDF text, the back button and the encrypted key on disk. The iOS app runs a built-in self-test on a simulator, which also checks that model-written HTML can't reach the app's native code.
 
 ### Android
 
@@ -139,6 +144,18 @@ npm run dist:android:debug    # or build a debug APK from the command line
 ```
 
 After changing `index.html`, `renderer.js` or anything the app loads, run `npm run android:sync` again.
+
+### iOS
+
+The iOS app is the same Capacitor shell, with the native plugin in Swift (`ios/App/App/JavcPlugin.swift`). `MainViewController.swift` serves the rich-reply sandbox and makes sure only the app's own page, never a rich-reply frame, can call the plugin. Building needs a Mac with Xcode; GitHub Actions builds the `.ipa` on a macOS runner.
+
+```bash
+npm run ios:sync              # build www/ and copy it into ios/
+npx cap open ios              # open the project in Xcode to run it on a simulator or a phone
+npm run dist:ios              # or build the unsigned .ipa from the command line
+```
+
+The simulator self-test is `node mobile/build.mjs --selftest && npx cap sync ios && node mobile/ipa.mjs --simulator`, then `node mobile/smoke/ios.mjs ios/build/sim/Build/Products/Debug-iphonesimulator/App.app`. It drives the app against a mock API and prints each check.
 
 ### Release signing
 
@@ -166,18 +183,19 @@ To sign a local build, set the same names as environment variables, with `ANDROI
 | :-- | :-- |
 | `main.js` | Electron main process: window, IPC, rich-content sandbox |
 | `preload.js` | The narrow bridge between the page and the main process |
-| `index.html` / `renderer.js` | User interface, shared by the desktop and Android apps |
+| `index.html` / `renderer.js` | User interface, shared by the desktop and phone apps |
 | `lib.js` | Shared pure logic: prompts, attachments, model search, rich-reply splitting and sandbox pages |
 | `api.js` | OpenAI-compatible streaming client and reasoning support |
 | `mcp.js` | MCP client: reads the pasted config, runs local servers, connects to remote ones and offers their tools to the model |
 | `profiles.js` / `store.js` | Connection profiles, personas and encrypted settings |
 | `chats.js` | Chat history |
 | `disk.js` | Desktop file access for settings and chats, and the move from the old `chatbot` folder |
-| `mobile/` | Android: `window.api` on top of the native plugin, the web build script, and the emulator smoke test |
+| `mobile/` | Phones: `window.api` on top of the native plugin, the web, APK and IPA build scripts, and the emulator and simulator tests |
 | `android/` | Android project (Capacitor), with the native plugin in `JavcPlugin.java` |
-| `capacitor.config.json` | Android app id and name |
+| `ios/` | iOS project (Capacitor), with the native plugin in `JavcPlugin.swift` and the sandbox and bridge guard in `MainViewController.swift` |
+| `capacitor.config.json` | The phone apps' id and name |
 | `test.js` | Test suite (`node --test`) |
-| `build/` | App icon and the scripts that generate the desktop and Android icons |
+| `build/` | App icon and the scripts that generate the desktop, Android and iOS icons |
 
 ## License
 

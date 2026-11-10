@@ -1,5 +1,6 @@
 // Builds www/, the web part of the Android app: the desktop page, plus mobile.js standing in for preload.js.
-// Run with `npm run build:mobile`; `npm run android:sync` also copies the result into the Android project.
+// Run with `npm run build:mobile`; `npm run android:sync` / `ios:sync` also copy the result into the phone projects.
+// `--selftest` adds the iOS simulator self-test (mobile/smoke/ios-selftest.mjs); release builds never contain it.
 import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,16 +8,20 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root, 'www');
-const SANDBOX = 'https://javc-sandbox.invalid'; // rich replies are served from here; must match SANDBOX_HOST in JavcPlugin.java
+// rich replies are served from here: Android's SANDBOX_HOST (JavcPlugin.java) and iOS's sandboxScheme (JavcPlugin.swift)
+const SANDBOX = 'https://javc-sandbox.invalid javc-sandbox:';
+const selftest = process.argv.includes('--selftest');
 
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(path.join(out, 'vendor'), { recursive: true });
 
-await build({
-  entryPoints: [path.join(root, 'mobile', 'main.js')],
-  outfile: path.join(out, 'mobile.js'),
-  bundle: true, format: 'iife', platform: 'browser', target: 'chrome123', legalComments: 'eof', logLevel: 'warning',
+/** Bundles `entry` into www/`file` for the phones' web views (Android WebView 123+, iOS 17.5+). */
+const bundle = (entry, file) => build({
+  entryPoints: [path.join(root, 'mobile', entry)], outfile: path.join(out, file),
+  bundle: true, format: 'iife', platform: 'browser', target: ['chrome123', 'safari17.5'], legalComments: 'eof', logLevel: 'warning',
 });
+await bundle('main.js', 'mobile.js');
+if (selftest) await bundle('smoke/ios-selftest.mjs', 'selftest.js');
 
 /** Copies a file from the repository into www/. */
 const copy = (from, to = from) => fs.copyFileSync(path.join(root, from), path.join(out, to));
@@ -34,7 +39,7 @@ const swap = (from, to) => {
 };
 swap('frame-src chatbot-sandbox:', `frame-src ${SANDBOX}`);
 swap('<script src="node_modules/marked/lib/marked.umd.js"></script>', '<script src="vendor/marked.umd.js"></script>');
-swap('<script src="renderer.js"></script>', '<script src="mobile.js"></script>\n<script src="renderer.js"></script>');
+swap('<script src="renderer.js"></script>', '<script src="mobile.js"></script>\n<script src="renderer.js"></script>' + (selftest ? '\n<script src="selftest.js"></script>' : ''));
 fs.writeFileSync(path.join(out, 'index.html'), html);
 
-console.log('Built', path.relative(root, out) + '/');
+console.log('Built', path.relative(root, out) + '/' + (selftest ? ' (with the iOS self-test)' : ''));

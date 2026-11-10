@@ -5,8 +5,8 @@ import { MODEL, REPLY, RICH_HEIGHT } from './mock-api.mjs';
 /** Fails the smoke test with `what` unless `ok`. */
 const check = (ok, what) => { if (!ok) throw new Error('Smoke check failed: ' + what); };
 
-/** A one-page PDF with a line of text, as base64, built by hand so the test needs no files. */
-function tinyPdf(text) {
+/** A one-page PDF with a line of text, as base64, built by hand so the test needs no files. Also used by ios-selftest.js. */
+export function tinyPdf(text) {
   const content = `BT /F1 18 Tf 20 70 Td (${text}) Tj ET`;
   const objs = [
     '<< /Type /Catalog /Pages 2 0 R >>',
@@ -20,7 +20,7 @@ function tinyPdf(text) {
   const xref = pdf.length;
   pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`;
   pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(pdf, 'latin1').toString('base64');
+  return btoa(pdf); // the PDF is plain ASCII
 }
 
 /**

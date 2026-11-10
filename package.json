@@ -15,13 +15,16 @@
     "build:mobile": "node mobile/build.mjs",
     "android:sync": "npm run build:mobile && cap sync android",
     "dist:android": "npm run android:sync && node mobile/gradle.mjs assembleRelease",
-    "dist:android:debug": "npm run android:sync && node mobile/gradle.mjs assembleDebug"
+    "dist:android:debug": "npm run android:sync && node mobile/gradle.mjs assembleDebug",
+    "ios:sync": "npm run build:mobile && cap sync ios",
+    "dist:ios": "npm run ios:sync && node mobile/ipa.mjs"
   },
   "devDependencies": {
     "@capacitor/android": "^8.6.0",
     "@capacitor/app": "^8.1.2",
     "@capacitor/cli": "^8.6.0",
     "@capacitor/core": "^8.6.0",
+    "@capacitor/ios": "^8.6.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.19.2",
     "electron": "^45.2.1",
