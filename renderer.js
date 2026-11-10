@@ -1009,7 +1009,28 @@ async function loadMcpPane() {
   try { const c = await window.api.getMcpConfig(); if (mine === mcpLoad && !mcpDirty) $('mcpconfig').value = c; }
   catch (e) { if (mine === mcpLoad && !mcpDirty) { $('mcperr').textContent = cleanErr(e); $('mcperr').hidden = false; } }
 }
-const mcpRow = (name, text, err) => { const row = el('div', 'prow'), info = el('div'); info.append(el('strong', null, name), el('small', err ? 'perr' : null, text)); row.append(info); return row; };
+const mcpRow = (name, text, err, button) => { const row = el('div', 'prow'), info = el('div'); info.append(el('strong', null, name), el('small', err ? 'perr' : null, text)); row.append(info); if (button) row.append(button); return row; };
+/** A Sign in / Sign out button for a url server; the list redraws from the answer. */
+function signButton(name, out) {
+  const b = el('button', 'btn' + (out ? '' : ' primary'), out ? 'Sign out' : 'Sign in'); b.type = 'button'; b.setAttribute('aria-label', `${out ? 'Sign out of' : 'Sign in to'} ${name}`);
+  b.onclick = async () => {
+    const mine = ++mcpStatusSeq; $('mcperr').hidden = true;
+    for (const x of /** @type {NodeListOf<HTMLButtonElement>} */ ($('mcplist').querySelectorAll('button'))) x.disabled = true;
+    if (!out) b.textContent = 'Waiting for the browser…';
+    try {
+      const list = await (out ? window.api.mcpSignOut(name) : window.api.mcpSignIn(name));
+      if (mine === mcpStatusSeq) renderMcpStatus(list);
+      toast(out ? `Signed out of ${name}` : `Signed in to ${name}`);
+    } catch (e) { $('mcperr').textContent = cleanErr(e); $('mcperr').hidden = false; if (mine === mcpStatusSeq) showMcpStatus(); }
+  };
+  return b;
+}
+function renderMcpStatus(list) {
+  $('mcplist').replaceChildren(...list.map((s) => (s.state === 'ok' ? mcpRow(s.name, (s.tools === 1 ? '1 tool' : `${s.tools} tools`) + (s.signedIn ? ' · signed in' : ''), false, s.signedIn && signButton(s.name, true))
+    : s.state === 'desktop-only' ? mcpRow(s.name, 'Desktop only: runs a command on a computer')
+    : s.state === 'auth' ? mcpRow(s.name, 'Needs sign-in. Your browser opens to sign in.', false, signButton(s.name, false))
+    : mcpRow(s.name, s.error || 'Not working', true, s.signedIn && signButton(s.name, true)))));
+}
 /** Lists each server's state; asking starts the ones that aren't running yet. `reload` restarts them all first. */
 async function showMcpStatus(reload = false) {
   const mine = ++mcpStatusSeq;
@@ -1018,11 +1039,7 @@ async function showMcpStatus(reload = false) {
   let list;
   try { list = await (reload ? window.api.reloadMcp() : window.api.mcpStatus()); }
   catch (e) { if (mine === mcpStatusSeq) $('mcplist').replaceChildren(mcpRow('Servers', cleanErr(e), true)); return; }
-  if (mine !== mcpStatusSeq) return;
-  $('mcplist').replaceChildren(...list.map((s) => (s.state === 'ok' ? mcpRow(s.name, s.tools === 1 ? '1 tool' : `${s.tools} tools`)
-    : s.state === 'desktop-only' ? mcpRow(s.name, 'Desktop only: runs a command on a computer')
-    : s.state === 'auth' ? mcpRow(s.name, "Needs sign-in, which this app can't do yet. A server that takes a token can get it in \"headers\".", true)
-    : mcpRow(s.name, s.error || 'Not working', true))));
+  if (mine === mcpStatusSeq) renderMcpStatus(list);
 }
 async function saveMcp(p) {
   $('mcperr').hidden = true;

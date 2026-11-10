@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
   saveMcp: (p) => ipcRenderer.invoke('mcp:save', p),
   mcpStatus: () => ipcRenderer.invoke('mcp:status'),
   reloadMcp: () => ipcRenderer.invoke('mcp:reload'),
+  mcpSignIn: (name) => ipcRenderer.invoke('mcp:signin', name),
+  mcpSignOut: (name) => ipcRenderer.invoke('mcp:signout', name),
   /** fn({server, tool, args}) resolves to 'once' | 'always' | 'deny' before a tool runs; anything else, or an error, denies. */
   onToolApproval: (fn) => {
     ipcRenderer.removeAllListeners('mcp:approve');

@@ -15,7 +15,21 @@ const store = makeStore({ io: makeNativeDisk(Javc), crypto: makeNativeCrypto(Jav
 const chats = makeChats(makeNativeDisk(Javc, 'chats'));
 
 // MCP: no local (command) servers on a phone, so those report 'desktop-only'; url servers go through nativeFetch, which has no CORS
-const hub = Mcp.makeHub({ fetchFn: nativeFetch });
+const hub = Mcp.makeHub({ fetchFn: nativeFetch, auth: { get: (name) => store.mcpTokens(name), save: (name, tokens) => store.saveMcpTokens(name, tokens) } });
+// Sign-in: the browser comes back to the app through this address (an intent filter in AndroidManifest.xml), which Capacitor reports as appUrlOpen
+const REDIRECT = 'io.github.thedwz.javcchatbot:/oauth';
+let waiting = null; // the sign-in waiting for the browser; a newer one replaces it, since every sign-in shares the address
+App.addListener('appUrlOpen', ({ url }) => { if (url.startsWith(REDIRECT)) waiting?.resolve(url); });
+const signInWays = {
+  openUrl: (url) => Javc.openUrl({ url }),
+  async listen() {
+    waiting?.reject(new Error('Another sign-in started, so this one stopped.'));
+    let me = null;
+    const next = new Promise((resolve, reject) => { me = waiting = { resolve, reject }; });
+    next.catch(() => {}); // it may be replaced before the sign-in waits on it
+    return { uri: REDIRECT, next, close: () => { if (waiting === me) waiting = null; } };
+  },
+};
 const mcpReady = async () => { hub.configure(await store.mcpServers()); return hub; };
 /** @type {(info: object) => Promise<string>} */
 let approve = async () => 'deny'; // until the page registers its dialog
@@ -75,6 +89,8 @@ window.api = {
   saveMcp: async (p) => { const v = await store.saveMcp(p); await mcpReady(); return v; },
   mcpStatus: async () => (await mcpReady()).status(),
   reloadMcp: async () => { await (await mcpReady()).reload(); return hub.status(); },
+  mcpSignIn: async (name) => { await (await mcpReady()).signIn(name, signInWays); return hub.status(); },
+  mcpSignOut: async (name) => { await (await mcpReady()).signOut(name); return hub.status(); },
   /** fn({server, tool, args}) resolves to 'once' | 'always' | 'deny' before a tool runs; anything else, or an error, denies. */
   onToolApproval: (fn) => { approve = async (info) => { try { const a = await fn(info); return ['once', 'always'].includes(a) ? a : 'deny'; } catch { return 'deny'; } }; },
 };
