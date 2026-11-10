@@ -8,6 +8,7 @@ const PROTOCOL = '2025-11-25';
 const OLDER = ['2025-06-18', '2025-03-26', '2024-11-05']; // tools/list and tools/call are the same in these
 const CONNECT_MS = 60000; // the first `npx`/`uvx` run downloads the server
 const LIST_MS = 30000;
+const OUT_MAX = 32 * 1024 * 1024; // shortcut: largest message a local server may send; raise it if a server's big results fail
 const RESULT_MAX = 20000; // shortcut: characters of tool output the model gets; raise it if tool output comes back truncated
 const DECLINED = 'The user declined this tool call.';
 
@@ -120,12 +121,18 @@ async function stdioTransport(spawn, entry, onMessage, onDead) {
   const exit = new Promise((/** @type {(v?: unknown) => void} */ r) => child.once('exit', () => { exited = true; r(); }));
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (d) => {
+    let from = out.length; // only the new text can hold the next line break
     out += d;
-    for (let i; (i = out.indexOf('\n')) >= 0; ) {
+    for (let i; (i = out.indexOf('\n', from)) >= 0; from = 0) {
       const line = out.slice(0, i).trim(); out = out.slice(i + 1);
       if (!line) continue;
       let m; try { m = JSON.parse(line); } catch { continue; } // servers sometimes log to stdout; skip what isn't JSON
       onMessage(m);
+    }
+    if (out.length > OUT_MAX) { // cutting the buffer would break the line framing, so give up on the server
+      out = '';
+      onDead(new Error(`The server sent a message larger than ${OUT_MAX / 1024 / 1024} MB.`));
+      close();
     }
   });
   child.stderr.setEncoding('utf8');
@@ -134,17 +141,15 @@ async function stdioTransport(spawn, entry, onMessage, onDead) {
   child.on('error', (e) => onDead(new Error(e.code === 'ENOENT' ? `"${entry.command}" wasn't found. Is it installed?` : e.message)));
   child.on('close', (code, sig) => onDead(new Error(`The server stopped (${sig || 'exit code ' + code})${err.trim() ? ':\n' + lastLines(err) : ''}`)));
   const waitExit = (ms) => new Promise((r) => { const t = setTimeout(() => r(false), ms); exit.then(() => { clearTimeout(t); r(true); }); });
-  return {
-    send: (m) => { child.stdin.write(JSON.stringify(m) + '\n'); },
-    /** The spec's order: close stdin (which also reaches a server that npx/uvx started), then SIGTERM, then SIGKILL. */
-    async close() {
-      if (exited || child.pid === undefined) return; // no pid: it never started
-      try { child.stdin.end(); } catch {}
-      if (await waitExit(2000)) return;
-      child.kill('SIGTERM');
-      if (!(await waitExit(2000))) child.kill('SIGKILL');
-    },
-  };
+  /** The spec's order: close stdin (which also reaches a server that npx/uvx started), then SIGTERM, then SIGKILL. */
+  async function close() {
+    if (exited || child.pid === undefined) return; // no pid: it never started
+    try { child.stdin.end(); } catch {}
+    if (await waitExit(2000)) return;
+    child.kill('SIGTERM');
+    if (!(await waitExit(2000))) child.kill('SIGKILL');
+  }
+  return { send: (m) => { child.stdin.write(JSON.stringify(m) + '\n'); }, close };
 }
 
 /**
@@ -249,13 +254,13 @@ function httpTransport(entry, fetchFn, onMessage, token) {
 }
 
 /** Starts a server and does the initialize handshake. Resolves to {request, close, version}. `started(transport)` gets
- * the transport as soon as it exists, so the server can be stopped before the handshake ends.
+ * the transport as soon as it exists, so the server can be stopped before the handshake ends; `ended()` fires when it stops.
  * @param {{type: string, command?: string, args?: string[], env?: object}} entry
- * @param {{spawn?: Function, fetchFn?: Function, token?: {get(): Promise<string>, refresh(): Promise<boolean>}, signal?: AbortSignal, started?: (t: {close: () => Promise<void>}) => void}} deps
+ * @param {{spawn?: Function, fetchFn?: Function, token?: {get(): Promise<string>, refresh(): Promise<boolean>}, signal?: AbortSignal, started?: (t: {close: () => Promise<void>}) => void, ended?: () => void}} deps
  */
-async function connect(entry, { spawn, fetchFn, token, signal, started }) {
+async function connect(entry, { spawn, fetchFn, token, signal, started, ended }) {
   let r = null, deadErr = null;
-  const onDead = (e) => { deadErr ||= e; r?.fail(e); };
+  const onDead = (e) => { deadErr ||= e; r?.fail(e); ended?.(); };
   let t;
   if (entry.type === 'http') t = httpTransport(entry, fetchFn, (m) => r.receive(m), token);
   else if (!spawn) throw new Error('Only the desktop app can run local servers.');
@@ -459,24 +464,28 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts), auth }) {
 
   /** Stops a server, even one still starting (its transport is closed right away, or as soon as it exists). */
   const drop = (name) => { const c = conns.get(name); conns.delete(name); return c ? c.stop() : Promise.resolve(); };
-  /** The server's connection and tool list, started on first use; a failed start is forgotten so the next use tries again. */
+  /**
+   * The server's connection and tool list, started on first use. A failed start, or a server that stops, is forgotten so
+   * the next use starts it again.
+   * shortcut: a server that hangs at startup is waited for (up to CONNECT_MS) on every reply; remember timed-out starts until Reload if that bites
+   */
   function open(name) {
     const entry = servers[name], key = JSON.stringify(entry);
     let c = conns.get(name);
     if (!c || c.key !== key) {
       if (c) drop(name);
-      let transport = null, stopped = false;
+      let transport = null, stopped = false, mine = null;
       const started = (t) => { transport = t; if (stopped) t.close(); };
-      c = {
+      const forget = () => { if (conns.get(name) === mine) conns.delete(name); };
+      mine = c = {
         key,
-        conn: connect(entry, { spawn, fetchFn, token: entry.type === 'http' && auth ? tokenFor(name) : undefined, started }).then(async (conn) => {
+        conn: connect(entry, { spawn, fetchFn, token: entry.type === 'http' && auth ? tokenFor(name) : undefined, started, ended: forget }).then(async (conn) => {
           try { return { conn, tools: await listTools(conn) }; } catch (e) { await conn.close(); throw e; }
         }),
         stop: async () => { stopped = true; await transport?.close(); },
       };
       conns.set(name, c);
-      const mine = c;
-      c.conn.catch(() => { if (conns.get(name) === mine) conns.delete(name); });
+      c.conn.catch(forget);
     }
     return c.conn;
   }
@@ -507,6 +516,7 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts), auth }) {
      */
     async tools(signal) {
       const failed = [], list = [];
+      const keys = Object.fromEntries(Object.entries(servers).map(([name, e]) => [name, JSON.stringify(e)]));
       await Promise.all(Object.keys(servers).map(async (name) => {
         if (local(name) && !spawn) return;
         try { for (const t of (await until(open(name), signal)).tools) list.push({ server: name, tool: t.name, def: t }); }
@@ -524,9 +534,13 @@ function makeHub({ spawn, fetchFn = (url, opts) => fetch(url, opts), auth }) {
         has: (n) => byName.has(n),
         label: (n) => { const t = byName.get(n); return t ? `${t.server} › ${t.tool}` : n; },
         info: (n) => byName.get(n),
-        /** Calls the tool; resolves to text for the model. */
+        /** Calls the tool; resolves to text for the model. Refuses if the server was changed or removed since this list. */
         async run(n, args, signal) {
-          const t = byName.get(n), call = async () => resultText(await (await until(open(t.server), signal)).conn.request('tools/call', { name: t.tool, arguments: args }, signal));
+          const t = byName.get(n);
+          const call = async () => {
+            if (JSON.stringify(servers[t.server]) !== keys[t.server]) throw new Error(`The server "${t.server}" was changed or removed in Settings during this reply.`);
+            return resultText(await (await until(open(t.server), signal)).conn.request('tools/call', { name: t.tool, arguments: args }, signal));
+          };
           try { return await call(); }
           catch (e) { if (!e.expired) throw e; await drop(t.server); return call(); } // the HTTP session ended: start a new one, once
         },
@@ -565,10 +579,34 @@ function gated(set, { allowed, approve }) {
       if (!t) return `Error: there is no tool called "${name}".`;
       let args = null; try { args = argsJson?.trim() ? JSON.parse(argsJson) : {}; } catch {}
       if (!isObj(args)) return 'Error: the arguments must be a JSON object.';
-      if (!allowed(t.server, t.tool) && (await approve({ server: t.server, tool: t.tool, args })) === 'deny') return DECLINED;
+      if (!allowed(t.server, t.tool) && (await until(approve({ server: t.server, tool: t.tool, args }), signal)) === 'deny') return DECLINED;
       return set.run(name, args, signal);
     },
   };
 }
 
-module.exports = { parseConfig, makeHub, gated, resultText, toolNames, signIn, DECLINED };
+/**
+ * The MCP tools for one reply, each call put to the user through `approve`; "Always allow" is saved. Servers that don't
+ * start, and a config that can't be read (a locked keyring), become notes in the reply instead of failing it.
+ * @param {ReturnType<typeof makeHub>} hub
+ * @param {{mcpForReply: () => Promise<{servers: object, allow: Record<string, string[]>}>, allowMcpTool: (server: string, tool: string) => Promise<unknown>}} store
+ * @param {{approve: (info: {server: string, tool: string, args: object}) => Promise<string>, onDelta: (d: object) => void, signal?: AbortSignal}} reply
+ */
+async function replyTools(hub, store, { approve, onDelta, signal }) {
+  const note = (text) => onDelta({ reasoning: text + '\n', content: '', note: true });
+  let mcp;
+  try { mcp = await store.mcpForReply(); } catch (e) { note(`MCP tools are off for this reply: ${e.message}`); return undefined; }
+  hub.configure(mcp.servers);
+  const set = await hub.tools(signal), allow = mcp.allow;
+  for (const f of set.failed) note(f.auth ? `MCP server "${f.name}" needs you to sign in (Settings → Tools).` : `MCP server "${f.name}" didn't start: ${f.error}`);
+  return gated(set, {
+    allowed: (server, tool) => !!allow[server]?.includes(tool),
+    approve: async (info) => {
+      const a = await approve(info);
+      if (a === 'always') { await store.allowMcpTool(info.server, info.tool); (allow[info.server] ||= []).push(info.tool); } // counts for the rest of this reply too
+      return a;
+    },
+  });
+}
+
+module.exports = { parseConfig, makeHub, gated, replyTools, resultText, toolNames, signIn, DECLINED };

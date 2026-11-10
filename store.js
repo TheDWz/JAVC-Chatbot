@@ -64,6 +64,8 @@ module.exports = ({ io, crypto }) => {
     }
     return p.keyPlain || '';
   }
+  /** The MCP servers in settings part `m` ({name: entry}, see mcp.js), or {} when MCP is off or none are set up. */
+  const servers = async (m) => (m.enabled && hasKey(m) ? parseConfig(await keyOf(m, 'MCP servers')) : {});
   const withFlags = (st) => {
     const v = profiles.publicView(st);
     for (const p of v.profiles) p.thinkingSwitch = THINKING_SWITCH.test(p.endpoint);
@@ -99,7 +101,9 @@ module.exports = ({ io, crypto }) => {
     /** The pasted MCP config as text, or '' when there is none. */
     mcpConfig: serial(async () => keyOf((await read()).mcp, 'MCP servers')),
     /** The MCP servers ({name: entry}, see mcp.js), or {} when MCP is off or none are set up. */
-    mcpServers: serial(async () => { const m = (await read()).mcp; return m.enabled && hasKey(m) ? parseConfig(await keyOf(m, 'MCP servers')) : {}; }),
+    mcpServers: serial(async () => servers((await read()).mcp)),
+    /** What a reply needs, from one read: {servers, allow}. */
+    mcpForReply: serial(async () => { const m = (await read()).mcp; return { servers: await servers(m), allow: m.allow }; }),
     /**
      * Saves {enabled, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
      * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in.
