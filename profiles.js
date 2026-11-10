@@ -15,6 +15,9 @@ const hasKey = (p) => KEY_FIELDS.some((k) => p[k]);
 const TEMPLATE_IDS = TEMPLATES.map((t) => t.id);
 const fallbackActive = (profiles, id) => (profiles.some((p) => p.id === id) ? id : profiles[0]?.id || '');
 
+// Whether migrate() understands `raw`: a v2 file, or an old single-endpoint one (it had no version). Anything else is moved aside, never overwritten.
+const known = (raw) => !!raw && typeof raw === 'object' && !Array.isArray(raw) && (raw.version === undefined || (raw.version === 2 && Array.isArray(raw.profiles)));
+
 // Turns whatever is on disk (nothing, the old single-endpoint file, or v2) into v2 state.
 // Templates are NOT profiles: they only exist as starting points in the New profile dialog.
 function migrate(raw) {
@@ -92,4 +95,4 @@ function publicView(state) {
   };
 }
 
-module.exports = { TEMPLATES, migrate, upsert, remove, publicView, cleanSummarizer, cleanContextLimit };
+module.exports = { TEMPLATES, known, migrate, upsert, remove, publicView, cleanSummarizer, cleanContextLimit };

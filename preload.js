@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
   saveChat: (chat) => ipcRenderer.invoke('chats:save', chat),
   deleteChat: (id) => ipcRenderer.invoke('chats:delete', id),
   extractPdf: (buf) => ipcRenderer.invoke('pdf:extract', buf),
+  copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   getMcpConfig: () => ipcRenderer.invoke('mcp:config'),
   saveMcp: (p) => ipcRenderer.invoke('mcp:save', p),
   mcpStatus: () => ipcRenderer.invoke('mcp:status'),

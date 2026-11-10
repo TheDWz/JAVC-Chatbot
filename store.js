@@ -36,7 +36,7 @@ module.exports = ({ io, crypto }) => {
   }
 
   /**
-   * Reads the settings, migrating older formats. A file that can't be parsed is quarantined; a read error propagates and
+   * Reads the settings, migrating older formats. A file that can't be parsed, or isn't a settings file this version understands, is quarantined; a read error propagates and
    * leaves the file alone. A missing file is not written back, so a first run (or an unfinished move from the old
    * folder, see disk.js) leaves no settings.json until something is actually saved.
    */
@@ -44,8 +44,8 @@ module.exports = ({ io, crypto }) => {
     let raw = {};
     const text = await io.read(FILE);
     if (text !== null) {
-      try { raw = JSON.parse(text) ?? {}; }
-      catch { await quarantine(); } // damaged file: keep it for recovery instead of treating this as a first run and overwriting it
+      let j; try { j = JSON.parse(text); } catch {}
+      if (profiles.known(j)) raw = j; else await quarantine(); // damaged or unrecognised: keep it for recovery instead of treating this as a first run and overwriting it
     }
     const st = profiles.migrate(raw);
     let changed = text !== null && raw.version !== 2; // persist a migrated file right away so profile ids stay stable

@@ -255,7 +255,13 @@ test('store: a damaged settings file is quarantined, not overwritten', async () 
   assert.deepStrictEqual((await store.get()).profiles, []);
   assert.match(store.takeNotice(), /damaged/); assert.strictEqual(store.takeNotice(), '');
   assert.strictEqual(fs.readFileSync(file + '.bad', 'utf8'), '{"version":2,"profiles":[{"id":"p1","keyEnc":"abc"');
-  fs.writeFileSync(file, 'null'); assert.deepStrictEqual((await store.get()).profiles, []); // valid JSON that is not an object
+  // valid JSON that isn't a settings file this version understands: not an object, a broken v2, or a newer version
+  for (const [i, text] of ['null', '[]', '{"version":2,"profiles":null}', '{"version":3,"profiles":[]}'].entries()) {
+    fs.writeFileSync(file, text);
+    assert.deepStrictEqual((await store.get()).profiles, []);
+    assert.strictEqual(fs.readFileSync(`${file}.bad-${i + 2}`, 'utf8'), text);
+    assert.match(store.takeNotice(), /damaged/);
+  }
   assert.ok(!fs.readdirSync(dir).some((n) => n.endsWith('.tmp')));
   fs.rmSync(dir, { recursive: true });
 });

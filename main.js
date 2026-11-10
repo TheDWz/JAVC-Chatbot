@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
+const { app, clipboard, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
 const { createHash } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const http = require('node:http');
@@ -49,6 +49,7 @@ ipcMain.handle('profiles:activate', (_e, id) => store.activate(id));
 ipcMain.handle('profiles:key', (_e, id) => store.key(id));
 ipcMain.handle('search:save', (_e, p) => store.saveSearch(p));
 ipcMain.handle('search:key', () => store.searchKey());
+ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text ?? '')));
 ipcMain.handle('models:list', async (_e, profileId) => { const s = await store.load({ profileId }); return api.listModelsDetailed(s.endpoint, s.key); });
 
 const running = new Map(); // request id -> AbortController, so the Stop button can cancel a reply
