@@ -398,7 +398,7 @@ function showEmpty() {
 
 // ---- Reasoning level: always list every level any major provider uses; the model rejects what it can't do ----
 const LEVELS = [
-  ['', 'Disabled', 'Send no reasoning field at all (legacy models like GPT-3.5)'], ['none', 'None', 'Reasoning off'], ['minimal', 'Minimal', 'Barely any thinking'],
+  ['', 'Disabled', 'No reasoning field, for old models'], ['none', 'None', 'Reasoning off'], ['minimal', 'Minimal', 'Barely any thinking'],
   ['low', 'Low', 'Quick, light reasoning'], ['medium', 'Medium', 'Balanced'], ['high', 'High', 'Deeper reasoning'],
   ['xhigh', 'Extra high', 'Very deep, slower'], ['max', 'Max', 'Maximum effort, slowest'],
 ];
@@ -411,25 +411,24 @@ const ctxLimit = () => (modelInfo[settings.model] ? modelInfo[settings.model].ct
 
 function renderLevels() {
   const info = modelInfo[settings.model] || {};
-  $('sidemodel').textContent = settings.model || 'No model selected';
+  $('reasonmodel').textContent = settings.model || 'No model selected';
   $('levels').replaceChildren(...LEVELS.map(([v, name, desc]) => {
-    const b = el('button', 'level'); b.type = 'button'; b.setAttribute('role', 'radio');
+    const b = el('button', 'level'); b.type = 'button'; b.title = desc; b.setAttribute('role', 'radio');
     b.setAttribute('aria-checked', String(v === (settings.effort || '')));
     const nm = el('span', 'nm', name); if (v && v === info.default) nm.append(el('span', 'tag', 'model default'));
     b.append(nm, el('span', 'ds', desc));
-    b.onclick = () => { settings.effort = v; window.api.patchSettings({ effort: v }); renderLevels(); toast(`Reasoning: ${name}`); };
+    b.onclick = () => { settings.effort = v; window.api.patchSettings({ effort: v }); renderLevels(); $('reasonpop').hidePopover(); $('reasoning').focus(); toast(`Reasoning: ${name}`); };
     return b;
   }));
-  $('sidenote').textContent = 'Levels the model does not support are rejected and show an error.'
+  $('reasonnote').textContent = 'Levels the model does not support are rejected and show an error.'
     + (settings.thinkingSwitch ? ' On this provider, None turns thinking off.' : '');
 }
-function toggleSide(open) {
-  $('side').classList.toggle('open', open); $('scrim').classList.toggle('on', open); $('side').inert = !open;
-  if (open) $('levels').querySelector('[aria-checked="true"]')?.focus(); else $('reasoning').focus();
-}
-$('reasoning').onclick = () => toggleSide(true);
-$('sideclose').onclick = $('scrim').onclick = () => toggleSide(false);
-addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('side').classList.contains('open')) toggleSide(false); });
+// The levels open in a popover above the brain button (#reasoning is its popovertarget), placed like the dropdown lists
+$('reasonpop').addEventListener('beforetoggle', (e) => {
+  const open = /** @type {ToggleEvent} */ (e).newState === 'open'; $('reasoning').setAttribute('aria-expanded', String(open));
+  if (open) placePop($('reasonpop'), $('reasoning'), 520);
+});
+$('reasonpop').addEventListener('toggle', () => { if ($('reasonpop').matches(':popover-open')) /** @type {HTMLElement|null} */ ($('levels').querySelector('[aria-checked="true"]'))?.focus(); });
 
 // ---- ⋯ menu and Stats for nerds (read from the stats saved on each reply) ----
 const closeMore = () => { $('morepop').hidden = true; $('more').setAttribute('aria-expanded', 'false'); };
@@ -541,12 +540,16 @@ $('modelq').onkeydown = (e) => {
 };
 document.addEventListener('mousedown', (e) => { if (!$('modelpop').hidden && !$('modelpill').contains(e.target)) closeModelPop(); });
 
-/** Fixed, from its button's rect: the list is in the top layer, so a dialog can't clip it. It opens upward when there's more room above. @param {HTMLElement} pop */
-function placeSelPop(pop) {
-  const r = /** @type {HTMLElement} */ (pop.previousElementSibling.previousElementSibling).getBoundingClientRect(); // button, hidden select, list
+/** @type {Map<HTMLElement, [HTMLElement, number]>} */
+const popBtn = new Map();
+/** Fixed, from its button's rect: the list is in the top layer, so a dialog can't clip it. It opens upward when there's more room above.
+ * @param {HTMLElement} pop @param {HTMLElement} btn */
+function placePop(pop, btn, cap = 320) {
+  popBtn.set(pop, [btn, cap]); // so a resize can place it again
+  const r = btn.getBoundingClientRect();
   const below = innerHeight - r.bottom - 14, above = r.top - 14, up = below < 200 && above > below;
   pop.classList.toggle('up', up);
-  Object.assign(pop.style, { left: r.left + 'px', top: (up ? r.top - 6 : r.bottom + 6) + 'px', minWidth: r.width + 'px', maxWidth: innerWidth - r.left - 8 + 'px', maxHeight: Math.min(320, up ? above : below) + 'px' });
+  Object.assign(pop.style, { left: r.left + 'px', top: (up ? r.top - 6 : r.bottom + 6) + 'px', minWidth: r.width + 'px', maxWidth: innerWidth - r.left - 8 + 'px', maxHeight: Math.min(cap, up ? above : below) + 'px' });
 }
 // ---- Every other <select> opens the same glass list as the model picker. Each stays hidden as the source of truth: code still sets its options, value and disabled. ----
 const selectValue = /** @type {any} */ (Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value'));
@@ -568,7 +571,7 @@ function glassSelect(sel) {
       b.onclick = () => { pop.hidePopover(); btn.focus(); if (sel.value !== o.value) { sel.value = o.value; for (const t of ['input', 'change']) sel.dispatchEvent(new Event(t, { bubbles: true })); } };
       return b;
     }));
-    placeSelPop(pop);
+    placePop(pop, btn);
   });
   pop.addEventListener('toggle', () => { if (pop.matches(':popover-open')) /** @type {HTMLElement|null} */ (pop.querySelector('.mopt.cur') || pop.querySelector('.mopt'))?.focus(); });
   pop.onkeydown = (e) => {
@@ -585,7 +588,7 @@ const openSelPop = () => /** @type {HTMLElement|null} */ (document.querySelector
 const closeSelPop = () => { const p = openSelPop(); p?.hidePopover(); return !!p; };
 // a fixed list would drift off its field: close it when something around it scrolls (not the chat streaming elsewhere), follow it on resize (the phone keyboard)
 document.addEventListener('scroll', (e) => { const p = openSelPop(); if (p && e.target !== p && e.target instanceof Node && e.target.contains(p)) p.hidePopover(); }, true);
-addEventListener('resize', () => { const p = openSelPop(); if (p) placeSelPop(p); });
+addEventListener('resize', () => { const p = openSelPop(), b = p && popBtn.get(p); if (b) placePop(p, ...b); });
 
 function setModels(infos) {
   modelInfo = Object.fromEntries(infos.map((m) => [m.id, m]));
@@ -817,7 +820,6 @@ function closeTopLayer() {
   // Settings is the only dialog that opens another (the profile editor) on top of itself, so close any other one first.
   const open = [.../** @type {NodeListOf<HTMLDialogElement>} */ (document.querySelectorAll('dialog[open]'))], dlg = open.find((d) => d.id !== 'prefs') || open[0];
   if (dlg) { dlg.close(); return true; }
-  if ($('side').classList.contains('open')) { toggleSide(false); return true; }
   if (!$('modelpop').hidden) { closeModelPop(); return true; }
   if (!$('morepop').hidden) { closeMore(); return true; }
   if (narrow() && !document.querySelector('.app').classList.contains('nohist')) { applyHist(false); return true; }

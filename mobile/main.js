@@ -95,5 +95,5 @@ window.api = {
   onToolApproval: (fn) => { approve = async (info) => { try { const a = await fn(info); return ['once', 'always'].includes(a) ? a : 'deny'; } catch { return 'deny'; } }; },
 };
 
-// Back closes whatever is open (a dialog, the options panel, the history…); with nothing open, the app goes to the background.
+// Back closes whatever is open (a dialog, a popup, the history…); with nothing open, the app goes to the background.
 App.addListener('backButton', () => { if (!globalThis.closeTopLayer?.()) App.minimizeApp(); });

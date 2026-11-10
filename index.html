@@ -34,7 +34,7 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   /* iPhone notch and home bar (viewport-fit=cover); every inset is 0 on the desktop and Android */
-  #side, .richview { box-sizing: border-box; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .richview { box-sizing: border-box; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   /* No top inset on the body: the header's glass reaches up behind the status bar and pads its own contents down (see header) */
   body { box-sizing: border-box; padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -115,7 +115,7 @@
   .modelbtn, .composer, #toast { background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow); }
   .composer, #toast { -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); } /* the pills sit on the header's blur already */
   .att, .rich-exp { background: var(--glass-strong); border: 1px solid var(--glass-line); }
-  #modelpop, #morepop, .selpop, #side, dialog { background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  #modelpop, #morepop, .selpop, dialog { background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
     border: 1px solid var(--glass-line); box-shadow: var(--glass-shadow); }
   .pill { position: relative; display: flex; align-items: center; min-width: 0; }
   .modelbtn { border-radius: 999px; padding: 6px 34px 6px 14px; max-width: 300px; min-width: 0; font-size: 13.5px;
@@ -280,24 +280,21 @@
   .ubody .att { padding-right: 10px; }
   .ubody .att.thumb { padding: 0; border: 0; background: none; }
   .ubody .att.thumb img { width: 160px; height: 120px; border-radius: 14px; }
-  /* Reasoning side panel */
-  #scrim { position: fixed; inset: 0; z-index: 30; background: rgba(5,6,10,.3); opacity: 0; pointer-events: none; transition: opacity var(--t-panel) var(--ease); }
-  #scrim.on { opacity: 1; pointer-events: auto; }
-  #side { position: fixed; top: 0; right: 0; bottom: 0; z-index: 31; width: min(340px, 100vw); border-width: 0 0 0 1px;
-    transform: translateX(100%); transition: transform var(--t-panel) var(--sheet); display: flex; flex-direction: column; }
-  #side.open { transform: none; }
-  .side-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 18px 16px 8px 20px; }
-  .side-head h2 { margin: 0; font-size: 18px; font-weight: 650; }
-  .side-head .sub { margin: 2px 0 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
-  #levels { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
-  .level { text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 9px 12px; border-radius: 14px; cursor: pointer;
+  /* Reasoning levels: a .selpop that opens above the composer's brain button */
+  #reasonpop { width: min(300px, calc(100vw - 20px)); display: flex; flex-direction: column; }
+  #reasonpop:not(:popover-open) { display: none; }
+  .reason-head { padding: 6px 10px 6px; }
+  .reason-head h2 { margin: 0; font-size: 14px; font-weight: 650; }
+  .reason-head .sub { margin: 1px 0 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  #levels { display: flex; flex-direction: column; gap: 2px; }
+  .level { text-align: left; display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-radius: 10px; cursor: pointer;
     background: transparent; border: 0; transition: background .15s; }
   .level:hover { background: var(--fill); }
   .level[aria-checked="true"] { background: color-mix(in srgb, var(--a1) 14%, transparent); }
-  .level .nm { font-weight: 600; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+  .level .nm { flex: none; font-weight: 600; font-size: 13.5px; display: flex; gap: 8px; align-items: center; }
   .level .tag { font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
-  .level .ds { font-size: 12.5px; color: var(--muted); }
-  #sidenote { margin: auto 20px 20px; padding-top: 12px; font-size: 12.5px; color: var(--faint); line-height: 1.5; }
+  .level .ds { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* one line each; the full text is the row's title */
+  #reasonnote { margin: 6px 4px 2px; padding: 8px 6px 0; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--faint); line-height: 1.45; }
   #drop { position: fixed; inset: 12px; z-index: 20; display: none; place-items: center; border: 2px dashed var(--a1); border-radius: 22px;
     background: color-mix(in srgb, var(--bg) 70%, transparent); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); font-size: 18px; font-weight: 600; pointer-events: none; }
   #drop { opacity: 0; scale: .98; transition: opacity var(--t-mid) var(--ease), scale var(--t-mid) var(--spring), display var(--t-mid) allow-discrete; }
@@ -517,7 +514,7 @@
   <div class="attachments" id="attachments"></div>
   <div class="composer">
     <button class="icon-btn" id="attach" title="Attach files" aria-label="Attach files"><svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
-    <button class="icon-btn" id="reasoning" title="Reasoning level" aria-label="Reasoning level"><svg viewBox="0 0 24 24"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg></button>
+    <button class="icon-btn" id="reasoning" title="Reasoning level" aria-label="Reasoning level" popovertarget="reasonpop" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg></button>
     <input type="file" id="picker" multiple hidden>
     <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
     <button class="send" id="send" title="Send" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
@@ -724,15 +721,11 @@
   </form>
 </dialog>
 
-<div id="scrim"></div>
-<aside id="side" inert aria-label="Reasoning">
-  <div class="side-head">
-    <div><h2>Reasoning</h2><p class="sub" id="sidemodel"></p></div>
-    <button class="icon-btn" id="sideclose" title="Close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
-  </div>
+<div id="reasonpop" class="selpop" popover aria-label="Reasoning">
+  <div class="reason-head"><h2>Reasoning</h2><p class="sub" id="reasonmodel"></p></div>
   <div id="levels" role="radiogroup" aria-label="Reasoning level"></div>
-  <p id="sidenote"></p>
-</aside>
+  <p id="reasonnote"></p>
+</div>
 <div id="drop">Drop files to attach</div>
 <div id="errtoast" role="alert"></div>
 <div id="toast" role="status"></div>

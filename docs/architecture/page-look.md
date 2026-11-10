@@ -10,13 +10,14 @@ All styling is built on one token set in `:root`, written as `light-dark()` pair
 ## Glass
 
 The translucent layers use `--glass` / `--glass-strong`, `--glass-line`, `--glass-shadow` and `--blur`.
-- **With their own blur:** `header::before`, the composer, the toast, the popovers (`#modelpop`, `#morepop`), the reasoning panel (`#side`), dialogs, and the chat list when it's a phone overlay.
+- **With their own blur:** `header::before`, the composer, the toast, the popovers (`#modelpop`, `#morepop`, the `.selpop` lists and the reasoning levels), dialogs, and the chat list when it's a phone overlay.
 - **Glass fill without a blur:** the header pills, the attachment chips and a rich reply's expand button. They sit on an already-blurred layer, or a blur would cost GPU time for no visible change. Don't stack blurs.
 - **Prefix:** always write `-webkit-backdrop-filter` beside `backdrop-filter`, because iOS 17 needs it.
 - **Dropdowns:** every `<select>` except the model's goes through `glassSelect` in `renderer.js`, so all dropdowns share the model picker's look (`.modelbtn` on the pills, `.mopt` rows). It works the same on every platform, iOS included.
   - The `<select>` stays, hidden, as the source of truth. Code still sets its options, `.value` and `disabled`, and listens for `change`. A `MutationObserver` and a per-select `value` setter keep the visible `.selbtn` label in step, because setting `.value` fires no event.
   - The list is a `popover` (`.selpop`), so it sits in the top layer and a dialog can't clip it. It also stays a child of the dialog, so it isn't made inert. It's positioned from the button's rect, opens upward when there's more room above, follows its field on resize (the phone keyboard), and closes when something around it scrolls. A pick fires bubbling `input` and `change` events, like a real select. Escape and `closeTopLayer()` close the list before the dialog.
   - The pills are `<div>`s, not `<label>`s, and `-webkit-tap-highlight-color` is transparent on `:root`, so Android doesn't flash a highlight box when one is tapped.
+- **Reasoning levels:** the composer's brain button (`#reasoning`) is the `popovertarget` of `#reasonpop`, a `.selpop` that opens above it, placed by the same `placePop` as the dropdown lists. Each level is one line: its description is cut with an ellipsis and repeated in the row's `title`. Picking a level saves it and closes the popup.
 
 ## The chat scrolls under the header and composer
 
@@ -36,8 +37,8 @@ The translucent layers use `--glass` / `--glass-strong`, `--glass-line`, `--glas
 Everything springs in with a slight overshoot that settles, and eases out faster. The tokens are in `:root`:
 - `--spring` for things appearing.
 - `--ease` for fades and exits.
-- `--sheet` for panels and anything that moves layout, such as the sidebar and the reasoning panel.
-- `--t-fast` (120ms), `--t-mid` (220ms) and `--t-slow` (320ms), plus `--t-panel` (380ms) for the two side panels and their scrims.
+- `--sheet` for panels and anything that moves layout, such as the sidebar.
+- `--t-fast` (120ms), `--t-mid` (220ms) and `--t-slow` (320ms), plus `--t-panel` (380ms) for the chat list and its scrim.
 
 **Showing and hiding.** Popovers (`[hidden]`), dialogs (`showModal` / `close`), the sidebar (`.nohist`), the reasoning block (`.row.open`), the drop overlay and the settings panes still hide with `display: none`. They animate both ways like this:
 - The resting rule lists `display` (and `overlay` for dialogs) in `transition` with `allow-discrete`, so the element stays displayed until its exit transition ends.

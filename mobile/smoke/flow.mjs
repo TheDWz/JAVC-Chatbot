@@ -43,11 +43,11 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   await page.click(`.mopt:has-text("${MODEL}")`);
   check((await page.textContent('#modellabel')) === MODEL, 'model is selected');
 
-  log('Back button closes the options panel');
+  log('Back button closes the reasoning popup');
   await page.click('#reasoning');
-  await page.waitForSelector('#side.open');
+  await page.waitForSelector('#reasonpop:popover-open');
   await back();
-  await page.waitForSelector('#side:not(.open)', { timeout: 10_000 });
+  await page.waitForSelector('#reasonpop', { state: 'hidden', timeout: 10_000 });
 
   log('Header fits the screen');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
