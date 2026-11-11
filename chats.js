@@ -48,8 +48,11 @@ module.exports = (io) => {
      * chat or list a deleted one: entries without a file are dropped and files missing from the index are added.
      */
     list: serial(async () => {
-      await io.ready?.(); // a key that can't be unlocked is an error, not an empty list: the reads below skip what they can't read
-      const names = await chatFiles(), saved = await readIndex();
+      const names = await chatFiles();
+      // a key that can't be unlocked is an error, not an empty list (the reads below skip what they can't read); with no chats
+      // there's nothing to unlock, so a first launch doesn't wait on the keystore making a key
+      if (names === null || names.length) await io.ready?.();
+      const saved = await readIndex();
       if (!names) return sorted(saved ?? []); // can't see the folder: show what the index says
       let ix = saved;
       if (!ix) ix = await entries(names);

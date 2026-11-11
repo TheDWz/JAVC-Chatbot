@@ -50,8 +50,8 @@ const loadPdfParse = () => (pdfParse ??= import(asset('vendor/pdf-parse.es.js'))
 
 window.api = {
   getSettings: async () => {
-    const st = await store.get(); await seal.status(); // loading the chat key here gets any notice about it in too
-    await chats.list().catch(() => {}); // and listing sets aside chats that can't be decrypted, for the same notice (the page reports list errors)
+    const st = await store.get();
+    await chats.list().catch(() => {}); // loads the chat key (if there are chats) and sets aside ones it can't decrypt, for their notices; the page reports list errors
     return { ...st, notice: [store.takeNotice(), seal.takeNotice()].filter(Boolean).join(' ') };
   },
   patchSettings: (patch) => store.patch(patch),

@@ -118,6 +118,8 @@ test('seal: upgrade encrypts chats saved before encryption, once, and plain file
 
 test('seal: a key that cannot be unlocked is an error, and nothing is written or listed as empty', async () => {
   const { dir, keyFile, done } = sealDirs();
+  const untouched = { available: () => assert.fail('keyring used'), enc: () => assert.fail('keyring used'), dec: () => assert.fail('keyring used') };
+  assert.deepStrictEqual(await makeChats(sealFor(dir, untouched).io).list(), []); assert.ok(!fs.existsSync(keyFile)); // a first launch makes no key
   await makeChats(sealFor(dir).io).save({ id: 'a1', title: 'A', updated: 1, messages: [] });
   const keyBefore = fs.readFileSync(keyFile, 'utf8'), files = fs.readdirSync(dir).map((n) => fs.readFileSync(path.join(dir, n), 'utf8'));
   const locked = sealFor(dir, { ...b64Keyring, dec: () => { throw new Error('keyring locked'); } }), store = makeChats(locked.io);
