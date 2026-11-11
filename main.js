@@ -39,8 +39,10 @@ const keyring = {
   dec: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
 };
 const store = makeStore({ io: makeDisk(app.getPath('userData')), crypto: keyring });
+/** The keyring as the chat key sees it: Linux's 'basic_text' store uses a fixed built-in key, so it isn't one (the key stays plain, and moves into a real keyring once there is one). */
+const chatKeyring = { ...keyring, available: () => keyring.available() && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') };
 // Chats are encrypted with a key the keyring wraps (seal.js). It loads on first use, after the app is ready, as Linux's keyring needs.
-const seal = makeChatSeal({ io: makeDisk(app.getPath('userData')), crypto: keyring, chats: makeDisk(path.join(app.getPath('userData'), 'chats')) });
+const seal = makeChatSeal({ io: makeDisk(app.getPath('userData')), crypto: chatKeyring, chats: makeDisk(path.join(app.getPath('userData'), 'chats')) });
 
 /** The settings for the page, with any one-time notice (such as a damaged settings file). */
 ipcMain.handle('settings:get', async () => {
@@ -142,28 +144,22 @@ app.on('before-quit', (e) => { // stop the servers first; before-quit doesn't wa
 });
 
 const chats = makeChats(seal.io);
-/** Whether chats are encrypted and the key is really protected. Linux's 'basic_text' store uses a fixed built-in key, so it doesn't count. */
-/** Persona id -> {user, bot}, for the names in a text export. */
-const personaNames = async () => Object.fromEntries((await store.get()).personas.map((p) => [p.id, { user: p.user, bot: p.bot }]));
 /** Writes every chat to a file the user picks: JSON, text, or JSON locked with a passphrase (backup.js). */
 ipcMain.handle('chats:export', async (e, opts) => {
-  const { chats: all, missed } = await Backup.collect(chats);
-  const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: await personaNames() });
-  const json = file.mime === 'application/json';
-  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
-    defaultPath: path.join(app.getPath('documents'), file.name),
-    filters: [json ? { name: 'Chat export', extensions: ['json'] } : { name: 'Text', extensions: ['txt'] }],
+  const { name, mime } = Backup.exportName({ format: opts?.format, passphrase: opts?.passphrase });
+  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), { // first, so a cancel skips the reading and the passphrase hashing
+    defaultPath: path.join(app.getPath('documents'), name),
+    filters: [mime === 'application/json' ? { name: 'Chat export', extensions: ['json'] } : { name: 'Text', extensions: ['txt'] }],
   });
   if (r.canceled || !r.filePath) return { saved: false };
+  const { chats: all, missed } = await Backup.collect(chats);
+  const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas) });
   await fs.promises.writeFile(r.filePath, file.text, { mode: 0o600 });
+  await fs.promises.chmod(r.filePath, 0o600); // the mode only applies to a new file; an overwritten one keeps its old permissions
   return { saved: true, count: all.length, missed };
 });
 ipcMain.handle('chats:import', async (_e, text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)));
-ipcMain.handle('chats:status', async () => {
-  const s = await seal.status();
-  if (s.keyring && process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') s.keyring = false;
-  return s;
-});
+ipcMain.handle('chats:status', () => seal.status()); // keyring: false for Linux basic_text too (chatKeyring)
 ipcMain.handle('chats:list', () => chats.list());
 ipcMain.handle('chats:load', (_e, id) => chats.load(id));
 ipcMain.handle('chats:save', (_e, chat) => chats.save(chat));

@@ -87,8 +87,7 @@ window.api = {
   /** Writes every chat to a file the user picks with the system's save screen (JSON, text, or JSON locked with a passphrase). */
   exportChats: async (opts) => {
     const { chats: all, missed } = await Backup.collect(chats);
-    const names = Object.fromEntries((await store.get()).personas.map((p) => [p.id, { user: p.user, bot: p.bot }]));
-    const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names });
+    const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas) });
     const { saved } = await Javc.saveFile({ name: file.name, mime: file.mime, data: file.text });
     return saved ? { saved: true, count: all.length, missed } : { saved: false };
   },

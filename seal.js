@@ -14,7 +14,7 @@ function toB64(bytes) {
   return btoa(s);
 }
 /** @param {string} b64 */
-const fromB64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+const fromB64 = (b64) => { const s = atob(b64), out = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i); return out; }; // a plain loop: this decodes every chat read
 
 /**
  * Chat encryption for one install.
@@ -25,9 +25,11 @@ function makeChatSeal({ io, crypto, chats }) {
   let ready = null, notice = '', setAside = 0;
   /** The keyring's wrapping of `b64`, used only if it reads back: a broken keyring must not lock the chats away. */
   const wrap = async (b64) => {
-    if (!(await crypto.available())) return null;
-    const keyEnc = await crypto.enc(b64);
-    return (await crypto.dec(keyEnc)) === b64 ? keyEnc : null;
+    try {
+      if (!(await crypto.available())) return null;
+      const keyEnc = await crypto.enc(b64);
+      return (await crypto.dec(keyEnc)) === b64 ? keyEnc : null;
+    } catch { return null; } // a keyring that throws is one that doesn't work: keep the key plain and try again next launch
   };
   const save = (rec) => io.write(KEYFILE, JSON.stringify({ version: 1, ...rec }));
   /** Sealed chat files (not the _index), which a new key could never open. */
@@ -53,15 +55,18 @@ function makeChatSeal({ io, crypto, chats }) {
     if (!rec || rec.version !== 1 || typeof (rec.keyEnc || rec.keyPlain) !== 'string') throw damaged();
     let b64 = rec.keyPlain, keyring = false;
     if (rec.keyEnc) {
-      try { b64 = await crypto.dec(rec.keyEnc); keyring = true; }
+      try { b64 = await crypto.dec(rec.keyEnc); }
       catch (e) { throw new Error(`the system keyring couldn't unlock the chat key (${e.message}). Your chats are kept as they are.`, { cause: e }); }
-    } else {
-      const keyEnc = await wrap(b64); // a keyring appeared since: protect the key now
-      if (keyEnc) { await save({ keyEnc }); keyring = true; }
     }
     let raw;
     try { raw = fromB64(b64); } catch { throw damaged(); }
     if (raw.length !== 32) throw damaged();
+    if (rec.keyEnc) {
+      try { keyring = !!(await crypto.available()); } catch {} // a wrapping that still opens from a store that doesn't count (Linux basic_text) isn't protection
+    } else {
+      const keyEnc = await wrap(b64); // a keyring appeared since: protect the key now
+      if (keyEnc) { await save({ keyEnc }); keyring = true; }
+    }
     return { key: await subtle().importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']), keyring };
   }
   /** The key, loaded once on first use (after the app is ready, which Linux's keyring needs); a failure is retried next time. */

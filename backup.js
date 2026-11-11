@@ -6,6 +6,7 @@ const APP = 'javc-chatbot', ITERATIONS = 600000; // OWASP's PBKDF2-SHA256 figure
 const utf8 = new TextEncoder(), text = new TextDecoder();
 const subtle = () => globalThis.crypto.subtle;
 const notExport = () => new Error("This file isn't a JAVC Chatbot chat export.");
+const newer = () => new Error('This export is from a newer version of the app. Update the app to import it.');
 
 /** Every chat in full, oldest list entry last; a chat that can't be read (another key, damage) is left out and counted. */
 async function collect(chats) {
@@ -62,26 +63,35 @@ function transcript(chats, names = {}, now = Date.now()) {
  * @returns {Promise<{name: string, mime: string, text: string}>}
  */
 async function buildExport(chats, { format = 'json', passphrase = '', names = {}, now = Date.now() } = {}) {
-  const d = new Date(now), stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  if (format === 'txt' && !passphrase) return { name: `javc-chats-${stamp}.txt`, mime: 'text/plain', text: transcript(chats, names, now) };
+  const { name, mime } = exportName({ format, passphrase, now });
+  if (mime === 'text/plain') return { name, mime, text: transcript(chats, names, now) };
   const json = JSON.stringify({ app: APP, kind: 'chats', version: 1, exported: now, chats });
-  if (!passphrase) return { name: `javc-chats-${stamp}.json`, mime: 'application/json', text: json };
-  return { name: `javc-chats-${stamp}-protected.json`, mime: 'application/json', text: await encryptExport(json, passphrase) };
+  return { name, mime, text: passphrase ? await encryptExport(json, passphrase) : json };
 }
+/** The file name and type `buildExport` gives for these options, known before any work (the desktop asks where to save first). */
+function exportName({ format = 'json', passphrase = '', now = Date.now() } = {}) {
+  const d = new Date(now), stamp = `javc-chats-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  if (passphrase) return { name: `${stamp}-protected.json`, mime: 'application/json' };
+  return format === 'txt' ? { name: `${stamp}.txt`, mime: 'text/plain' } : { name: `${stamp}.json`, mime: 'application/json' };
+}
+/** Persona id -> {user, bot}, the names a text export uses. */
+const personaNames = (personas) => Object.fromEntries(personas.map((p) => [p.id, { user: p.user, bot: p.bot }]));
 
+const validMessage = (m) => !!m && typeof m === 'object' && typeof m.role === 'string' && (m.files === undefined || Array.isArray(m.files));
 const validChat = (c) => !!c && typeof c === 'object' && typeof c.id === 'string' && /^[a-z0-9-]+$/.test(c.id)
-  && Array.isArray(c.messages) && Number.isFinite(c.updated);
+  && Array.isArray(c.messages) && c.messages.every(validMessage) && Number.isFinite(c.updated) && (c.title === undefined || typeof c.title === 'string');
 /** The chats in an export file, unlocking it with `passphrase` if it is locked. Chats that don't look right are counted, not kept. */
 async function readExport(t, passphrase = '') {
   let f;
   try { f = JSON.parse(t); } catch { throw notExport(); }
   if (f?.app !== APP) throw notExport();
   if (f.kind === 'chats-encrypted') {
+    if (f.version !== 1) throw newer();
     if (!passphrase) throw new Error('This export is protected with a passphrase.');
     try { f = JSON.parse(await decryptExport(f, passphrase)); } catch (e) { throw e.message.startsWith('Wrong') ? e : notExport(); }
   }
   if (f?.kind !== 'chats' || !Array.isArray(f.chats)) throw notExport();
-  if (f.version !== 1) throw new Error('This export is from a newer version of the app. Update the app to import it.');
+  if (f.version !== 1) throw newer();
   const chats = f.chats.filter(validChat);
   return { chats, skipped: f.chats.length - chats.length };
 }
@@ -104,4 +114,4 @@ async function mergeInto(store, { chats, skipped }) {
   return { added, updated: ids.length, kept, skipped, ids };
 }
 
-module.exports = { collect, buildExport, readExport, mergeInto, transcript };
+module.exports = { collect, buildExport, exportName, personaNames, readExport, mergeInto, transcript };

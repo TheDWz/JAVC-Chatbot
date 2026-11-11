@@ -64,7 +64,10 @@ module.exports = (io) => {
     }),
     /** The full chat `id`; an error if it no longer exists. */
     load: serial(async (id) => {
-      const text = await io.read(file(id));
+      const f = file(id);
+      let text;
+      try { text = await io.read(f); }
+      catch (e) { if (e?.code === 'UNREADABLE') await io.setAside?.(f).catch(() => {}); throw e; } // as in list: it can never open, so the next list drops it
       if (text === null) throw new Error('This chat no longer exists');
       return JSON.parse(text);
     }),
@@ -77,8 +80,11 @@ module.exports = (io) => {
     /** Seals any file still saved as plain text (from before encryption). Returns how many it sealed. */
     upgrade: serial(async () => {
       if (!io.needsSeal) return 0;
+      const all = (await io.list()).filter((x) => x.endsWith('.json')), hasIndex = all.includes(INDEX);
+      // the index is sealed last, so a sealed index means nothing is left (an older build that writes plain chats rewrites it plain)
+      if (hasIndex && !(await io.needsSeal(INDEX))) return 0;
       let n = 0;
-      for (const name of (await io.list()).filter((x) => x.endsWith('.json'))) if (await io.needsSeal(name)) { await io.write(name, await io.read(name)); n++; }
+      for (const name of [...all.filter((x) => x !== INDEX), ...(hasIndex ? [INDEX] : [])]) if (await io.needsSeal(name)) { await io.write(name, await io.read(name)); n++; }
       return n;
     }),
     /** Deletes the chat, then its index entry. */

@@ -110,6 +110,9 @@ test('seal: upgrade encrypts chats saved before encryption, once, and plain file
   assert.ok(fs.readdirSync(dir).every((n) => fs.readFileSync(path.join(dir, n), 'utf8').startsWith(PREFIX)));
   assert.strictEqual(await store.upgrade(), 0);
   assert.deepStrictEqual((await store.list()).map((c) => c.id), ['old1']);
+  const disk = makeDisk(dir), reads = []; // later launches stop at the sealed index instead of reading every chat
+  const counted = makeChats(makeChatSeal({ io: makeDisk(dir + '-set'), crypto: b64Keyring, chats: { ...disk, read: (n) => { reads.push(n); return disk.read(n); } } }).io);
+  assert.strictEqual(await counted.upgrade(), 0); assert.deepStrictEqual(reads, ['_index.json']);
   done();
 });
 
@@ -175,6 +178,30 @@ test('seal: a chat that cannot be decrypted is set aside once, with one notice, 
   done();
 });
 
+test('seal: a chat in the index that cannot be decrypted is set aside when opened, and drops out of the list', async () => {
+  const { dir, done } = sealDirs();
+  const seal = sealFor(dir), store = makeChats(seal.io);
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] }); await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  const f = path.join(dir, 'b2.json'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').slice(0, -6) + 'AAAA==');
+  await assert.rejects(store.load('b2'), /could not be decrypted/);
+  assert.ok(!fs.existsSync(f) && fs.readdirSync(dir).some((n) => n.endsWith('.unreadable')));
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['a1']);
+  done();
+});
+
+test('seal: a keyring that throws, or one that does not count, leaves the key plain and the chats working', async () => {
+  const { dir, keyFile, done } = sealDirs();
+  const throwing = sealFor(dir, { available: () => true, enc: () => { throw new Error('locked'); }, dec: () => { throw new Error('locked'); } });
+  assert.deepStrictEqual(await throwing.status(), { keyring: false });
+  assert.ok(JSON.parse(fs.readFileSync(keyFile, 'utf8')).keyPlain);
+  await makeChats(throwing.io).save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  fs.writeFileSync(keyFile, JSON.stringify({ version: 1, keyEnc: b64Keyring.enc(JSON.parse(fs.readFileSync(keyFile, 'utf8')).keyPlain) }));
+  const basic = sealFor(dir, { ...b64Keyring, available: () => false }); // the wrapping still opens, but the store isn't a keyring (Linux basic_text)
+  assert.deepStrictEqual(await basic.status(), { keyring: false });
+  assert.deepStrictEqual((await makeChats(basic.io).list()).map((c) => c.id), ['a1']);
+  done();
+});
+
 // ---- chat export and import (backup.js) ----
 const Backup = require('./backup');
 const sample = () => [
@@ -217,9 +244,11 @@ test('backup: import rejects other files and drops chats with bad ids or shapes'
   await assert.rejects(Backup.readExport('not json'), /isn't a JAVC Chatbot chat export/);
   await assert.rejects(Backup.readExport('{"app":"other","kind":"chats","version":1,"chats":[]}'), /isn't a JAVC/);
   await assert.rejects(Backup.readExport('{"app":"javc-chatbot","kind":"chats","version":2,"chats":[]}'), /newer version/);
-  const f = JSON.stringify({ app: 'javc-chatbot', kind: 'chats', version: 1, chats: [sample()[0], { id: '../evil', updated: 1, messages: [] }, { id: 'ok2', updated: 1 }, null] });
-  const r = await Backup.readExport(f);
-  assert.deepStrictEqual(r.chats.map((c) => c.id), ['c1']); assert.strictEqual(r.skipped, 3);
+  await assert.rejects(Backup.readExport('{"app":"javc-chatbot","kind":"chats-encrypted","version":2}', 'pw'), /newer version/);
+  const bad = [{ id: '../evil', updated: 1, messages: [] }, { id: 'ok2', updated: 1 }, null, { id: 'm1', updated: 1, messages: [null] },
+    { id: 'm2', updated: 1, messages: [{ role: 'user', files: {} }] }, { id: 'm3', updated: 1, title: 5, messages: [] }]; // each would break opening the chat or the text export
+  const r = await Backup.readExport(JSON.stringify({ app: 'javc-chatbot', kind: 'chats', version: 1, chats: [sample()[0], ...bad] }));
+  assert.deepStrictEqual(r.chats.map((c) => c.id), ['c1']); assert.strictEqual(r.skipped, 6);
 });
 
 test('backup: the text export is a readable transcript without reasoning', async () => {
