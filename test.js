@@ -151,11 +151,27 @@ test('seal: a lost key file means a new key and a notice, and the old encrypted 
   fs.rmSync(keyFile);
   const fresh = sealFor(dir), store = makeChats(fresh.io);
   assert.deepStrictEqual(await fresh.status(), { keyring: true });
-  assert.match(fresh.takeNotice(), /^1 saved chat was encrypted with a key this device no longer has\. It is kept on disk/); assert.strictEqual(fresh.takeNotice(), '');
-  assert.deepStrictEqual(await store.list(), []); // unreadable files are skipped, not deleted
-  assert.ok(fs.existsSync(path.join(dir, 'a1.json')));
+  assert.deepStrictEqual(await store.list(), []); // unreadable files are set aside, not deleted
+  assert.ok(fs.readdirSync(dir).some((n) => n.startsWith('a1.json.') && n.endsWith('.unreadable')));
+  assert.match(fresh.takeNotice(), /^1 saved chat was encrypted with a key this device no longer has\. It is kept on disk[^]*Import\.$/); assert.strictEqual(fresh.takeNotice(), ''); // one notice, not two
   await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
   assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2']);
+  done();
+});
+
+test('seal: a chat that cannot be decrypted is set aside once, with one notice, and kept intact', async () => {
+  const { dir, done } = sealDirs();
+  const seal = sealFor(dir), store = makeChats(seal.io);
+  await store.save({ id: 'a1', title: 'A', updated: 1, messages: [] }); await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  const good = fs.readFileSync(path.join(dir, 'b2.json'), 'utf8');
+  fs.writeFileSync(path.join(dir, 'b2.json'), good.slice(0, -6) + 'AAAA=='); fs.rmSync(path.join(dir, '_index.json')); // changed, and not in the index
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['a1']);
+  const aside = fs.readdirSync(dir).filter((n) => n.endsWith('.unreadable'));
+  assert.strictEqual(aside.length, 1); assert.ok(!fs.existsSync(path.join(dir, 'b2.json')));
+  assert.match(seal.takeNotice(), /^1 saved chat couldn't be decrypted .* left out of the list\. It is kept on disk/); assert.strictEqual(seal.takeNotice(), '');
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['a1']); assert.strictEqual(seal.takeNotice(), ''); // not retried
+  fs.writeFileSync(path.join(dir, 'b2.json'), good); fs.rmSync(path.join(dir, aside[0])); // an intact file with that name opens again
+  assert.strictEqual((await store.load('b2')).title, 'B');
   done();
 });
 

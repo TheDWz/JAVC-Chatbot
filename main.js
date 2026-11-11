@@ -45,6 +45,7 @@ const seal = makeChatSeal({ io: makeDisk(app.getPath('userData')), crypto: keyri
 /** The settings for the page, with any one-time notice (such as a damaged settings file). */
 ipcMain.handle('settings:get', async () => {
   const st = await store.get(); await seal.status(); // loading the chat key here gets any notice about it in too
+  await chats.list().catch(() => {}); // and listing sets aside chats that can't be decrypted, for the same notice (the page reports list errors)
   return { ...st, notice: [store.takeNotice(), seal.takeNotice()].filter(Boolean).join(' ') };
 });
 ipcMain.handle('settings:patch', (_e, patch) => store.patch(patch));

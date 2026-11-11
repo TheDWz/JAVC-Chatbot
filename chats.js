@@ -1,11 +1,11 @@
 // One JSON file per chat, plus _index.json (id, title, updated, personaId) so listing doesn't open every chat.
 // Each chat holds only its own messages, which is what keeps chats isolated.
 // `io` is the chats folder (see disk.js); the same code runs on the desktop and on Android. Hosts pass it sealed (seal.js),
-// so every file is encrypted; `ready` and `needsSeal` come from there.
+// so every file is encrypted; `ready`, `needsSeal` and `setAside` come from there.
 
 /**
  * The chat history store.
- * @param {import('./disk').DiskIo & {ready?(): Promise<void>, needsSeal?(name: string): Promise<boolean>}} io The chats folder:
+ * @param {import('./disk').DiskIo & {ready?(): Promise<void>, needsSeal?(name: string): Promise<boolean>, setAside?(name: string): Promise<void>}} io The chats folder:
  *   { read, write, remove, list } as in disk.js, optionally sealed.
  */
 module.exports = (io) => {
@@ -32,7 +32,7 @@ module.exports = (io) => {
       try {
         const c = JSON.parse(await io.read(n));
         if (c && c.id + '.json' === n) out.push({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId });
-      } catch {}
+      } catch (e) { if (e?.code === 'UNREADABLE') await io.setAside?.(n).catch(() => {}); } // it would fail every list; the seal gives one notice
     }
     return out;
   };

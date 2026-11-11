@@ -22,7 +22,7 @@ const fromB64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
  *   `io` is the settings folder (for chatkey.json), `crypto` the host keyring, `chats` the plain chats folder.
  */
 function makeChatSeal({ io, crypto, chats }) {
-  let ready = null, notice = '';
+  let ready = null, notice = '', setAside = 0;
   /** The keyring's wrapping of `b64`, used only if it reads back: a broken keyring must not lock the chats away. */
   const wrap = async (b64) => {
     if (!(await crypto.available())) return null;
@@ -67,17 +67,17 @@ function makeChatSeal({ io, crypto, chats }) {
   /** The key, loaded once on first use (after the app is ready, which Linux's keyring needs); a failure is retried next time. */
   const key = () => (ready ??= loadKey().catch((e) => { ready = null; throw e; }));
 
-  /** @type {import('./disk').DiskIo & {needsSeal(name: string): Promise<boolean>, ready(): Promise<void>}} */
+  /** @type {import('./disk').DiskIo & {needsSeal(name: string): Promise<boolean>, ready(): Promise<void>, setAside(name: string): Promise<void>}} */
   const sealed = {
     /** Rejects when the key can't be loaded; chats.list checks it first, since it skips files it can't read. */
     async ready() { await key(); },
     async read(name) {
       const t = await chats.read(name);
       if (t === null || !t.startsWith(PREFIX)) return t; // missing, or written before encryption (chats.upgrade seals it)
-      const { key: k } = await key(), all = fromB64(t.slice(PREFIX.length));
+      const { key: k } = await key();
       let plain;
-      try { plain = await subtle().decrypt({ name: 'AES-GCM', iv: all.subarray(0, 12), additionalData: utf8.encode(name) }, k, all.subarray(12)); }
-      catch { throw new Error(`${name} could not be decrypted (a different key, or the file was changed)`); }
+      try { const all = fromB64(t.slice(PREFIX.length)); plain = await subtle().decrypt({ name: 'AES-GCM', iv: all.subarray(0, 12), additionalData: utf8.encode(name) }, k, all.subarray(12)); }
+      catch { throw Object.assign(new Error(`${name} could not be decrypted (a different key, or the file was changed)`), { code: 'UNREADABLE' }); }
       return text.decode(plain);
     },
     async write(name, t) {
@@ -91,6 +91,8 @@ function makeChatSeal({ io, crypto, chats }) {
     list: () => chats.list(),
     async rename(from, to) { const t = await sealed.read(from); if (t !== null) { await sealed.write(to, t); await chats.remove(from); } }, // re-sealed: the name is part of the seal
     async needsSeal(name) { const t = await chats.read(name); return t !== null && !t.startsWith(PREFIX); },
+    /** Moves a chat that can't be decrypted out of the list (kept as is, so the right key still opens it), for one notice. */
+    async setAside(name) { await chats.rename(name, `${name}.${Date.now()}.unreadable`); setAside++; },
   };
 
   return {
@@ -99,7 +101,11 @@ function makeChatSeal({ io, crypto, chats }) {
     async status() {
       try { return { keyring: (await key()).keyring }; } catch (e) { return { error: e.message }; }
     },
-    takeNotice() { const n = notice; notice = ''; return n; },
+    takeNotice() {
+      const n = notice || (setAside ? `${setAside} saved chat${setAside === 1 ? '' : 's'} couldn't be decrypted (a key from another device, or the file was changed), so ${setAside === 1 ? 'it was' : 'they were'} left out of the list. ${setAside === 1 ? 'It is' : 'They are'} kept on disk; restore from an export with Import.` : '');
+      notice = ''; setAside = 0; // after a lost key, those notices are about the same files: one is enough
+      return n;
+    },
   };
 }
 
