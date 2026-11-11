@@ -39,7 +39,7 @@ macOS only. The default build is Release for `iphoneos` with signing off, staged
 
 | Job | Runs on | Does | Artifacts |
 | :-- | :-- | :-- | :-- |
-| `build` (matrix) | Ubuntu, Windows | `npm test`, `electron-builder --publish never` (installs `rpm` on Linux) | `javc-chatbot-Linux`, `javc-chatbot-Windows` |
+| `build` (matrix) | Ubuntu, Windows | `npm test`, `electron-builder --publish never` (installs `rpm` on Linux) | the `.AppImage`, `.deb`, `.rpm` and `.tar.gz` each uploaded unzipped; `javc-chatbot-Windows` |
 | `android` | Ubuntu, JDK 21 | `npm test`, decodes the signing keystore from a secret, builds the release APK and a debug APK | release APK (uploaded unzipped), `javc-chatbot-Android-debug` |
 | `android-smoke` | Ubuntu with KVM | emulator (API 36, x86_64) runs `mobile/smoke/android.mjs` on the debug APK | `android-smoke` |
 | `ios` | macOS | `npm test`, `npm run dist:ios` (the simulator self-test isn't run: it took about 8 minutes on top of a 3-minute build) | unsigned `.ipa` (unzipped) |
@@ -52,7 +52,7 @@ Gaps in the config: `build.yml` doesn't run lint or typecheck (only `check.yml` 
 
 1. Bump `package.json` and `package-lock.json` (`npm version X.Y.Z --no-git-tag-version`) and merge it to `main` through a PR.
 2. Tag the merge commit `vX.Y.Z` and push the tag; wait for `build.yml`.
-3. Download the artifacts. `gh run download` unpacks the APK and `.ipa` into folders, so fetch those two raw from the API instead (`gh api repos/<owner>/<repo>/actions/artifacts/<id>/zip`).
+3. Download the artifacts. `gh run download` unpacks the unzipped uploads (APK, `.ipa` and the four Linux packages) into folders, so fetch those raw from the API instead (`gh api repos/<owner>/<repo>/actions/artifacts/<id>/zip`).
 4. **Check the APK is signed with the existing release key** (`apksigner verify --print-certs`) before publishing; a different key forces users to uninstall, which deletes their chats.
 5. Write `SHA256SUMS.txt` and `gh release create vX.Y.Z` with the notes and all files: `.apk`, `.ipa`, `.AppImage`, `.deb`, `.rpm`, `.tar.gz`, Windows setup `.exe`, `SHA256SUMS.txt`.
 
