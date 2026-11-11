@@ -16,7 +16,7 @@ The user, the app's own page and the provider they configured are trusted.
 | Risk | Control |
 | :-- | :-- |
 | A reply's HTML reads or changes the app | Replies render as DOM, never `innerHTML`. Rich HTML runs in an iframe with `sandbox="allow-scripts"` and no `allow-same-origin`, served from a separate scheme or host with its own CSP header. |
-| A rich frame calls the native bridge (phones) | Android refuses to start without `WEB_MESSAGE_LISTENER` (web view 123+); iOS replaces Capacitor's message handler with `MainFrameOnly`, which drops non-main-frame messages. The iOS self-test checks this. |
+| A rich frame calls the native bridge (phones) | Android refuses to start without `WEB_MESSAGE_LISTENER` (web view 123+); iOS replaces Capacitor's message handler with `MainFrameOnly`, which drops non-main-frame messages. The iOS self-test checks this (run by hand on a Mac; CI no longer runs it). |
 | Rich content uses camera, microphone, location, notifications | Desktop permission handlers always deny; Android's Chrome client and iOS's `PermissionGuard` deny. |
 | The page makes network calls or loads remote script | The page CSP is `default-src 'self'; script-src 'self'; img-src data:; frame-src` for the sandbox scheme only. All network goes through the host. |
 | Links navigate the app away | Desktop: new windows denied, `will-navigate` blocked, only `http(s)` and `mailto` open externally. Plugins' `openUrl` allow http(s) only. |
