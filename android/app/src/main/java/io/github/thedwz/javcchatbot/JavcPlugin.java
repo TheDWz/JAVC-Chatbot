@@ -1,5 +1,6 @@
 package io.github.thedwz.javcchatbot;
 
+import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -16,6 +17,8 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import androidx.activity.result.ActivityResult;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
@@ -393,6 +396,44 @@ public class JavcPlugin extends Plugin {
     }
 
     // ---- Clipboard ----
+
+    /**
+     * Saves {data} (text) to a file the user picks with the system's save screen, suggesting {name} with type {mime}.
+     * Resolves {saved: false} if they cancel. Used for chat exports.
+     */
+    @PluginMethod
+    public void saveFile(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(call.getString("mime", "application/octet-stream"))
+            .putExtra(Intent.EXTRA_TITLE, call.getString("name", "export"));
+        startActivityForResult(call, intent, "saveFileDone");
+    }
+
+    @ActivityCallback
+    private void saveFileDone(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        Uri uri = result.getResultCode() == Activity.RESULT_OK && result.getData() != null ? result.getData().getData() : null;
+        String data = call.getString("data", "");
+        getBridge().releaseCall(call); // Capacitor keeps a call saved for an activity; drop it so the export text isn't held
+        if (uri == null) {
+            JSObject r = new JSObject();
+            r.put("saved", false);
+            call.resolve(r);
+            return;
+        }
+        http.execute(() -> { // off the main thread: an export with images can be many megabytes
+            try (OutputStream out = getContext().getContentResolver().openOutputStream(uri, "w")) { // a new document starts empty; some providers (Drive) refuse "wt"
+                if (out == null) throw new IOException("Could not open the file");
+                out.write(data.getBytes(StandardCharsets.UTF_8));
+                JSObject r = new JSObject();
+                r.put("saved", true);
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject(message(e));
+            }
+        });
+    }
 
     /** Copies {text} to the clipboard. */
     @PluginMethod

@@ -1,10 +1,12 @@
 // One JSON file per chat, plus _index.json (id, title, updated, personaId) so listing doesn't open every chat.
 // Each chat holds only its own messages, which is what keeps chats isolated.
-// `io` is the chats folder (see disk.js); the same code runs on the desktop and on Android.
+// `io` is the chats folder (see disk.js); the same code runs on the desktop and on Android. Hosts pass it sealed (seal.js),
+// so every file is encrypted; `ready`, `needsSeal` and `setAside` come from there.
 
 /**
  * The chat history store.
- * @param {import('./disk').DiskIo} io The chats folder: { read, write, remove, list } as in disk.js.
+ * @param {import('./disk').DiskIo & {ready?(): Promise<void>, needsSeal?(name: string): Promise<boolean>, setAside?(name: string): Promise<void>}} io The chats folder:
+ *   { read, write, remove, list } as in disk.js, optionally sealed.
  */
 module.exports = (io) => {
   /** The file name of chat `id`; rejects anything that isn't a plain id, so a name can never point outside the folder. */
@@ -30,7 +32,7 @@ module.exports = (io) => {
       try {
         const c = JSON.parse(await io.read(n));
         if (c && c.id + '.json' === n) out.push({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId });
-      } catch {}
+      } catch (e) { if (e?.code === 'UNREADABLE') await io.setAside?.(n).catch(() => {}); } // it would fail every list; the seal gives one notice
     }
     return out;
   };
@@ -46,7 +48,11 @@ module.exports = (io) => {
      * chat or list a deleted one: entries without a file are dropped and files missing from the index are added.
      */
     list: serial(async () => {
-      const names = await chatFiles(), saved = await readIndex();
+      const names = await chatFiles();
+      // a key that can't be unlocked is an error, not an empty list (the reads below skip what they can't read); with no chats
+      // there's nothing to unlock, so a first launch doesn't wait on the keystore making a key
+      if (names === null || names.length) await io.ready?.();
+      const saved = await readIndex();
       if (!names) return sorted(saved ?? []); // can't see the folder: show what the index says
       let ix = saved;
       if (!ix) ix = await entries(names);
@@ -61,7 +67,10 @@ module.exports = (io) => {
     }),
     /** The full chat `id`; an error if it no longer exists. */
     load: serial(async (id) => {
-      const text = await io.read(file(id));
+      const f = file(id);
+      let text;
+      try { text = await io.read(f); }
+      catch (e) { if (e?.code === 'UNREADABLE') await io.setAside?.(f).catch(() => {}); throw e; } // as in list: it can never open, so the next list drops it
       if (text === null) throw new Error('This chat no longer exists');
       return JSON.parse(text);
     }),
@@ -70,6 +79,16 @@ module.exports = (io) => {
       const f = file(chat.id);
       await io.write(f, JSON.stringify(chat));
       await io.write(INDEX, JSON.stringify([...(await index()).filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title, updated: chat.updated, personaId: chat.personaId }]));
+    }),
+    /** Seals any file still saved as plain text (from before encryption). Returns how many it sealed. */
+    upgrade: serial(async () => {
+      if (!io.needsSeal) return 0;
+      const all = (await io.list()).filter((x) => x.endsWith('.json')), hasIndex = all.includes(INDEX);
+      // the index is sealed last, so a sealed index means nothing is left (an older build that writes plain chats rewrites it plain)
+      if (hasIndex && !(await io.needsSeal(INDEX))) return 0;
+      let n = 0;
+      for (const name of [...all.filter((x) => x !== INDEX), ...(hasIndex ? [INDEX] : [])]) if (await io.needsSeal(name)) { await io.write(name, await io.read(name)); n++; }
+      return n;
     }),
     /** Deletes the chat, then its index entry. */
     remove: serial(async (id) => {

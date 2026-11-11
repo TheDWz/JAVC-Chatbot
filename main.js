@@ -1,12 +1,15 @@
-const { app, clipboard, BrowserWindow, ipcMain, safeStorage, protocol, session, shell } = require('electron');
+const { app, clipboard, BrowserWindow, dialog, ipcMain, safeStorage, protocol, session, shell } = require('electron');
 const { createHash } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const http = require('node:http');
+const fs = require('node:fs');
 const path = require('node:path');
 const api = require('./api');
 const Lib = require('./lib');
 const makeChats = require('./chats');
 const makeStore = require('./store');
+const { makeChatSeal } = require('./seal');
+const Backup = require('./backup');
 const Mcp = require('./mcp');
 const { makeDisk, migrateLegacy } = require('./disk');
 
@@ -29,17 +32,24 @@ try { // the app was called "chatbot" before the JAVC rename; bring its settings
   if (moved.length) console.log('Moved from the old chatbot folder:', moved.join(', '));
 } catch (e) { console.error('Could not move data from the old chatbot folder:', e); }
 
-const store = makeStore({
-  io: makeDisk(app.getPath('userData')),
-  crypto: {
-    available: () => safeStorage.isEncryptionAvailable(),
-    enc: (t) => safeStorage.encryptString(t).toString('base64'),
-    dec: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
-  },
-});
+/** The OS keyring (DPAPI on Windows, the Secret Service or KWallet on Linux): wraps API keys and the chat key. */
+const keyring = {
+  available: () => safeStorage.isEncryptionAvailable(),
+  enc: (t) => safeStorage.encryptString(t).toString('base64'),
+  dec: (b) => safeStorage.decryptString(Buffer.from(b, 'base64')),
+};
+const store = makeStore({ io: makeDisk(app.getPath('userData')), crypto: keyring });
+/** The keyring as the chat key sees it: Linux's 'basic_text' store uses a fixed built-in key, so it isn't one (the key stays plain, and moves into a real keyring once there is one). */
+const chatKeyring = { ...keyring, available: () => keyring.available() && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') };
+// Chats are encrypted with a key the keyring wraps (seal.js). It loads on first use, after the app is ready, as Linux's keyring needs.
+const seal = makeChatSeal({ io: makeDisk(app.getPath('userData')), crypto: chatKeyring, chats: makeDisk(path.join(app.getPath('userData'), 'chats')) });
 
 /** The settings for the page, with any one-time notice (such as a damaged settings file). */
-ipcMain.handle('settings:get', async () => { const st = await store.get(); return { ...st, notice: store.takeNotice() }; });
+ipcMain.handle('settings:get', async () => {
+  const st = await store.get();
+  await chats.list().catch(() => {}); // loads the chat key (if there are chats) and sets aside ones it can't decrypt, for their notices; the page reports list errors
+  return { ...st, notice: [store.takeNotice(), seal.takeNotice()].filter(Boolean).join(' ') };
+});
 ipcMain.handle('settings:patch', (_e, patch) => store.patch(patch));
 ipcMain.handle('profiles:save', (_e, p) => store.saveProfile(p));
 ipcMain.handle('personas:save', (_e, p) => store.savePersona(p));
@@ -133,7 +143,24 @@ app.on('before-quit', (e) => { // stop the servers first; before-quit doesn't wa
   Promise.race([hub.closeAll(), new Promise((r) => setTimeout(r, 5000))]).finally(() => app.quit());
 });
 
-const chats = makeChats(makeDisk(path.join(app.getPath('userData'), 'chats')));
+const chats = makeChats(seal.io);
+/** Writes every chat to a file the user picks: JSON, text, or JSON locked with a passphrase (backup.js). */
+ipcMain.handle('chats:export', async (e, opts) => {
+  const { name, mime } = Backup.exportName({ format: opts?.format, passphrase: opts?.passphrase });
+  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), { // first, so a cancel skips the reading and the passphrase hashing
+    defaultPath: path.join(app.getPath('documents'), name),
+    filters: [mime === 'application/json' ? { name: 'Chat export', extensions: ['json'] } : { name: 'Text', extensions: ['txt'] }],
+  });
+  if (r.canceled || !r.filePath) return { saved: false };
+  const { chats: all, missed } = await Backup.collect(chats);
+  const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas) });
+  await fs.promises.writeFile(r.filePath, file.text, { mode: 0o600 });
+  await fs.promises.chmod(r.filePath, 0o600); // the mode only applies to a new file; an overwritten one keeps its old permissions
+  return { saved: true, count: all.length, missed };
+});
+ipcMain.handle('chats:import', async (_e, text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)));
+ipcMain.handle('chats:status', () => seal.status());
+ipcMain.handle('chats:resetKey', () => seal.reset()); // keyring: false for Linux basic_text too (chatKeyring)
 ipcMain.handle('chats:list', () => chats.list());
 ipcMain.handle('chats:load', (_e, id) => chats.load(id));
 ipcMain.handle('chats:save', (_e, chat) => chats.save(chat));
@@ -147,6 +174,7 @@ ipcMain.handle('pdf:extract', async (_e, buf) => {
 });
 
 app.whenReady().then(() => {
+  chats.upgrade().then((n) => { if (n) console.log(`Encrypted ${n} chat files`); }, (e) => console.error('Could not encrypt the saved chats:', e));
   const win = new BrowserWindow({
     width: 900, height: 700, backgroundColor: '#15161a', autoHideMenuBar: true,
     // shortcut: Wayland ignores this and uses the .desktop file's icon; it matters on Windows and X11.

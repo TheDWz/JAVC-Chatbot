@@ -61,6 +61,8 @@ async function run() {
     await window.api.saveChat(chat);
     const list = await window.api.listChats(), back = await window.api.loadChat(chat.id);
     check('A chat saves, lists and opens again', list.some((c) => c.id === chat.id) && back.messages[0].text === 'hi');
+    const sec = await window.api.chatsStatus();
+    check('Chats are encrypted with a key in the Keychain', sec.keyring === true && sec.device === true, JSON.stringify(sec));
   });
 
   await part('Rich reply frame', async () => {

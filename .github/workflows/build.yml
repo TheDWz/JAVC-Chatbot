@@ -129,8 +129,8 @@ jobs:
           path: dist/android-smoke*
           if-no-files-found: ignore
 
-  # Builds the unsigned .ipa (for Sideloadly, AltStore and other signing tools), then runs the app's own self-test on a
-  # simulator: Keychain encryption, a streamed reply, saved chats, sandboxed rich replies, the bridge locked to the app page, PDF text.
+  # Builds the unsigned .ipa (for Sideloadly, AltStore and other signing tools). The simulator self-test (mobile/smoke/ios.mjs)
+  # isn't run here: it took about 8 minutes on top of a 3-minute build.
   ios:
     runs-on: macos-latest
     timeout-minutes: 45
@@ -152,13 +152,3 @@ jobs:
           path: dist/*.ipa
           archive: false
           if-no-files-found: error
-      - name: Simulator build with the self-test
-        run: node mobile/build.mjs --selftest && npx cap sync ios && node mobile/ipa.mjs --simulator
-      - name: Self-test on the simulator
-        run: node mobile/smoke/ios.mjs ios/build/sim/Build/Products/Debug-iphonesimulator/App.app
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: ios-smoke
-          path: dist/ios-smoke*
-          if-no-files-found: ignore

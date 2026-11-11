@@ -19,7 +19,7 @@ The page (`renderer.js`) never touches Electron, Capacitor or the file system. I
 | Personas | `savePersona`, `deletePersona` | `personas:save`, `personas:delete` |
 | Search | `saveSearch`, `getSearchKey` | `search:save`, `search:key` |
 | Chat | `chat(messages, onDelta, opts)`, `stopChat` | `chat:send` (+ `chat:delta` events), `chat:abort` |
-| History | `listChats`, `loadChat`, `saveChat`, `deleteChat` | `chats:list`, `chats:load`, `chats:save`, `chats:delete` |
+| History | `listChats`, `loadChat`, `saveChat`, `deleteChat`, `chatsStatus`, `resetChatKey`, `exportChats({format, passphrase})`, `importChats(text, passphrase)` | `chats:list`, `chats:load`, `chats:save`, `chats:delete`, `chats:status`, `chats:resetKey`, `chats:export`, `chats:import` |
 | Files | `extractPdf` | `pdf:extract` |
 | Clipboard | `copyText` | `clipboard:write` |
 | Rich replies | `createSandbox(html, color, scheme, flags)` | `sandbox:create` |
@@ -42,7 +42,7 @@ The core is written against small interfaces, passed in by whoever builds it:
 | Piece | Interface | Desktop | Android / iOS | Tests |
 | :-- | :-- | :-- | :-- | :-- |
 | Files | `io`: `read`, `write`, `remove`, `list`, `rename` (flat names, `null` for a missing file) | `makeDisk` in `disk.js` | `makeNativeDisk` in `mobile/native.js` | in-memory fakes |
-| Key encryption | `crypto`: `available()`, `enc(text)`, `dec(data)`; may be async | Electron `safeStorage` | `makeNativeCrypto` (Keystore / Keychain) | fakes |
+| Key encryption | `crypto`: `available()`, `enc(text)`, `dec(data)`; may be async. Wraps API keys and the chat key (`seal.js`) | Electron `safeStorage` | `makeNativeCrypto` (Keystore / Keychain) | fakes |
 | Network | `fetchFn(url, opts)` returning a `Response` | Node's global `fetch` | `makeNativeFetch` (no CORS, `http://` allowed) | fakes |
 | Child processes | `spawn(command, args, env)` | `main.js` (login-shell PATH, process group) | none; local MCP servers report "desktop-only" | fakes |
 | MCP tokens | `auth.get(name)`, `auth.save(name, tokens)` | `store.mcpTokens`, `store.saveMcpTokens` | same | fakes |

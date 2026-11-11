@@ -380,6 +380,7 @@
   .prefs-body .opt { margin-top: 0; padding-top: 12px; }
   .prefs-body .opt:first-of-type { border-top: 0; }
   .sub-opt { margin-left: 46px; }
+  #exppassbox { display: flex; flex-direction: column; gap: 12px; }
   .opt:has(input:disabled), .field:has(input:disabled) { opacity: .5; cursor: default; }
   .sw { appearance: none; flex-shrink: 0; inline-size: 36px; block-size: 20px; margin: 0; border-radius: 999px; background: var(--line); position: relative; cursor: inherit; transition: background .15s; }
   .sw::before { content: ""; position: absolute; inset: 2px auto 2px 2px; aspect-ratio: 1; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .25); transition: translate .15s; }
@@ -572,6 +573,7 @@
       <button type="button" role="tab" id="tab-tools" data-pane="tools" aria-controls="pane-tools">Tools</button>
       <button type="button" role="tab" id="tab-replies" data-pane="replies" aria-controls="pane-replies">Replies</button>
       <button type="button" role="tab" id="tab-summaries" data-pane="summaries" aria-controls="pane-summaries">Summaries</button>
+      <button type="button" role="tab" id="tab-chats" data-pane="chats" aria-controls="pane-chats">Chats</button>
     </div>
     <div class="prefs-body">
       <button type="button" class="icon-btn prefs-close" id="prefsclose" title="Close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
@@ -644,6 +646,32 @@
         </label>
         <p id="sumerr" class="perr" role="alert" hidden></p>
       </section>
+      <section role="tabpanel" id="pane-chats" aria-labelledby="tab-chats" tabindex="0" hidden>
+        <h3>Saved chats</h3>
+        <p class="sub" id="chatsec"></p>
+        <p id="chatsecerr" class="perr" role="alert" hidden></p>
+        <div id="resetbox" hidden>
+          <p class="sub">If the keyring is only locked, unlock it and restart the app instead. Starting over makes a new key so you can save chats again; the chats you can't open now, and the old key file, are kept on disk, not deleted.</p>
+          <div class="btns"><button type="button" class="btn danger" id="resetkey">Start over with a new key</button></div>
+        </div>
+        <h3>Export</h3>
+        <p class="sub">A copy of every chat, to keep somewhere safe or move to another device. The file is outside the app's encryption unless you protect it.</p>
+        <label class="field">Format
+          <span class="input"><select id="expformat"><option value="json">JSON (can be imported back)</option><option value="txt">Text (for reading)</option></select></span>
+        </label>
+        <label class="opt"><input type="checkbox" class="sw" id="exppass"><span>Protect with a passphrase<small>The file is encrypted, and only this passphrase can import it. A forgotten passphrase can't be recovered.</small></span></label>
+        <div class="sub-opt" id="exppassbox" hidden>
+          <label class="field">Passphrase<span class="input"><input id="exppw" type="password" autocomplete="new-password" spellcheck="false"></span></label>
+          <label class="field">Repeat it<span class="input"><input id="exppw2" type="password" autocomplete="new-password" spellcheck="false"></span></label>
+        </div>
+        <p id="experr" class="perr" role="alert" hidden></p>
+        <div class="btns"><button type="button" class="btn primary" id="expbtn">Export chats…</button></div>
+        <h3>Import</h3>
+        <p class="sub">Adds the chats from a JSON export. A chat you already have is replaced only by a newer copy.</p>
+        <input type="file" id="impfile" accept=".json,application/json,text/plain" hidden>
+        <p id="imperr" class="perr" role="alert" hidden></p>
+        <div class="btns"><button type="button" class="btn" id="impbtn">Import chats…</button></div>
+      </section>
     </div>
   </div>
 </dialog>
@@ -692,6 +720,20 @@
   </form>
 </dialog>
 
+<dialog id="impdlg">
+  <form id="impform" method="dialog">
+    <h2>Protected export</h2>
+    <p class="sub">Enter the passphrase this file was exported with.</p>
+    <label class="field">Passphrase
+      <span class="input"><input id="imppw" type="password" autocomplete="off" spellcheck="false"></span>
+    </label>
+    <p id="imperr2" class="perr" role="alert" hidden></p>
+    <div class="btns">
+      <button type="button" class="btn" id="impcancel">Cancel</button>
+      <button type="submit" class="btn primary" id="impgo">Import</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="dupdlg">
   <form id="dupform" method="dialog">
     <h2>Duplicate chat</h2>
