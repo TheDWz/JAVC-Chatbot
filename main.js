@@ -159,7 +159,8 @@ ipcMain.handle('chats:export', async (e, opts) => {
   return { saved: true, count: all.length, missed };
 });
 ipcMain.handle('chats:import', async (_e, text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)));
-ipcMain.handle('chats:status', () => seal.status()); // keyring: false for Linux basic_text too (chatKeyring)
+ipcMain.handle('chats:status', () => seal.status());
+ipcMain.handle('chats:resetKey', () => seal.reset()); // keyring: false for Linux basic_text too (chatKeyring)
 ipcMain.handle('chats:list', () => chats.list());
 ipcMain.handle('chats:load', (_e, id) => chats.load(id));
 ipcMain.handle('chats:save', (_e, chat) => chats.save(chat));

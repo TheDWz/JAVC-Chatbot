@@ -106,6 +106,18 @@ function makeChatSeal({ io, crypto, chats }) {
     async status() {
       try { return { keyring: (await key()).keyring }; } catch (e) { return { error: e.message }; }
     },
+    /**
+     * Starts over with a new key, only when the current one can't be loaded. chatkey.json is renamed, not deleted, so the
+     * old chats open again if the keyring comes back (rename it back, and the .unreadable files too). Returns the notice.
+     */
+    async reset() {
+      try { await key(); } catch {
+        if ((await io.list()).includes(KEYFILE)) await io.rename(KEYFILE, `${KEYFILE}.${Date.now()}.old`); // moved aside, never deleted
+        ready = null; await key(); // the new key, with the notice about chats it can't open
+        const n = notice; notice = ''; return n;
+      }
+      throw new Error("The chat key still works, so it wasn't replaced.");
+    },
     takeNotice() {
       const n = notice || (setAside ? `${setAside} saved chat${setAside === 1 ? '' : 's'} couldn't be decrypted (a key from another device, or the file was changed), so ${setAside === 1 ? 'it was' : 'they were'} left out of the list. ${setAside === 1 ? 'It is' : 'They are'} kept on disk; restore from an export with Import.` : '');
       notice = ''; setAside = 0; // after a lost key, those notices are about the same files: one is enough

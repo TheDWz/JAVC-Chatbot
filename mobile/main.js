@@ -84,6 +84,7 @@ window.api = {
   stopChat: async () => current?.abort(),
   listChats: () => chats.list(),
   chatsStatus: async () => ({ ...(await seal.status()), device: true }),
+  resetChatKey: () => seal.reset(),
   /** Writes every chat to a file the user picks with the system's save screen (JSON, text, or JSON locked with a passphrase). */
   exportChats: async (opts) => {
     const { chats: all, missed } = await Backup.collect(chats);

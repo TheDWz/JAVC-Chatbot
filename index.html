@@ -650,6 +650,10 @@
         <h3>Saved chats</h3>
         <p class="sub" id="chatsec"></p>
         <p id="chatsecerr" class="perr" role="alert" hidden></p>
+        <div id="resetbox" hidden>
+          <p class="sub">If the keyring is only locked, unlock it and restart the app instead. Starting over makes a new key so you can save chats again; the chats you can't open now, and the old key file, are kept on disk, not deleted.</p>
+          <div class="btns"><button type="button" class="btn danger" id="resetkey">Start over with a new key</button></div>
+        </div>
         <h3>Export</h3>
         <p class="sub">A copy of every chat, to keep somewhere safe or move to another device. The file is outside the app's encryption unless you protect it.</p>
         <label class="field">Format

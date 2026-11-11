@@ -998,17 +998,29 @@ function showPane(name, focus) {
 }
 /** Says how saved chats are protected here: the host reports whether the chat key is in a real keyring (seal.js). */
 async function loadChatsPane() {
-  $('chatsecerr').hidden = $('experr').hidden = $('imperr').hidden = true; $('chatsec').textContent = '';
+  $('chatsecerr').hidden = $('experr').hidden = $('imperr').hidden = $('resetbox').hidden = true; $('chatsec').textContent = '';
   /** @type {HTMLInputElement} */ ($('exppw')).value = /** @type {HTMLInputElement} */ ($('exppw2')).value = ''; // never left filled in
   let s;
   try { s = await window.api.chatsStatus(); } catch (e) { s = { error: cleanErr(e) }; }
-  if (s.error) { $('chatsecerr').textContent = `Saved chats can't be opened: ${s.error}`; $('chatsecerr').hidden = false; return; }
+  if (s.error) { $('chatsecerr').textContent = `Saved chats can't be opened: ${s.error}`; $('chatsecerr').hidden = $('resetbox').hidden = false; return; }
   $('chatsec').textContent = s.keyring
     ? (s.device ? 'Chats are encrypted on this device with a key held by its keystore. Copies of the files can\'t be read.'
       : 'Chats are encrypted with a key held by your system keyring. Other users and copies of the disk can\'t read them; programs you run can.')
     : (s.device ? 'Chats are encrypted, but this device\'s keystore isn\'t working, so the key is kept unprotected in the app\'s private folder.'
       : 'Chats are encrypted, but no system keyring was found, so the key is stored unprotected beside them. Unlock or install a keyring (GNOME Keyring or KWallet) and restart the app to protect it.');
 }
+let resetArmed = 0;
+$('resetkey').onclick = async () => {
+  const btn = $('resetkey');
+  if (Date.now() - resetArmed > 3000) { resetArmed = Date.now(); btn.textContent = 'Confirm: start over?'; setTimeout(() => { btn.textContent = 'Start over with a new key'; }, 3000); return; } // first click arms, as deleting a chat does
+  resetArmed = 0; btn.disabled = true;
+  try {
+    const notice = await window.api.resetChatKey();
+    await loadChatsPane(); await refreshList();
+    if (notice) showError(notice);
+  } catch (e) { $('chatsecerr').textContent = 'Could not start over: ' + cleanErr(e); $('chatsecerr').hidden = false; }
+  finally { btn.disabled = false; btn.textContent = 'Start over with a new key'; }
+};
 // Export: a passphrase always gives the locked JSON, so the format is fixed to JSON while it's on
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 $('exppass').onchange = () => {

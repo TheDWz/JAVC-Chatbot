@@ -202,6 +202,22 @@ test('seal: a keyring that throws, or one that does not count, leaves the key pl
   done();
 });
 
+test('seal: reset starts over with a new key only when the old one cannot load, and keeps the old files', async () => {
+  const { dir, keyFile, done } = sealDirs();
+  const ok = sealFor(dir); await makeChats(ok.io).save({ id: 'a1', title: 'A', updated: 1, messages: [] });
+  await assert.rejects(ok.reset(), /still works/);
+  const broken = sealFor(dir, { ...b64Keyring, dec: () => { throw new Error('keyring reset'); } });
+  fs.writeFileSync(keyFile, JSON.stringify({ version: 1, keyEnc: 'gone' }));
+  assert.match((await broken.status()).error, /keyring couldn't unlock/);
+  assert.match(await broken.reset(), /^1 saved chat was encrypted with a key this device no longer has/);
+  assert.ok(fs.readdirSync(dir + '-set').some((n) => /^chatkey\.json\.\d+\.old$/.test(n))); // the old key file is kept
+  const store = makeChats(broken.io);
+  assert.deepStrictEqual(await store.list(), []); assert.ok(fs.readdirSync(dir).some((n) => n.startsWith('a1.json.') && n.endsWith('.unreadable')));
+  await store.save({ id: 'b2', title: 'B', updated: 2, messages: [] });
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['b2']);
+  done();
+});
+
 // ---- chat export and import (backup.js) ----
 const Backup = require('./backup');
 const sample = () => [
