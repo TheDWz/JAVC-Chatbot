@@ -13,14 +13,8 @@ jobs:
         include:
           - os: ubuntu-latest
             target: --linux
-            artifacts: |
-              dist/*.AppImage
-              dist/*.deb
-              dist/*.rpm
-              dist/*.tar.gz
           - os: windows-latest
             target: --win
-            artifacts: dist/*.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -35,9 +29,35 @@ jobs:
       - run: npm test
       - run: npx electron-builder ${{ matrix.target }} --publish never
       - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
         with:
-          name: javc-chatbot-${{ runner.os }}
-          path: ${{ matrix.artifacts }}
+          name: javc-chatbot-Windows
+          path: dist/*.exe
+          if-no-files-found: error
+      # Linux: one unzipped download per package, like the APK (archive: false takes exactly one file and ignores `name`).
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          path: dist/*.AppImage
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          path: dist/*.deb
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          path: dist/*.rpm
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          path: dist/*.tar.gz
+          archive: false
           if-no-files-found: error
 
   android:
