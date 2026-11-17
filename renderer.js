@@ -441,6 +441,9 @@ $('statsbtn').onclick = () => { closeMore(); openStats(); };
 const fmtMs = (v) => (v == null ? ['—'] : v < 1000 ? [String(Math.round(v)), 'ms'] : [(v / 1000).toFixed(2), 's']);
 const fmtTps = (v, est) => (v == null ? ['—'] : [(est ? '~' : '') + v.toFixed(1), 'tok/s']);
 const fmtTok = (v) => (v == null ? ['—'] : [v.toLocaleString(), 'tokens']);
+// cents from $1 up; below that, 3 significant digits so tiny replies ($0.000169) still show
+const usd = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }), usdSmall = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumSignificantDigits: 2, maximumSignificantDigits: 3 });
+const fmtCost = (v) => (v == null ? ['—'] : [(v >= 1 || v === 0 ? usd : usdSmall).format(v)]);
 /**
  * One stat as a tile: the big value and the small unit under/next to it.
  * @param {string} label
@@ -481,7 +484,9 @@ function renderStats() {
     tile('Last speed', fmtTps(last.tps, last.est)), tile('Avg speed', fmtTps(s.avgTps, avgEst)),
     tile('Tokens used in this chat', fmtTok(s.used || null)), tile('Context size', fmtTok(s.context)),
   );
+  if (s.cost != null) tiles.append(tile('Last reply cost', fmtCost(last.cost)), tile('Cost of this chat', fmtCost(s.cost)));
   notes.push(`Averages over ${s.points.length} repl${s.points.length === 1 ? 'y' : 'ies'}${model ? ` from ${model}` : ''}. Tokens used counts every reply, including ones regenerated or edited away.`);
+  if (s.cost != null) notes.push('Cost is what the provider reported, for replies and summaries. Ones from providers that don\'t report it aren\'t counted.');
   if (s.est || s.noTotal) notes.push('Some replies have no token counts, because the provider didn\'t send them or the reply was stopped early.'
     + (s.est ? ' Their speed (marked ~) is estimated from the text length.' : '') + ' They aren\'t in the token totals.');
   $('statsbody').replaceChildren(tiles, ...notes.map((t) => el('p', 'statnote', t)));
@@ -649,6 +654,7 @@ async function summarize(reply) {
   try { out = await window.api.chat(Lib.summaryRequest(chat, personaOf(chat), cut), null, { summary: summarizer() }); }
   catch (e) { if (cleanErr(e) === 'Stopped') throw e; return fail(cleanErr(e)); }
   chat.used = (chat.used || 0) + (out.usage?.total_tokens || 0); // the summary used tokens too
+  if (out.cost != null) chat.cost = (chat.cost || 0) + out.cost; // and cost money
   if (out.stopped) throw new Error('Stopped');
   const text = out.content.trim();
   if (out.error || !text) return fail(out.error || 'the model returned no text');
@@ -684,8 +690,9 @@ async function generate(base) {
     };
     const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), onDelta, { search: toolsOk(), mcp: toolsOk() && state.mcp.enabled });
     const t2 = performance.now(); if (pauseAt) paused += t2 - pauseAt;
-    const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, sent: out.sent, text: out.content + out.reasoning, sawReasoning });
+    const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, sent: out.sent, text: out.content + out.reasoning, sawReasoning, cost: out.cost });
     chat.used = (chat.used || 0) + (stats.total || 0); // a running total: it stays when this reply is later replaced or dropped
+    if (out.cost != null) chat.cost = (chat.cost || 0) + out.cost; // the same, in USD, when the provider reports it
     const fields = { content: out.content, reasoning: out.reasoning, stats }; // reasoning and stats are display-only, never sent back
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);

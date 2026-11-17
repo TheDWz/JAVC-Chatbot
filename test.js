@@ -497,6 +497,27 @@ test('anthropic: refusals and HTTP errors become errors', async () => {
   await assert.rejects(chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, antFake(models, [401])), /^Error: HTTP 401: .*bad key/);
 });
 
+test('chatStream reads the cost OpenRouter, NanoGPT and xAI report, once, in USD', async () => {
+  const last = (extra) => `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }, ...extra })}\n\n`;
+  const run = async (tail) => (await chatStream('http://x', '', 'm', [], {}, () => {}, sse(frames([{ content: 'hi' }]).replace('data: [DONE]\n\n', '') + tail + 'data: [DONE]\n\n'))).cost;
+  assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost: 0.002 } })), 0.002); // OpenRouter
+  assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost: 0.5 }, x_nanogpt_pricing: { cost: 0.000169, paymentSource: 'USD' } })), 0.000169); // NanoGPT: counted once
+  assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost_in_usd_ticks: 158500 } })), 0.00001585); // xAI ticks
+  assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost: 0.5 }, x_nanogpt_pricing: { amount: 3, currency: 'XNO' } })), undefined); // not USD, and usage.cost isn't used instead
+  assert.strictEqual(await run(last({ x_nanogpt_pricing: { cost: 0.0002, paymentSource: 'XNO' } })), 0.0002); // paid with XNO, priced in USD
+  assert.strictEqual(await run(last({})), undefined);
+  const json = JSON.stringify({ choices: [{ message: { content: 'hi' } }], usage: { total_tokens: 2, cost: 0.01 } });
+  assert.strictEqual((await chatStream('http://x', '', 'm', [], {}, () => {}, sse(json, {}, 'application/json'))).cost, 0.01);
+});
+
+test('chatStream adds up the cost of every tool round', async () => {
+  const call = { index: 0, id: 'c1', function: { name: 'web_search', arguments: '{"query":"q"}' } };
+  const withCost = (deltas, cost) => frames(deltas).replace('data: [DONE]', `data: ${JSON.stringify({ choices: [], usage: { total_tokens: 1, cost } })}\n\ndata: [DONE]`);
+  const replies = [withCost([{ tool_calls: [call] }], 0.25), withCost([{ content: 'done' }], 0.5)];
+  const fetchFn = async (url, opts) => (url.includes('linkup') ? new Response('{"results":[]}') : sse(replies.shift())(url, opts));
+  assert.strictEqual((await chatStream('http://x', '', 'm', [{ role: 'user', content: 'q' }], {}, () => {}, fetchFn, undefined, { key: 'l' })).cost, 0.75);
+});
+
 test('profiles: first run is empty; templates are not profiles', () => {
   const st = profiles.migrate(null);
   assert.deepStrictEqual([st.profiles, st.activeId], [[], '']);
@@ -1355,6 +1376,9 @@ test('web search: usage adds up over rounds, ctx is the last round', async () =>
 });
 
 test('replyStats: timings and tokens from usage, or an estimate without it', () => {
+  assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 1, t2: 2, text: '', cost: 0.01 }).cost, 0.01);
+  assert.ok(!('cost' in Lib.replyStats({ model: 'a', t0: 0, t1: 1, t2: 2, text: '' })));
+  assert.strictEqual(Lib.chatStats({ messages: [], cost: 0.5 }).cost, 0.5); assert.strictEqual(Lib.chatStats({ messages: [] }).cost, null);
   assert.deepStrictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 400, t2: 2400, usage: U(100, 50), text: 'x' }),
     { model: 'a', ttft: 400, tps: 25, out: 50, total: 150, ctx: 150, prompt: 100 });
   assert.strictEqual(Lib.replyStats({ model: 'a', t0: 0, t1: 1, t2: 2, sent: 10, usage: U(40, 7), text: '' }).prompt, 10); // search: the first round's prompt

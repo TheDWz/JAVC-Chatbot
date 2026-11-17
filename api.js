@@ -127,6 +127,14 @@ const parts = (c) => {
   const text = (x) => (Array.isArray(x) ? x.map((p) => p?.text || '').join('') : String(x || ''));
   return { reasoning: c.filter((p) => p?.type === 'thinking').map((p) => text(p.thinking)).join(''), content: c.filter((p) => p?.type === 'text').map((p) => p.text || '').join('') };
 };
+// What the request cost in USD, when the provider says: NanoGPT's x_nanogpt_pricing, OpenRouter's usage.cost (credits, 1 = $1),
+// xAI's usage.cost_in_usd_ticks (1e-10 USD). When NanoGPT's pricing is there, only it counts (never also usage.cost);
+// its `currency` decides the unit (paymentSource is how the user paid, not the unit).
+function costOf(j) {
+  const p = j.x_nanogpt_pricing, ok = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  if (p && typeof p === 'object') return p.currency == null || /^usd$/i.test(p.currency) ? ok(p.cost ?? p.amount) : undefined;
+  return ok(j.usage?.cost) ?? (typeof j.usage?.cost_in_usd_ticks === 'number' ? ok(j.usage.cost_in_usd_ticks / 1e10) : undefined);
+}
 const pickReasoning = (o) => (typeof o.reasoning_content === 'string' ? o.reasoning_content : typeof o.reasoning === 'string' ? o.reasoning : '');
 
 // ---- Web search through Linkup (https://docs.linkup.so). The model asks for it with a web_search tool call. ----
@@ -200,6 +208,7 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
     emit(pickReasoning(m) + p.reasoning, p.content, true);
     for (const c of m.tool_calls || []) calls.push({ id: c.id, type: 'function', function: { name: c.function?.name || '', arguments: c.function?.arguments || '' }, ...(c.extra_content && { extra_content: c.extra_content }) });
     if (json.usage) out.usage = json.usage;
+    const cost = costOf(json); if (cost !== undefined) out.cost = cost;
     return out;
   }
 
@@ -212,6 +221,7 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
     let j; try { j = JSON.parse(data); } catch { return false; }
     if (j.error) throw new Error('Stream error: ' + (j.error.message || JSON.stringify(j.error)));
     if (j.usage) out.usage = j.usage; // usually its own last chunk, with empty choices
+    const cost = costOf(j); if (cost !== undefined) out.cost = cost;
     const d = j.choices?.[0]?.delta || {}, p = parts(d.content);
     emit(pickReasoning(d) + p.reasoning, p.content);
     for (const t of d.tool_calls || []) {
@@ -283,6 +293,7 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     const out = await once(endpoint, key, model, msgs, { ...extra, tools, tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
       .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
     add(out.reasoning, out.content); addUsage(out.usage);
+    if (out.cost !== undefined) total.cost = (total.cost || 0) + out.cost; // every round is billed
     if (out.error || out.stopped || final || !calls.length) return { ...total, ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) };
     // Thinking-mode providers (DeepSeek, GLM, Kimi) reject the follow-up with a 400 unless the round's reasoning goes back with its tool calls
     msgs.push({ role: 'assistant', content: out.content, tool_calls: calls, ...(THINKING_SWITCH.test(endpoint) && out.reasoning && { reasoning_content: out.reasoning }), ...(out.blocks && { blocks: out.blocks }) });
