@@ -24,7 +24,8 @@ const frameFiles = new Map(), fileTokens = new Map(); // token -> {name: {ref, m
 ipcMain.handle('sandbox:create', async (_e, html, color, scheme, flags, files) => {
   if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
   const use = Lib.richFiles(html, files, fileTokens);
-  if (use) frameFiles.set(use.token, use.files);
+  if (use) { frameFiles.delete(use.token); frameFiles.set(use.token, use.files); } // re-set: the Map's order is the eviction order, as for richDocs
+  for (const m of [frameFiles, fileTokens]) if (m.size > 300) m.delete(m.keys().next().value);
   const rec = await Lib.richDoc(html, color, scheme, flags, use ? Object.fromEntries(Object.keys(use.files).map((n) => [n, `chatbot-sandbox://file/${use.token}/${n}`])) : {});
   const id = createHash('sha256').update(rec.csp + '\n' + rec.doc).digest('hex'); // the same page gets the same id, so re-renders reuse it
   richDocs.delete(id); richDocs.set(id, rec); // re-set: the Map's order is the eviction order
@@ -168,11 +169,11 @@ ipcMain.handle('chats:export', async (e, opts) => {
     filters: [mime === 'application/json' ? { name: 'Chat export', extensions: ['json'] } : { name: 'Text', extensions: ['txt'] }],
   });
   if (r.canceled || !r.filePath) return { saved: false };
-  const { chats: all, missed, files } = await Backup.collect(chats, opts?.format !== 'txt' || !!opts?.passphrase); // a text export lists files by name only
+  const { chats: all, missed, files, filesMissed } = await Backup.collect(chats, opts?.format !== 'txt' || !!opts?.passphrase); // a text export lists files by name only
   const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas), files });
   await fs.promises.writeFile(r.filePath, file.text, { mode: 0o600 });
   await fs.promises.chmod(r.filePath, 0o600); // the mode only applies to a new file; an overwritten one keeps its old permissions
-  return { saved: true, count: all.length, missed };
+  return { saved: true, count: all.length, missed, filesMissed };
 });
 ipcMain.handle('chats:import', async (_e, text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)));
 ipcMain.handle('chats:status', () => seal.status());

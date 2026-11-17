@@ -19,6 +19,7 @@ module.exports = (io) => {
   const FILE = /^a-[0-9a-f]{64}\.bin$/;
   const fileName = (ref) => { if (typeof ref !== 'string' || !FILE.test(ref)) throw new Error('Invalid file'); return ref; };
   const fresh = new Set(); // files saved since the app started: a reply's files are saved before its chat is, so they're never swept meanwhile
+  let stored = null; // the file names in the folder, listed once, so saving 20 files doesn't list it 20 times
   let swept = false;
   /** The files chat `c` uses, in any version of any message. */
   const filesOf = (c) => [...new Set((Array.isArray(c.messages) ? c.messages : []).flatMap((m) => [m, ...(Array.isArray(m?.versions) ? m.versions : [])])
@@ -26,14 +27,16 @@ module.exports = (io) => {
   const entryOf = (c) => ({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId, files: filesOf(c) });
   /**
    * Deletes the files no chat in index `ix` uses. Skipped while that can't be known: an entry from an older version without
-   * its file list, or a chat set aside as unreadable (the right key may still open it).
+   * its file list, a chat file the index doesn't list (it couldn't be read just now), or a chat set aside as unreadable (the
+   * right key may still open it).
    */
   const sweep = async (ix) => {
     if (ix.some((c) => !Array.isArray(c.files))) return;
     let names; try { names = await io.list(); } catch { return; }
-    if (names.some((n) => n.endsWith('.unreadable'))) return;
+    const listed = new Set(ix.map((c) => c.id + '.json'));
+    if (names.some((n) => n.endsWith('.unreadable') || (n.endsWith('.json') && n !== INDEX && !listed.has(n)))) return;
     const used = new Set(ix.flatMap((c) => c.files));
-    for (const n of names) if (FILE.test(n) && !used.has(n) && !fresh.has(n)) await io.remove(n).catch(() => {});
+    for (const n of names) if (FILE.test(n) && !used.has(n) && !fresh.has(n)) { await io.remove(n).catch(() => {}); stored?.delete(n); }
   };
   let queue = Promise.resolve(); // one operation at a time, so the index is never rewritten from a stale copy
   const serial = (fn) => (...args) => { const run = queue.then(() => fn(...args)); queue = run.catch(() => {}); return run; };
@@ -109,13 +112,17 @@ module.exports = (io) => {
       await io.write(f, JSON.stringify(chat));
       await io.write(INDEX, JSON.stringify([...rest, entry]));
     }),
-    /** Keeps a file (base64) and returns the name messages refer to it by; the same file is kept once. */
+    /**
+     * Keeps a file (base64) and returns the name messages refer to it by; the same file is kept once.
+     * shortcut: the folder takes text, so a file is base64 sealed as text (about 1.8x its size, decoded twice per read); give seal.js a byte path if files get big
+     */
     saveFile: serial(async (data) => {
       if (typeof data !== 'string') throw new Error('Invalid file');
       const hash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(data)));
       const name = `a-${Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('')}.bin`;
       fresh.add(name);
-      if (!(await io.list()).includes(name)) await io.write(name, data);
+      stored ??= new Set(await io.list());
+      if (!stored.has(name)) { await io.write(name, data); stored.add(name); }
       return name;
     }),
     /** File `ref` as base64; an error if it's gone. */

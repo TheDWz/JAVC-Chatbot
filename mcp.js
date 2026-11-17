@@ -4,6 +4,7 @@
 // shortcut: speaks revision 2025-11-25 with the initialize handshake; add server/discover and per-request _meta (2026-07-28) when a server needs them
 const { version } = require('./package.json');
 const { toB64 } = require('./seal');
+const { fmtSize } = require('./lib');
 
 const PROTOCOL = '2025-11-25';
 const OLDER = ['2025-06-18', '2025-03-26', '2024-11-05']; // tools/list and tools/call are the same in these
@@ -459,25 +460,33 @@ const MIME = {
 const mimeOf = (name) => MIME[/\.([^.]+)$/.exec(name)?.[1]?.toLowerCase() ?? ''] || 'application/octet-stream';
 const extOf = (mime) => Object.keys(MIME).find((k) => MIME[k] === mime) || 'bin';
 /** A file name made of letters, digits, `_`, `.` and `-` only (attachment:<name> links and save screens rely on it); `fallback` if nothing is left. */
-const cleanName = (s, fallback) => String(s ?? '').replace(/[^\w.-]+/g, '_').replace(/^[._-]+/, '').slice(-100) || fallback;
+// It must stay /^\w[\w.-]{0,99}$/: Lib.richFiles and the phone plugins' sandboxFile keys check it.
+const cleanName = (s, fallback) => String(s ?? '').replace(/[^\w.-]+/g, '_').slice(-100).replace(/^[.-]+/, '') || fallback;
+/** `name` with -k before its extension, still a clean name of at most 100 characters. */
+const numbered = (name, k) => { const m = /^(.*?)(\.[^.]{0,20})?$/.exec(name), ext = m?.[2] ?? '', suf = `-${k}${ext}`; return (m?.[1] ?? '').slice(0, 100 - suf.length) + suf; };
 const bytesOf = (b64) => Math.floor((b64.length * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
-const fmtSize = (n) => (n < 1048576 ? Math.ceil(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
+const MIME_RE = /^[\w.+-]+\/[\w.+-]+$/;
+/** The type `mime` names, or `fallback`. */
+const typeOf = (mime, fallback) => { const t = String(mime ?? '').split(';')[0].trim().toLowerCase(); return MIME_RE.test(t) ? t : fallback; };
+/** A clean file name, with an extension from `mime` when it has none. */
+const nameFor = (name, mime, fallback) => { const n = cleanName(name, fallback); return n.includes('.') ? n : cleanName(n + '.' + extOf(mime), fallback); };
 /** {name, mime, data (base64), size} for a file's bytes; a name without an extension gets one from the type. */
 function fileFrom(name, mime, bytes) {
-  const type = /^[\w.+-]+\/[\w.+-]+$/.test(String(mime ?? '').split(';')[0].trim()) ? String(mime).split(';')[0].trim().toLowerCase() : mimeOf(String(name ?? ''));
-  let n = cleanName(name, 'file');
-  if (!n.includes('.')) n += '.' + extOf(type);
-  return { name: n, mime: type, data: toB64(bytes), size: bytes.length };
+  const type = typeOf(mime, mimeOf(String(name ?? '')));
+  return { name: nameFor(name, type, 'file'), mime: type, data: toB64(bytes), size: bytes.length };
 }
 /** The file in content block `c` (the `i`th of its result): images, audio, binary resources, and text resources of a type other than plain text. */
 function fileOf(c, i) {
   const r = c?.type === 'resource' && isObj(c.resource) ? c.resource : null;
   const textFile = typeof r?.text === 'string' && typeof r.mimeType === 'string' && r.mimeType !== 'text/plain';
-  const data = c?.type === 'image' || c?.type === 'audio' ? c.data : typeof r?.blob === 'string' ? r.blob : textFile ? toB64(new TextEncoder().encode(r.text)) : null;
-  if (typeof data !== 'string' || !data || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return null;
-  const mime = /^[\w.+-]+\/[\w.+-]+$/.test(c.mimeType ?? r?.mimeType ?? '') ? String(c.mimeType ?? r.mimeType).toLowerCase() : 'application/octet-stream';
+  const raw = c?.type === 'image' || c?.type === 'audio' ? c.data : typeof r?.blob === 'string' ? r.blob : textFile ? toB64(new TextEncoder().encode(r.text)) : null;
+  if (typeof raw !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) return null;
+  const bare = raw.replace(/=+$/, '');
+  if (bare.length % 4 === 1) return null;
+  const data = bare + '='.repeat((4 - (bare.length % 4)) % 4); // padded: iOS's Data(base64Encoded:) refuses it without
+  const mime = typeOf(c.mimeType ?? r?.mimeType, 'application/octet-stream');
   let last = ''; try { last = decodeURIComponent(String(r?.uri ?? '').split(/[?#]/)[0].split('/').pop() || ''); } catch {}
-  return { name: cleanName(last, `file-${i + 1}.${extOf(mime)}`), mime, data, size: bytesOf(data) };
+  return { name: nameFor(last, mime, `file-${i + 1}.${extOf(mime)}`), mime, data, size: bytesOf(data) };
 }
 
 /**
@@ -704,20 +713,21 @@ const ATTACH_DEF = {
  * What chatStream gets: the tool set, with every call put to the user first. `approve({server, tool, args})` resolves to
  * 'once' | 'always' | 'deny'; tools the user always allows (`allowed(server, tool)`) skip it.
  * It adds attach_file: files that tool results return get an id the model attaches them by; a path or URL goes through
- * `approve` (with `app: true`; "Always allow" counts for this reply only) and `readFile`. Attached files collect in `files`.
+ * `approve` every time (with `app: true`, so "Always allow" is never saved) and `readFile`. Attached files collect in `files`.
  * @param {Awaited<ReturnType<ReturnType<typeof makeHub>['tools']>>} set
  * @param {{allowed: (server: string, tool: string) => boolean, approve: (info: {server: string, tool: string, args: object, app?: boolean}) => Promise<string>,
  *   readFile?: (ref: {path?: string, url?: string}, signal?: AbortSignal) => Promise<{name: string, mime: string, data: string, size: number}>}} gate
  */
 function gated(set, { allowed, approve, readFile }) {
+  // shortcut: every file a tool returns stays in `found` until the reply ends (Blender's `look` can return dozens); drop the oldest if that bites
   const found = new Map(), files = /** @type {{name: string, mime: string, data: string, size: number}[]} */ ([]), offer = set.defs.length > 0;
-  let free = false; // "Always allow" for paths and URLs, for the rest of this reply
   const keep = (f) => {
     if (f.size > FILE_MAX) return `[file "${f.name}" is over 50 MB, too large to attach: save it to a file and attach it by path]`;
     const id = 'f' + (found.size + 1); found.set(id, f);
     return `[file "${f.name}" (${f.mime}, ${fmtSize(f.size)}): attach_file {"id": "${id}"} attaches it to your reply]`;
   };
   async function attach(args, signal) {
+    if (files.length >= FILES_MAX) return `Not attached: a reply can have at most ${FILES_MAX} files.`; // before asking or downloading anything
     let f;
     if (typeof args.id === 'string') {
       f = found.get(args.id);
@@ -725,20 +735,16 @@ function gated(set, { allowed, approve, readFile }) {
     } else {
       const ref = typeof args.path === 'string' && args.path ? { path: args.path } : typeof args.url === 'string' && args.url ? { url: args.url } : null;
       if (!ref) return 'Error: call attach_file with an "id", a "path" or a "url".';
-      if (!free) {
-        const a = await until(approve({ server: 'The model', tool: ATTACH, args: ref, app: true }), signal);
-        if (a === 'deny') return DECLINED;
-        free = a === 'always';
-      }
+      // every path and URL is asked, even after "Always allow": one allowed file must not open the rest of the disk to the model
+      if ((await until(approve({ server: 'The model', tool: ATTACH, args: ref, app: true }), signal)) === 'deny') return DECLINED;
       try { f = await (readFile ?? (() => Promise.reject(new Error("files can't be read here"))))(ref, signal); }
       catch (e) { if (signal?.aborted) throw e; return `Could not attach it: ${e.message}`; }
       if (f.size > FILE_MAX) return 'Could not attach it: the file is over 50 MB.';
     }
     const same = files.find((x) => x.data === f.data);
     if (same) return `It is already attached as "${same.name}".`;
-    if (files.length >= FILES_MAX) return `Not attached: a reply can have at most ${FILES_MAX} files.`;
     let name = f.name;
-    for (let k = 2; files.some((x) => x.name === name); k++) name = f.name.replace(/(\.[^.]*)?$/, `-${k}$1`);
+    for (let k = 2; files.some((x) => x.name === name); k++) name = numbered(f.name, k);
     files.push({ ...f, name });
     return `Attached "${name}"; the user sees it under your reply. An HTML block in your reply can load it from attachment:${name}`;
   }

@@ -221,7 +221,7 @@ function render(bubble, text, files) {
 const MAX_FILES = 5, MAX_IMG = 25 * 1024 * 1024, MAX_PDF = 25 * 1024 * 1024, MAX_TEXT = 200000;
 const IMG_SIDE = 2048, KEEP_IMG = 2 * 1024 * 1024; // images are stored at most 2048 px on the long side; a small one that fits is kept as is
 let pending = [];
-const fmtSize = (n) => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+const fmtSize = Lib.fmtSize;
 const cleanErr = (e) => e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 const readDataUrl = (f) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(r.error); r.readAsDataURL(f); });
 
@@ -282,10 +282,22 @@ function chip(a, onRemove) {
 }
 // A file the model attached to its reply ({name, mime, size, ref}): images show as thumbnails; a click opens it, with Save.
 const SHOWN = /^image\/(png|jpeg|gif|webp)$/; // drawn from data: URLs; anything else (SVG can carry script) is only offered to save
+const thumbs = new Map(); // ref+type -> data: URL promise; a ref names its contents, so a redraw never reads and decrypts it again
+const thumbOf = (f) => {
+  const k = f.ref + ' ' + f.mime;
+  let p = thumbs.get(k);
+  if (!p) {
+    p = window.api.readAttachment(f.ref).then((b) => `data:${f.mime};base64,${b}`);
+    p.catch(() => thumbs.delete(k)); // try again next time
+    thumbs.set(k, p);
+    if (thumbs.size > 40) thumbs.delete(thumbs.keys().next().value); // the oldest; shortcut: by count, not size
+  }
+  return p;
+};
 function fileChip(f) {
   const img = SHOWN.test(f.mime), c = chip({ name: f.name, size: f.size, kind: img ? 'image' : 'file' });
   let url = '';
-  if (img) window.api.readAttachment(f.ref).then((b) => { url = `data:${f.mime};base64,${b}`; c.querySelector('img').src = url; }, () => c.classList.add('gone'));
+  if (img) thumbOf(f).then((u) => { url = u; c.querySelector('img').src = u; }, () => c.classList.add('gone'));
   c.classList.add('open'); c.tabIndex = 0; c.setAttribute('role', 'button'); c.title = f.name; c.ariaLabel = 'Open ' + f.name;
   c.onclick = () => openFile(f, url);
   c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFile(f, url); } };
@@ -1067,7 +1079,7 @@ $('expbtn').onclick = async () => {
   $('expbtn').disabled = true;
   try {
     const r = await window.api.exportChats({ format: $('expformat').value, passphrase: pass });
-    if (r.saved) toast(`Exported ${plural(r.count, 'chat')}${r.missed ? `; ${r.missed} couldn't be read` : ''}`);
+    if (r.saved) toast(`Exported ${plural(r.count, 'chat')}${r.missed ? `; ${r.missed} couldn't be read` : ''}${r.filesMissed ? `; ${plural(r.filesMissed, 'attached file')} left out (unreadable, or over the 200 MB an export holds)` : ''}`);
   } catch (e) { fail('Could not export: ' + cleanErr(e)); }
   finally { $('expbtn').disabled = false; }
 };

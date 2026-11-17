@@ -74,13 +74,13 @@ Every file in `chats/` (each chat and `_index.json`) is encrypted. `makeChatSeal
 - **The index lists each chat's files** (`filesOf`: every message and every version). `list` fills in entries written before attachments (no `files` array) by reading their chats once.
 - `list` reconciles the index with the files every time: entries whose file is gone are dropped, files missing from the index are added, a damaged index is rebuilt, and corrupt files or id/name mismatches are skipped instead of losing the whole list.
 - `save` writes new refs to the index **first** (so a crash before the chat file is written can't leave them to be swept as unused), then the chat file, then the full index entry. `remove` deletes the chat file, writes the index, then sweeps. An interruption between those writes is repaired by the next `list`.
-- **The sweep** deletes `a-*.bin` no index entry lists, on the first `list` of each run and after each `remove`. It never deletes a file saved this run (`fresh`), and does nothing when it can't be sure: an index entry from an older version without `files`, or any `*.unreadable` file in the folder (the right key may still open it).
+- **The sweep** deletes `a-*.bin` no index entry lists, on the first `list` of each run and after each `remove`. It never deletes a file saved this run (`fresh`), and does nothing when it can't be sure: an index entry from an older version without `files`, a chat file the index doesn't list (it failed to read just now), or any `*.unreadable` file in the folder (the right key may still open it).
 
 ## Export and import (`backup.js`)
 
 Settings → Chats exports every chat to a file the user picks, and imports one back. `backup.js` is pure (WebCrypto); the hosts only collect, save and pick files.
 
-- **`collect(chats, withFiles = true)`** loads every listed chat; one it can't read is counted (`missed`), not fatal. With `withFiles` it also reads each chat's files into `files` (ref → base64); one it can't read is left out. The hosts pass `false` for a plain text export.
+- **`collect(chats, withFiles = true)`** loads every listed chat; one it can't read is counted (`missed`), not fatal. With `withFiles` it also reads each chat's files into `files` (ref → base64), up to 200 MB of base64 in all (an export is one string); one it can't read, or that doesn't fit, is left out and counted in `filesMissed`, which the page reports. The hosts pass `false` for a plain text export.
 - **`buildExport(chats, {format, passphrase, names, files})`** gives `{name, mime, text}`:
   - JSON, `javc-chats-YYYY-MM-DD.json`: `{app: 'javc-chatbot', kind: 'chats', version: 1, exported, chats: [full chat objects], files: {ref: base64}}`. Importable.
   - Text, `….txt`: a transcript per chat (title, date, the persona's user and bot names from `names`, the user's attachments as `[image: …]` / `[file: …]` and a reply's as `[file: name]`, no reasoning). For reading only.

@@ -3,6 +3,8 @@
 const { toB64, fromB64 } = require('./seal');
 
 const APP = 'javc-chatbot', ITERATIONS = 600000; // OWASP's PBKDF2-SHA256 figure
+// shortcut: an export is one string, so its files are capped (base64 characters; JS strings stop near 512 MB); export files apart if people need more
+const EXPORT_FILES_MAX = 200 * 1024 * 1024;
 const utf8 = new TextEncoder(), text = new TextDecoder();
 const subtle = () => globalThis.crypto.subtle;
 const notExport = () => new Error("This file isn't a JAVC Chatbot chat export.");
@@ -10,15 +12,23 @@ const newer = () => new Error('This export is from a newer version of the app. U
 
 /**
  * Every chat in full, oldest list entry last; a chat that can't be read (another key, damage) is left out and counted.
- * `files` (ref -> base64) holds the files the model attached to their replies (read only `withFiles`); one that can't be read is left out.
+ * `files` (ref -> base64) holds the files the model attached to their replies (read only `withFiles`); one that can't be read,
+ * or doesn't fit in `max` characters, is left out and counted in `filesMissed`.
  */
-async function collect(chats, withFiles = true) {
-  const out = [], files = {}; let missed = 0;
+async function collect(chats, withFiles = true, max = EXPORT_FILES_MAX) {
+  const out = [], files = {}; let missed = 0, filesMissed = 0, size = 0;
   for (const { id, files: refs } of await chats.list()) {
     try { out.push(await chats.load(id)); } catch { missed++; continue; }
-    if (withFiles) for (const ref of Array.isArray(refs) ? refs : []) if (!(ref in files)) { try { files[ref] = await chats.readFile(ref); } catch {} }
+    if (withFiles) {
+      for (const ref of Array.isArray(refs) ? refs : []) {
+        if (ref in files) continue;
+        let data = null; try { data = await chats.readFile(ref); } catch {}
+        if (data === null || size + data.length > max) { filesMissed++; continue; }
+        files[ref] = data; size += data.length;
+      }
+    }
   }
-  return { chats: out, missed, files };
+  return { chats: out, missed, files, filesMissed };
 }
 
 /** The AES key for `pass` with these PBKDF2 settings. */

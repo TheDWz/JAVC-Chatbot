@@ -237,6 +237,9 @@
     return showVersion({ ...m, versions }, versions.length - 1);
   }
 
+  /** A file size for people: 14 B, 6 KB, 1.2 MB. */
+  const fmtSize = (n) => (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
+
   /**
    * The files of a reply that `html` names as attachment:<name>, for its rich page: {token, files: {name: {ref, mime}}}, or null.
    * The host serves them under the token only, so a frame can load its own reply's files and nothing else; the same files get
@@ -295,5 +298,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, richFiles, safeColor, RICH_MAX, fitSize, DEFAULT_CTX };
+  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, richFiles, safeColor, RICH_MAX, fmtSize, fitSize, DEFAULT_CTX };
 });

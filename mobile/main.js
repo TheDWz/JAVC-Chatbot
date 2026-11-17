@@ -77,6 +77,7 @@ window.api = {
   async createSandbox(html, color, scheme, flags, files) {
     if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
     const use = Lib.richFiles(html, files, fileTokens), links = {};
+    if (fileTokens.size > 300) fileTokens.delete(fileTokens.keys().next().value); // the plugin forgets old files anyway
     for (const [name, f] of Object.entries(use?.files ?? {})) {
       const key = `${use.token}/${name}`;
       try { // the plugin keeps the most recent 150 MB; a file it still holds isn't read and sent again
@@ -106,10 +107,10 @@ window.api = {
   resetChatKey: () => seal.reset(),
   /** Writes every chat to a file the user picks with the system's save screen (JSON, text, or JSON locked with a passphrase). */
   exportChats: async (opts) => {
-    const { chats: all, missed, files } = await Backup.collect(chats, opts?.format !== 'txt' || !!opts?.passphrase); // a text export lists files by name only
+    const { chats: all, missed, files, filesMissed } = await Backup.collect(chats, opts?.format !== 'txt' || !!opts?.passphrase); // a text export lists files by name only
     const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas), files });
     const { saved } = await Javc.saveFile({ name: file.name, mime: file.mime, data: file.text });
-    return saved ? { saved: true, count: all.length, missed } : { saved: false };
+    return saved ? { saved: true, count: all.length, missed, filesMissed } : { saved: false };
   },
   importChats: async (text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)),
   loadChat: (id) => chats.load(id),
