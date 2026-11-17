@@ -66,24 +66,27 @@ Every file in `chats/` (each chat and `_index.json`) is encrypted. `makeChatSeal
 
 ## Chats (`chats.js`)
 
-`makeChats(io)` returns `list`, `load`, `save`, `remove`, all serialized.
+`makeChats(io)` returns `list`, `load`, `save`, `remove`, `saveFile`, `readFile`, `keepFiles`, `upgrade`; all but `readFile` and `keepFiles` are serialized (`keepFiles` goes through `saveFile`, which is).
 
-- One file per chat, `<id>.json`, plus `_index.json` (`[{id, title, updated, personaId}]`) so listing doesn't open every chat. Ids must match `^[a-z0-9-]+$` (`_` can't appear, so the index never collides with a chat).
+- One file per chat, `<id>.json`, plus `_index.json` (`[{id, title, updated, personaId, files}]`) so listing doesn't open every chat. Ids must match `^[a-z0-9-]+$` (`_` can't appear, so the index never collides with a chat).
 - A chat holds only its own messages; that is what keeps chats isolated from each other.
+- **Files the model attached** are kept beside the chats as `a-<sha256 of the base64>.bin`, sealed like them, saved once (the same bytes get the same name). `saveFile(data)` returns the ref messages hold (`a-…`); `readFile(ref)` gives the base64 back and rejects anything but `^a-[0-9a-f]{64}\.bin$`; `keepFiles(reply)` saves a reply from `api.chatStream` and returns its `files` as `{name, mime, size, ref}` — a save that fails keeps the reply, with the error.
+- **The index lists each chat's files** (`filesOf`: every message and every version). `list` fills in entries written before attachments (no `files` array) by reading their chats once.
 - `list` reconciles the index with the files every time: entries whose file is gone are dropped, files missing from the index are added, a damaged index is rebuilt, and corrupt files or id/name mismatches are skipped instead of losing the whole list.
-- `save` writes the chat file first, then the index; `remove` deletes the chat file first, then writes the index. An interruption between the two is repaired by the next `list`.
+- `save` writes new refs to the index **first** (so a crash before the chat file is written can't leave them to be swept as unused), then the chat file, then the full index entry. `remove` deletes the chat file, writes the index, then sweeps. An interruption between those writes is repaired by the next `list`.
+- **The sweep** deletes `a-*.bin` no index entry lists, on the first `list` of each run and after each `remove`. It never deletes a file saved this run (`fresh`), and does nothing when it can't be sure: an index entry from an older version without `files`, a chat file the index doesn't list (it failed to read just now), or any `*.unreadable` file in the folder (the right key may still open it).
 
 ## Export and import (`backup.js`)
 
 Settings → Chats exports every chat to a file the user picks, and imports one back. `backup.js` is pure (WebCrypto); the hosts only collect, save and pick files.
 
-- **`collect(chats)`** loads every listed chat; one it can't read is counted (`missed`), not fatal.
-- **`buildExport(chats, {format, passphrase, names})`** gives `{name, mime, text}`:
-  - JSON, `javc-chats-YYYY-MM-DD.json`: `{app: 'javc-chatbot', kind: 'chats', version: 1, exported, chats: [full chat objects]}`. Importable.
-  - Text, `….txt`: a transcript per chat (title, date, the persona's user and bot names from `names`, attachments as `[image: …]` / `[file: …]`, no reasoning). For reading only.
-  - With a passphrase, always the JSON, locked: `….-protected.json`, `{app, kind: 'chats-encrypted', version: 1, kdf: {name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt}, iv, data}`, AES-256-GCM. Still `.json` and `application/json`, so phone file pickers offer it. The page asks for 8+ characters, typed twice.
-- **`readExport(text, passphrase)`** checks `app`, `kind` and `version`, unlocks a locked file (a wrong passphrase says so; `iterations` must be 100,000 to 10,000,000, so a crafted file can't hash for minutes), and drops chats without a valid id, `messages` array of objects with a string `role` (and `files` an array, if there), a numeric `updated` and a string `title` if there (counted as `skipped`); a locked file of another version says it's newer.
-- **`mergeInto(store, read)`**: a new id is added; an existing one is replaced only by a newer `updated`; the same id twice in one file keeps the newer. It returns `{added, updated, kept, skipped, ids}`, and the page reloads the open chat if its id is in `ids`, so its in-memory copy can't overwrite the import. Personas aren't exported; an unknown `personaId` shows under Default (`personaIdOf`).
+- **`collect(chats, withFiles = true)`** loads every listed chat; one it can't read is counted (`missed`), not fatal. With `withFiles` it also reads each chat's files into `files` (ref → base64), up to 200 MB of base64 in all (an export is one string); one it can't read, or that doesn't fit, is left out and counted in `filesMissed`, which the page reports. The hosts pass `false` for a plain text export.
+- **`buildExport(chats, {format, passphrase, names, files})`** gives `{name, mime, text}`:
+  - JSON, `javc-chats-YYYY-MM-DD.json`: `{app: 'javc-chatbot', kind: 'chats', version: 1, exported, chats: [full chat objects], files: {ref: base64}}`. Importable.
+  - Text, `….txt`: a transcript per chat (title, date, the persona's user and bot names from `names`, the user's attachments as `[image: …]` / `[file: …]` and a reply's as `[file: name]`, no reasoning). For reading only.
+  - With a passphrase, always the JSON, locked: `….-protected.json`, `{app, kind: 'chats-encrypted', version: 1, kdf: {name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt}, iv, data}`, AES-256-GCM. Still `.json` and `application/json`, so phone file pickers offer it. The page asks for 8+ characters, typed twice. Locked or plain, the JSON carries `files`.
+- **`readExport(text, passphrase)`** checks `app`, `kind` and `version`, unlocks a locked file (a wrong passphrase says so; `iterations` must be 100,000 to 10,000,000, so a crafted file can't hash for minutes), keeps only string values from `files` (ref → base64), and drops chats without a valid id, `messages` array of objects with a string `role` (and `files` an array, if there), a numeric `updated` and a string `title` if there (counted as `skipped`); a locked file of another version says it's newer.
+- **`mergeInto(store, got)`** saves the exported files first (`store.saveFile`, so the chats' refs match, since the store names a file by its contents), then merges: a new id is added; an existing one is replaced only by a newer `updated`; the same id twice in one file keeps the newer. It returns `{added, updated, kept, skipped, ids}`, and the page reloads the open chat if its id is in `ids`, so its in-memory copy can't overwrite the import. Personas aren't exported; an unknown `personaId` shows under Default (`personaIdOf`).
 - **Saving:** desktop shows `dialog.showSaveDialog` first (named by `exportName`, so a cancel skips the reading and hashing), then writes the file owner-only, tightening an overwritten file too; phones call the plugin's `saveFile` (Android `ACTION_CREATE_DOCUMENT`, iOS `UIDocumentPickerViewController` for exporting). **Importing** is a plain `<input type=file>` on every platform; the page reads the text and sniffs `kind` to ask for the passphrase.
 
 ## Changing a stored format

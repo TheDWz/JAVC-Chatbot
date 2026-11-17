@@ -4,6 +4,7 @@ const { spawn, execFile } = require('node:child_process');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { fileURLToPath } = require('node:url');
 const api = require('./api');
 const Lib = require('./lib');
 const makeChats = require('./chats');
@@ -15,12 +16,17 @@ const { makeDisk, migrateLegacy } = require('./disk');
 
 // Rich replies (HTML/CSS/JS from the model) run in sandboxed iframes loaded from this scheme. Being a non-local scheme,
 // the documents don't inherit the app's CSP; the `sandbox` header and attribute keep them in an opaque origin with no access to the app.
-protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+// corsEnabled and stream: a frame (opaque origin) can fetch its reply's files from chatbot-sandbox://file/<token>/<name>.
+protocol.registerSchemesAsPrivileged([{ scheme: 'chatbot-sandbox', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
 const richDocs = new Map(); // id -> {doc, csp}; the page and its CSP come from Lib.richDoc, shared with the Android app
-/** Stores a rich block's page and returns the chatbot-sandbox: URL it's served from (the 300 most recently used are kept). */
-ipcMain.handle('sandbox:create', async (_e, html, color, scheme, flags) => {
+const frameFiles = new Map(), fileTokens = new Map(); // token -> {name: {ref, mime}}: what the frames of one reply may load (Lib.richFiles)
+/** Stores a rich block's page and returns the chatbot-sandbox: URL it's served from (the 300 most recently used are kept). `files` are its reply's attachments. */
+ipcMain.handle('sandbox:create', async (_e, html, color, scheme, flags, files) => {
   if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
-  const rec = await Lib.richDoc(html, color, scheme, flags);
+  const use = Lib.richFiles(html, files, fileTokens);
+  if (use) { frameFiles.delete(use.token); frameFiles.set(use.token, use.files); } // re-set: the Map's order is the eviction order, as for richDocs
+  for (const m of [frameFiles, fileTokens]) if (m.size > 300) m.delete(m.keys().next().value);
+  const rec = await Lib.richDoc(html, color, scheme, flags, use ? Object.fromEntries(Object.keys(use.files).map((n) => [n, `chatbot-sandbox://file/${use.token}/${n}`])) : {});
   const id = createHash('sha256').update(rec.csp + '\n' + rec.doc).digest('hex'); // the same page gets the same id, so re-renders reuse it
   richDocs.delete(id); richDocs.set(id, rec); // re-set: the Map's order is the eviction order
   if (richDocs.size > 300) richDocs.delete(richDocs.keys().next().value);
@@ -72,9 +78,20 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   try {
     const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
     const { model, extra, search, mcp } = api.requestArgs(s, opts);
-    return await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: approver(e.sender), onDelta, signal: ctl.signal }) : undefined);
+    return await chats.keepFiles(await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: approver(e.sender), onDelta, signal: ctl.signal, readFile }) : undefined));
   } finally { running.delete(id); }
 });
+
+/** A file attach_file names: an absolute path (or file: URL) on this computer, or an http(s) URL. The user approved it first. */
+async function readFile(ref, signal) {
+  const p = ref.path ?? (/^file:/i.test(ref.url) ? fileURLToPath(ref.url) : null);
+  if (p === null) return Mcp.fetchFile(ref.url, fetch, signal);
+  if (!path.isAbsolute(p)) throw new Error('Give the full path, starting from the root.');
+  const st = await fs.promises.stat(p);
+  if (!st.isFile()) throw new Error("That isn't a file.");
+  if (st.size > Mcp.FILE_MAX) throw new Error('The file is over 50 MB.');
+  return Mcp.fileFrom(path.basename(p), null, await fs.promises.readFile(p));
+}
 
 // ---- MCP servers: local ones run as child processes of this one ----
 const win32 = process.platform === 'win32';
@@ -152,11 +169,11 @@ ipcMain.handle('chats:export', async (e, opts) => {
     filters: [mime === 'application/json' ? { name: 'Chat export', extensions: ['json'] } : { name: 'Text', extensions: ['txt'] }],
   });
   if (r.canceled || !r.filePath) return { saved: false };
-  const { chats: all, missed } = await Backup.collect(chats);
-  const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas) });
+  const { chats: all, missed, files, filesMissed } = await Backup.collect(chats, opts?.format !== 'txt' || !!opts?.passphrase); // a text export lists files by name only
+  const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas), files });
   await fs.promises.writeFile(r.filePath, file.text, { mode: 0o600 });
   await fs.promises.chmod(r.filePath, 0o600); // the mode only applies to a new file; an overwritten one keeps its old permissions
-  return { saved: true, count: all.length, missed };
+  return { saved: true, count: all.length, missed, filesMissed };
 });
 ipcMain.handle('chats:import', async (_e, text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)));
 ipcMain.handle('chats:status', () => seal.status());
@@ -165,6 +182,17 @@ ipcMain.handle('chats:list', () => chats.list());
 ipcMain.handle('chats:load', (_e, id) => chats.load(id));
 ipcMain.handle('chats:save', (_e, chat) => chats.save(chat));
 ipcMain.handle('chats:delete', (_e, id) => chats.remove(id));
+ipcMain.handle('file:read', (_e, ref) => chats.readFile(ref));
+/** Saves a file the model attached where the user picks; resolves {saved}. */
+ipcMain.handle('file:save', async (e, ref, name, mime) => {
+  const data = await chats.readFile(ref), file = Mcp.cleanName(name, 'file'), ext = path.extname(file).slice(1);
+  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
+    defaultPath: path.join(app.getPath('downloads'), file), ...(ext && { filters: [{ name: String(mime || 'File'), extensions: [ext] }] }),
+  });
+  if (r.canceled || !r.filePath) return { saved: false };
+  await fs.promises.writeFile(r.filePath, Buffer.from(data, 'base64'));
+  return { saved: true };
+});
 
 ipcMain.handle('pdf:extract', async (_e, buf) => {
   const { PDFParse } = require('pdf-parse');
@@ -182,8 +210,15 @@ app.whenReady().then(() => {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   win.setMenu(null);
-  protocol.handle('chatbot-sandbox', (req) => {
-    const id = new URL(req.url).pathname.slice(1), rec = richDocs.get(id);
+  protocol.handle('chatbot-sandbox', async (req) => {
+    const u = new URL(req.url);
+    if (u.host === 'file') { // a reply's file, only under the token its frames were given; `sandbox` keeps an HTML file from running as a page
+      const [, token, name] = u.pathname.split('/'), map = frameFiles.get(token), f = map && Object.hasOwn(map, name) ? map[name] : null;
+      const headers = { 'access-control-allow-origin': '*', 'content-security-policy': 'sandbox', 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' };
+      try { if (f) return new Response(Buffer.from(await chats.readFile(f.ref), 'base64'), { headers: { ...headers, 'content-type': f.mime } }); } catch {}
+      return new Response('Not found', { status: 404, headers });
+    }
+    const id = u.pathname.slice(1), rec = richDocs.get(id);
     if (rec) { richDocs.delete(id); richDocs.set(id, rec); } // showing a page counts as using it, as on Android
     return rec
       ? new Response(rec.doc, { headers: { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': rec.csp } })

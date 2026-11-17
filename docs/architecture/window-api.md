@@ -20,9 +20,9 @@ The page (`renderer.js`) never touches Electron, Capacitor or the file system. I
 | Search | `saveSearch`, `getSearchKey` | `search:save`, `search:key` |
 | Chat | `chat(messages, onDelta, opts)`, `stopChat` | `chat:send` (+ `chat:delta` events), `chat:abort` |
 | History | `listChats`, `loadChat`, `saveChat`, `deleteChat`, `chatsStatus`, `resetChatKey`, `exportChats({format, passphrase})`, `importChats(text, passphrase)` | `chats:list`, `chats:load`, `chats:save`, `chats:delete`, `chats:status`, `chats:resetKey`, `chats:export`, `chats:import` |
-| Files | `extractPdf` | `pdf:extract` |
+| Files | `readAttachment(ref)`, `saveAttachment(ref, name, mime)`, `extractPdf` | `file:read`, `file:save`, `pdf:extract` |
 | Clipboard | `copyText` | `clipboard:write` |
-| Rich replies | `createSandbox(html, color, scheme, flags)` | `sandbox:create` |
+| Rich replies | `createSandbox(html, color, scheme, flags, files)` | `sandbox:create` |
 | MCP | `getMcpConfig`, `saveMcp`, `mcpStatus`, `reloadMcp`, `mcpSignIn`, `mcpSignOut`, `onToolApproval(fn)` | `mcp:config`, `mcp:save`, `mcp:status`, `mcp:reload`, `mcp:signin`, `mcp:signout`, `mcp:answer` (+ `mcp:approve` events) |
 
 `preload.js` and `mobile/main.js` must stay identical in method names. `globals.d.ts` types `window.api` as `any`, so the type check will not catch a missing method; compare the two files by hand when adding one.
@@ -30,6 +30,7 @@ The page (`renderer.js`) never touches Electron, Capacitor or the file system. I
 Behavior to know about:
 
 - **One reply at a time.** `chat` keeps the running request in a single variable (`currentId` in `preload.js`, `current` in `mobile/main.js`); `stopChat` aborts it. The page disables everything else while a reply runs.
+- **Attached files.** `readAttachment(ref)` resolves to the file's base64 (for thumbnails); `saveAttachment(ref, name, mime)` resolves `{saved}` (false if the user cancels). Desktop saves into a dialog defaulting to Downloads (filter by the file's extension); phones use the system save screen (`Javc.saveFile` with `base64: true`). The 5th `createSandbox` argument is the reply's attachments, so its HTML can load them (see [rich-replies.md](rich-replies.md)).
 - **Streaming.** `onDelta` gets `{reasoning, content}` pieces (and `note: true` for the app's own status text such as "Searching the web"). On desktop, deltas travel as `chat:delta` events tagged with the request id; on phones they are direct callbacks.
 - **Tool approval.** `onToolApproval(fn)` registers the page's dialog. `fn({server, tool, args})` must resolve to `'once'`, `'always'` or `'deny'`; anything else, or an error, counts as `'deny'`. Until a page registers, the answer is deny.
 - **Secrets.** `getSettings` returns `publicView` (no keys, only `hasKey`). Keys come back only through `getProfileKey`, `getSearchKey` and `getMcpConfig`, to fill edit forms.
@@ -46,6 +47,7 @@ The core is written against small interfaces, passed in by whoever builds it:
 | Network | `fetchFn(url, opts)` returning a `Response` | Node's global `fetch` | `makeNativeFetch` (no CORS, `http://` allowed) | fakes |
 | Child processes | `spawn(command, args, env)` | `main.js` (login-shell PATH, process group) | none; local MCP servers report "desktop-only" | fakes |
 | MCP tokens | `auth.get(name)`, `auth.save(name, tokens)` | `store.mcpTokens`, `store.saveMcpTokens` | same | fakes |
+| Attached files | `readFile(ref, signal)` → `{name, mime, data, size}`, for `attach_file`'s `path`/`url` | `main.js`: an absolute path, `file:` URL or http(s) fetch | `mobile/main.js`: http(s) URLs only | fakes |
 
 `store.js` and `chats.js` take `{io, crypto}` / `io`; `api.js` takes `fetchFn` as an argument; `mcp.js` takes `makeHub({spawn, fetchFn, auth})`.
 

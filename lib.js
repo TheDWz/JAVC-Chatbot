@@ -86,10 +86,12 @@
    * @param {string} color The reply's text color.
    * @param {string} scheme 'light' or 'dark'; must match the app's, or the frame gets an opaque white background.
    * @param {{css?: boolean, js?: boolean}} [flags] The Replies switches; both default to on.
+   * @param {Record<string, string>} [links] name -> URL: each attachment:<name> in the HTML becomes that URL (see richFiles).
    * @returns {Promise<{doc: string, csp: string}>}
    */
-  async function richDoc(html, color, scheme, flags) {
+  async function richDoc(html, color, scheme, flags, links = {}) {
     const s = scheme === 'light' ? 'light' : 'dark', css = flags?.css !== false, js = flags?.js !== false;
+    html = html.replace(/attachment:([\w.-]+)/g, (m, n) => { const k = n.replace(/\.+$/, ''); return Object.hasOwn(links, k) ? links[k] + n.slice(k.length) : m; }); // a sentence's last dot isn't part of the name
     const style = `:root{color-scheme:${s}}html,body{margin:0;background:transparent}body{color:${safeColor(color)};font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}`;
     const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="${s}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${style}</style></head><body>${html}<script>${RESIZE}</script></body></html>`;
     const csp = ['sandbox allow-scripts', !css && `style-src ${await sha(style)}`, !js && `script-src ${await sha(RESIZE)}; frame-src 'none'; object-src 'none'`].filter(Boolean).join('; ');
@@ -218,7 +220,7 @@
   // Message versions: each edit or regenerate adds one. The message's own fields always hold the version shown, so
   // requests and rendering never look at `versions`. A user version is only its typed text: the attachments (possibly
   // megabytes of image data) are stored once, on the message, and editUser puts them back around the text.
-  const VKEYS = ['content', 'reasoning', 'stats'];
+  const VKEYS = ['content', 'reasoning', 'stats', 'attachments']; // attachments: {name, mime, size, ref} of files the model attached
   const pickVersion = (m) => (m.role === 'user' ? { text: m.text || '' } : Object.fromEntries(VKEYS.filter((k) => m[k] !== undefined).map((k) => [k, m[k]])));
   /** A copy of message `m` showing version `v` (clamped to the versions it has). */
   function showVersion(m, v) {
@@ -233,6 +235,26 @@
   function addVersion(m, fields) {
     const versions = [...(m.versions || [pickVersion(m)]), pickVersion({ role: m.role, ...fields })];
     return showVersion({ ...m, versions }, versions.length - 1);
+  }
+
+  /** A file size for people: 14 B, 6 KB, 1.2 MB. */
+  const fmtSize = (n) => (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
+
+  /**
+   * The files of a reply that `html` names as attachment:<name>, for its rich page: {token, files: {name: {ref, mime}}}, or null.
+   * The host serves them under the token only, so a frame can load its own reply's files and nothing else; the same files get
+   * the same token (kept in `tokens` for the run), so the page stays the same and is reused.
+   * @param {string} html
+   * @param {{name: string, ref: string, mime?: string}[] | undefined} files The reply's attachments.
+   * @param {Map<string, string>} tokens
+   */
+  function richFiles(html, files, tokens) {
+    const used = (Array.isArray(files) ? files : []).filter((f) => typeof f?.name === 'string' && /^\w[\w.-]{0,99}$/.test(f.name) && typeof f.ref === 'string' && html.includes('attachment:' + f.name));
+    if (!used.length) return null;
+    const key = JSON.stringify(used.map((f) => [f.name, f.ref, f.mime]));
+    if (!tokens.has(key)) tokens.set(key, crypto.randomUUID());
+    const mime = (m) => (typeof m === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(m) ? m : 'application/octet-stream');
+    return { token: /** @type {string} */ (tokens.get(key)), files: Object.fromEntries(used.map((f) => [f.name, { ref: f.ref, mime: mime(f.mime) }])) };
   }
 
   // ---- Stats for nerds: saved on each reply (and each of its versions), never sent to the model ----
@@ -276,5 +298,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, safeColor, RICH_MAX, fitSize, DEFAULT_CTX };
+  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, richFiles, safeColor, RICH_MAX, fmtSize, fitSize, DEFAULT_CTX };
 });

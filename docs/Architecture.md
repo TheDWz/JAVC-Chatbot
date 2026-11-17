@@ -32,8 +32,8 @@ The core never imports Electron or Capacitor. It takes what it needs as argument
 | [window-api.md](architecture/window-api.md) | any `window.api` method, IPC channel, or what a host must provide | `preload.js`, `main.js`, `mobile/main.js` |
 | [storage.md](architecture/storage.md) | settings, profiles, personas, saved chats, chat and key encryption, on-disk formats, migrations | `store.js`, `profiles.js`, `chats.js`, `seal.js`, `backup.js`, `disk.js` |
 | [chat-turn.md](architecture/chat-turn.md) | sending a message, streaming, Stop, Regenerate/Edit/versions, summaries, stats, web search, reasoning | `renderer.js`, `api.js`, `anthropic.js`, `lib.js` |
-| [rich-replies.md](architecture/rich-replies.md) | Markdown/HTML/CSS/JS replies, the sandboxed iframes, their CSP | `lib.js`, `renderer.js`, `main.js`, native plugins |
-| [mcp.md](architecture/mcp.md) | MCP servers, tool approval, OAuth sign-in | `mcp.js`, `store.js` |
+| [rich-replies.md](architecture/rich-replies.md) | Markdown/HTML/CSS/JS replies, the sandboxed iframes, their CSP, the reply's files its pages load | `lib.js`, `renderer.js`, `main.js`, native plugins |
+| [mcp.md](architecture/mcp.md) | MCP servers, tool approval, OAuth sign-in, the files a reply attaches | `mcp.js`, `store.js` |
 | [desktop.md](architecture/desktop.md) | the Electron main process, windows, packaging for Linux and Windows | `main.js`, `preload.js`, `package.json` |
 | [mobile.md](architecture/mobile.md) | the Android or iOS app, the Capacitor bundle, native plugins | `mobile/`, `android/`, `ios/` |
 | [build-ci.md](architecture/build-ci.md) | npm scripts, versions, GitHub Actions, releases, tests, lint | `package.json`, `.github/workflows/`, `test.js`, `mobile/smoke/` |
@@ -49,11 +49,11 @@ The core never imports Electron or Capacitor. It takes what it needs as argument
 | `api.js` | OpenAI-compatible client: model list, streaming, tool rounds, Linkup search; hands Anthropic endpoints to `anthropic.js`. |
 | `anthropic.js` | Anthropic's native Messages API through the official SDK: model list, streaming, thinking. |
 | `store.js`, `profiles.js` | Settings: profiles, personas, search, MCP, display options, key encryption. |
-| `chats.js` | Saved chats: one file per chat plus an index. |
+| `chats.js` | Saved chats: one file per chat plus an index, and the files the model attaches to replies. |
 | `seal.js` | Chat encryption: the chat key in `chatkey.json` and the sealed `io` `chats.js` writes through. |
 | `backup.js` | Chat export (JSON, text, or passphrase-locked JSON) and import. |
 | `disk.js` | Desktop file access (`makeDisk`) and the one-time move from the old app folder. |
-| `mcp.js` | MCP client: config parsing, stdio and HTTP transports, OAuth, tool approval. |
+| `mcp.js` | MCP client: config parsing, stdio and HTTP transports, OAuth, tool approval, file attachments. |
 | `main.js`, `preload.js` | Electron main process and its bridge to the page. |
 | `mobile/` | Capacitor entry point (`main.js`), adapters (`native.js`), bundle script (`build.mjs`), Android and iOS build helpers, smoke tests. |
 | `android/`, `ios/` | The native projects and their `JavcPlugin`. |

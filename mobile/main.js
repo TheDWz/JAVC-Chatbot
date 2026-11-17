@@ -39,6 +39,13 @@ const mcpReady = async () => { hub.configure(await store.mcpServers()); return h
 /** @type {(info: object) => Promise<string>} */
 let approve = async () => 'deny'; // until the page registers its dialog
 
+const fileTokens = new Map(); // see Lib.richFiles
+/** A file attach_file names by URL; a phone has no paths to read. The user approved it first. */
+const readFile = async (ref, signal) => {
+  if (!ref.url) throw new Error('Files on a computer can only be attached in the desktop app.');
+  return Mcp.fetchFile(ref.url, nativeFetch, signal);
+};
+
 let current = null; // the reply in progress; the page runs one at a time and locks everything else meanwhile
 let pdfParse = null;
 const asset = (p) => new URL(p, location.href).href;
@@ -63,10 +70,23 @@ window.api = {
   getProfileKey: (id) => store.key(id),
   saveSearch: (p) => store.saveSearch(p),
   getSearchKey: () => store.searchKey(),
-  /** Stores a rich block's page in the plugin and returns the sandbox-host URL it's served from. */
-  async createSandbox(html, color, scheme, flags) {
+  /**
+   * Stores a rich block's page in the plugin and returns the sandbox-host URL it's served from. The files of its reply
+   * (`files`) that it names go to the plugin too, which serves them under a token only this page knows (Lib.richFiles).
+   */
+  async createSandbox(html, color, scheme, flags, files) {
     if (typeof html !== 'string' || html.length > Lib.RICH_MAX) throw new Error('This content is too large to display');
-    const { doc, csp } = await Lib.richDoc(html, color, scheme, flags); // csp switches CSS/JavaScript off, as on the desktop
+    const use = Lib.richFiles(html, files, fileTokens), links = {};
+    if (fileTokens.size > 300) fileTokens.delete(fileTokens.keys().next().value); // the plugin forgets old files anyway
+    for (const [name, f] of Object.entries(use?.files ?? {})) {
+      const key = `${use.token}/${name}`;
+      try { // the plugin keeps the most recent 150 MB; a file it still holds isn't read and sent again
+        let r = await Javc.sandboxFile({ key });
+        if (!r.held) r = await Javc.sandboxFile({ key, mime: f.mime, data: await chats.readFile(f.ref) });
+        links[name] = r.url;
+      } catch (e) { console.error('Could not load an attached file for a rich reply:', e); } // the page still shows, without it
+    }
+    const { doc, csp } = await Lib.richDoc(html, color, scheme, flags, links); // csp switches CSS/JavaScript off, as on the desktop
     return (await Javc.sandboxCreate({ html: doc, csp })).url;
   },
   listModels: async (profileId) => { const s = await store.load({ profileId }); return api.listModelsDetailed(s.endpoint, s.key, nativeFetch); },
@@ -78,7 +98,7 @@ window.api = {
       // Linkup goes through nativeFetch too
       const { model, extra, search, mcp } = api.requestArgs(s, opts);
       const delta = (/** @type {object} */ d) => onDelta?.(d);
-      return await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: (i) => approve(i), onDelta: delta, signal: ctl.signal }) : undefined);
+      return await chats.keepFiles(await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: (i) => approve(i), onDelta: delta, signal: ctl.signal, readFile }) : undefined));
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),
@@ -87,15 +107,21 @@ window.api = {
   resetChatKey: () => seal.reset(),
   /** Writes every chat to a file the user picks with the system's save screen (JSON, text, or JSON locked with a passphrase). */
   exportChats: async (opts) => {
-    const { chats: all, missed } = await Backup.collect(chats);
-    const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas) });
+    const { chats: all, missed, files, filesMissed } = await Backup.collect(chats, opts?.format !== 'txt' || !!opts?.passphrase); // a text export lists files by name only
+    const file = await Backup.buildExport(all, { format: opts?.format, passphrase: opts?.passphrase, names: Backup.personaNames((await store.get()).personas), files });
     const { saved } = await Javc.saveFile({ name: file.name, mime: file.mime, data: file.text });
-    return saved ? { saved: true, count: all.length, missed } : { saved: false };
+    return saved ? { saved: true, count: all.length, missed, filesMissed } : { saved: false };
   },
   importChats: async (text, passphrase) => Backup.mergeInto(chats, await Backup.readExport(text, passphrase)),
   loadChat: (id) => chats.load(id),
   saveChat: (chat) => chats.save(chat),
   deleteChat: (id) => chats.remove(id),
+  readAttachment: (ref) => chats.readFile(ref),
+  /** Saves a file the model attached with the system's save screen; resolves {saved}. */
+  saveAttachment: async (ref, name, mime) => {
+    const { saved } = await Javc.saveFile({ name: Mcp.cleanName(name, 'file'), mime: String(mime || 'application/octet-stream'), data: await chats.readFile(ref), base64: true });
+    return { saved };
+  },
   /** A PDF's text, with the same pdf-parse as the desktop (its browser build); the text never leaves the phone. */
   async extractPdf(buf) {
     const PDFParse = await loadPdfParse();

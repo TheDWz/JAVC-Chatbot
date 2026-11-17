@@ -231,7 +231,7 @@ test('backup: JSON export round-trips, and import adds new chats and replaces on
   const f = await Backup.buildExport(sample(), { now: Date.UTC(2026, 10, 10, 12) });
   assert.match(f.name, /^javc-chats-2026-11-1\d\.json$/); assert.strictEqual(f.mime, 'application/json');
   const read = await Backup.readExport(f.text);
-  assert.deepStrictEqual(read, { chats: sample(), skipped: 0 });
+  assert.deepStrictEqual(read, { chats: sample(), skipped: 0, files: {} });
   const { dir, store } = tmpChats();
   await store.save({ id: 'c1', title: 'Trip (older here)', updated: 5, messages: [] });
   await store.save({ id: 'c3', title: 'Mine', updated: 1, messages: [] });
@@ -1661,7 +1661,7 @@ test('chatStream with MCP tools: calls run between rounds with a note; search an
   const mcp = Mcp.gated(fakeSet(), { allowed: () => true, approve: async () => 'deny' });
   const out = await chatStream('http://x', 'k', 'm', [], {}, (d) => deltas.push(d), searchFetch([both, frames([{ content: 'done' }])], linkupOk([]), chats), undefined, { key: 'lk' }, mcp);
   assert.strictEqual(out.content, 'done');
-  assert.deepStrictEqual(chats[0].tools.map((t) => t.function.name), ['web_search', 'mcp__ed__echo']);
+  assert.deepStrictEqual(chats[0].tools.map((t) => t.function.name), ['web_search', 'mcp__ed__echo', 'attach_file']);
   assert.deepStrictEqual(chats[1].messages.slice(-2).map((m) => m.content), ['echoed hi', 'No results.']);
   assert.ok(deltas.some((d) => d.note && d.reasoning === 'Using ed › echo\n'));
   const loop = toolFrames([[{ index: 0, id: 'c', function: { name: 'mcp__ed__echo', arguments: '{}' } }]]), many = [];
@@ -1996,4 +1996,204 @@ test('mcp sign-in settings: tokens are encrypted, kept per server, and dropped w
   assert.strictEqual(await store.mcpTokens('rh'), null); assert.ok(await store.mcpTokens('gh')); // rh now points elsewhere
   await store.saveMcpTokens('gh', null); assert.strictEqual(await store.mcpTokens('gh'), null);
   fs.rmSync(dir, { recursive: true });
+});
+
+// ---- Files the model attaches to a reply (mcp.js attach_file, chats.js file store) ----
+const PNG = Buffer.from('fake png bytes').toString('base64');
+const kept = [], keepFn = (f) => { kept.push(f); return `[kept ${f.name}]`; };
+
+test('mcp resultText: files in a result are handed to keep, which says how to attach them', () => {
+  kept.length = 0;
+  const res = { content: [
+    { type: 'text', text: 'Done.' },
+    { type: 'image', data: PNG, mimeType: 'image/png' },
+    { type: 'resource', resource: { uri: 'file:///out/scene%20one.glb', blob: PNG, mimeType: 'model/gltf-binary' } },
+    { type: 'resource', resource: { uri: 'file:///a.gltf', text: '{"asset":{}}', mimeType: 'model/gltf+json' } },
+    { type: 'resource', resource: { uri: 'file:///n.txt', text: 'plain', mimeType: 'text/plain' } },
+    { type: 'audio', data: 'not base64!', mimeType: 'audio/wav' },
+    { type: 'resource_link', name: 'out', uri: 'https://x.example/o.png' },
+  ] };
+  const text = Mcp.resultText(res, keepFn);
+  assert.deepStrictEqual(kept.map((f) => [f.name, f.mime, f.size]), [['file-2.png', 'image/png', 14], ['scene_one.glb', 'model/gltf-binary', 14], ['a.gltf', 'model/gltf+json', 12]]);
+  assert.strictEqual(Buffer.from(kept[2].data, 'base64').toString(), '{"asset":{}}');
+  assert.deepStrictEqual(text.split('\n'), ['Done.', '{"asset":{}}', 'plain', '[audio omitted]',
+    '[out: https://x.example/o.png. attach_file {"url": "https://x.example/o.png"} attaches it to your reply]', '[kept file-2.png]', '[kept scene_one.glb]', '[kept a.gltf]']);
+  const long = Mcp.resultText({ content: [{ type: 'text', text: 'x'.repeat(30000) }, { type: 'image', data: PNG, mimeType: 'image/png' }] }, keepFn);
+  assert.match(long, /\[cut off after 20000 characters\]\n\[kept file-2\.png\]$/); // the hint survives the cut
+  assert.match(Mcp.resultText(res), /\[image omitted\]/); // without keep (no attach_file), as before
+});
+
+test('mcp attach_file: ids attach without asking; paths and URLs are approved first, for this reply only; caps and duplicates', async () => {
+  const asked = [], read = [], saved = [];
+  let answer = 'once';
+  const run = async (n, args, signal, keep) => keep({ name: args.t + '.png', mime: 'image/png', data: Buffer.from(args.t).toString('base64'), size: args.t.length });
+  const hub = { configure() {}, tools: async () => ({ ...fakeSet(), run }) };
+  const store = { mcpForReply: async () => ({ servers: {}, allow: { ed: ['echo'] } }), allowMcpTool: async (...a) => { saved.push(a); } };
+  const readFile = async (ref) => { read.push(ref); if (ref.path === '/missing') throw new Error('ENOENT'); return { name: 'r.bin', mime: 'application/octet-stream', data: Buffer.from(ref.path || ref.url).toString('base64'), size: 9 }; };
+  const mcp = await Mcp.replyTools(/** @type {any} */ (hub), store, { approve: async (i) => { asked.push(i); return answer; }, onDelta() {}, readFile });
+  assert.ok(mcp.defs.some((d) => d.function.name === 'attach_file')); assert.ok(mcp.has('attach_file'));
+  assert.match(await mcp.call('mcp__ed__echo', '{"t":"cat"}'), /^\[file "cat\.png" \(image\/png, 3 B\): attach_file \{"id": "f1"\}/);
+  assert.match(await mcp.call('attach_file', '{"id":"f1"}'), /^Attached "cat\.png".*attachment:cat\.png$/);
+  assert.match(await mcp.call('attach_file', '{"id":"f1"}'), /already attached as "cat\.png"/);
+  assert.match(await mcp.call('attach_file', '{"id":"f9"}'), /no file with id "f9"/);
+  assert.deepStrictEqual(asked, []); // a tool's own output needs no approval
+  answer = 'deny';
+  assert.strictEqual(await mcp.call('attach_file', '{"path":"/home/me/.ssh/id_ed25519"}'), Mcp.DECLINED);
+  assert.deepStrictEqual(asked, [{ server: 'The model', tool: 'attach_file', args: { path: '/home/me/.ssh/id_ed25519' }, app: true }]); assert.deepStrictEqual(read, []);
+  answer = 'always';
+  assert.match(await mcp.call('attach_file', '{"path":"/missing"}'), /Could not attach it: ENOENT/);
+  assert.match(await mcp.call('attach_file', '{"url":"https://x.example/a"}'), /^Attached "r\.bin"/);
+  assert.match(await mcp.call('attach_file', '{"path":"/b"}'), /^Attached "r-2\.bin"/); // same name, other file
+  assert.strictEqual(asked.length, 4); assert.deepStrictEqual(saved, []); // every path and URL is asked, even after "always", which is never saved
+  assert.match(await mcp.call('attach_file', '{}'), /an "id", a "path" or a "url"/);
+  for (let i = 0; i < 20; i++) await mcp.call('mcp__ed__echo', `{"t":"n${i}"}`);
+  for (let i = 2; i <= 21; i++) await mcp.call('attach_file', `{"id":"f${i}"}`);
+  assert.strictEqual(mcp.files.length, 20);
+  assert.match(await mcp.call('attach_file', '{"id":"f21"}'), /at most 20 files/);
+  const n = asked.length, r = read.length;
+  assert.match(await mcp.call('attach_file', '{"url":"https://x.example/more"}'), /at most 20 files/);
+  assert.deepStrictEqual([asked.length, read.length], [n, r]); // full: nothing asked or downloaded
+  const big = Mcp.gated({ ...fakeSet(), run: async (n, a, s, keep) => keep({ name: 'huge.bin', mime: 'x/y', data: 'AAAA', size: Mcp.FILE_MAX + 1 }) }, { allowed: () => true, approve: async () => 'once' });
+  assert.match(await big.call('mcp__ed__echo', '{}'), /over 50 MB, too large to attach: save it to a file and attach it by path/);
+  assert.ok(!Mcp.gated({ ...fakeSet(), defs: [] }, { allowed: () => true, approve: async () => 'once' }).has('attach_file')); // no MCP tools, no attach_file
+});
+
+test('chatStream returns the files the model attached', async () => {
+  const mcp = Mcp.gated({ ...fakeSet(), run: async (n, a, s, keep) => keep({ name: 'p.png', mime: 'image/png', data: PNG, size: 14 }) }, { allowed: () => true, approve: async () => 'once' });
+  const calls = toolFrames([[{ index: 0, id: 'a', function: { name: 'mcp__ed__echo', arguments: '{}' } }]]);
+  const attach = toolFrames([[{ index: 0, id: 'b', function: { name: 'attach_file', arguments: '{"id":"f1"}' } }]]);
+  const out = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch([calls, attach, frames([{ content: 'Here it is' }])], linkupOk([])), undefined, undefined, mcp);
+  assert.strictEqual(out.content, 'Here it is');
+  assert.deepStrictEqual(out.files, [{ name: 'p.png', mime: 'image/png', data: PNG, size: 14 }]);
+  const plain = await chatStream('http://x', 'k', 'm', [], {}, () => {}, searchFetch([frames([{ content: 'hi' }])], linkupOk([])), undefined, undefined, Mcp.gated(fakeSet(), { allowed: () => true, approve: async () => 'once' }));
+  assert.ok(!('files' in plain));
+});
+
+test('chat store: attached files are sealed, kept once, listed per chat, and swept only when no chat uses them', async () => {
+  const { dir, store } = tmpChats();
+  const reply = await store.keepFiles({ content: 'x', files: [{ name: 'a.png', mime: 'image/png', size: 14, data: PNG }] });
+  const ref = reply.files[0].ref;
+  assert.match(ref, /^a-[0-9a-f]{64}\.bin$/); assert.deepStrictEqual(reply.files, [{ name: 'a.png', mime: 'image/png', size: 14, ref }]);
+  assert.strictEqual(await store.saveFile(PNG), ref); // the same file is kept once
+  assert.strictEqual(await store.readFile(ref), PNG);
+  assert.ok(fs.readFileSync(path.join(dir, ref), 'utf8').startsWith(PREFIX)); // sealed like the chats
+  await assert.rejects(store.readFile('../chatkey.json'), /Invalid file/);
+  const other = await store.saveFile(Buffer.from('other').toString('base64')), orphan = await store.saveFile(Buffer.from('never saved').toString('base64'));
+  const att = (r) => [{ name: 'f', mime: 'image/png', size: 1, ref: r }];
+  await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'v2', attachments: att(other), versions: [{ content: 'v1', attachments: att(ref) }, { content: 'v2', attachments: att(other) }] }] });
+  await store.save({ id: 'c2', title: 'Copy', updated: 2, messages: [{ role: 'assistant', content: 'v1', attachments: att(ref) }] });
+  assert.deepStrictEqual((await store.list()).find((c) => c.id === 'c1').files.sort(), [ref, other].sort()); // every version's files
+  assert.ok(fs.existsSync(path.join(dir, orphan))); // saved this run: its chat may not be saved yet
+  const next = makeChats(sealFor(dir).io); // the next launch sweeps what no chat uses
+  await next.list();
+  assert.ok(!fs.existsSync(path.join(dir, orphan))); assert.ok(fs.existsSync(path.join(dir, ref)));
+  await next.remove('c1');
+  assert.ok(!fs.existsSync(path.join(dir, other))); assert.ok(fs.existsSync(path.join(dir, ref))); // c2 still uses it
+  fs.writeFileSync(path.join(dir, 'x1.json.5.unreadable'), 'set aside');
+  await next.remove('c2');
+  assert.ok(fs.existsSync(path.join(dir, ref))); // a set-aside chat might use it, so nothing is swept
+  const failed = await store.keepFiles({ content: 'x', error: '', files: [{ name: 'a', mime: 'x/y', size: 1, data: 7 }] });
+  assert.deepStrictEqual(failed, { content: 'x', error: "The attached files couldn't be saved: Invalid file" }); // the reply is kept
+  fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
+});
+
+test('chat store: an index from before attachments gets each chat\'s files before anything is swept', async () => {
+  const { dir, store } = tmpChats();
+  const ref = await store.saveFile(PNG), io = sealFor(dir).io;
+  await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.png', ref }] }] });
+  await io.write('_index.json', JSON.stringify([{ id: 'c1', title: 'A', updated: 1 }])); // as an older version writes it
+  assert.deepStrictEqual((await makeChats(sealFor(dir).io).list())[0].files, [ref]);
+  assert.ok(fs.existsSync(path.join(dir, ref)));
+  fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
+});
+
+test('chat store: a save cut off before its index entry is written never loses the new files to the sweep', async () => {
+  const { dir, store } = tmpChats();
+  const io = sealFor(dir).io, chat = { id: 'c1', title: 'A', updated: 1, messages: [] };
+  await store.save(chat);
+  const ref = await store.saveFile(PNG), withFile = { ...chat, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.png', ref }] }] };
+  const killed = makeChats({ ...io, write: async (n, t) => { if (n === 'c1.json') throw new Error('killed'); return io.write(n, t); } }); // dies writing the chat
+  await assert.rejects(killed.save(withFile), /killed/);
+  await io.write('c1.json', JSON.stringify(withFile)); // or the other way: the chat got written, its index entry didn't
+  await makeChats(sealFor(dir).io).list(); // the next launch sweeps
+  assert.ok(fs.existsSync(path.join(dir, ref)));
+  fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
+});
+
+test('rich pages link only the files of their own reply, under a token that stays the same', async () => {
+  const tokens = new Map(), files = [{ name: 'scene.glb', ref: 'a-1', mime: 'model/gltf-binary' }, { name: 'b.png', ref: 'a-2', mime: 'text/html\r\nx' }, { name: '../x', ref: 'a-3' }];
+  const html = '<model src="attachment:scene.glb"></model> attachment:b.png. attachment:nope.png attachment:../x';
+  const use = Lib.richFiles(html, files, tokens);
+  assert.deepStrictEqual(use.files, { 'scene.glb': { ref: 'a-1', mime: 'model/gltf-binary' }, 'b.png': { ref: 'a-2', mime: 'application/octet-stream' } });
+  assert.strictEqual(Lib.richFiles(html, files, tokens).token, use.token); // same files, same page
+  assert.notStrictEqual(Lib.richFiles(html, files.slice(0, 1), tokens).token, use.token);
+  assert.strictEqual(Lib.richFiles('<p>none</p>', files, tokens), null);
+  const { doc } = await Lib.richDoc(html, '#fff', 'dark', {}, { 'scene.glb': 'u://1', 'b.png': 'u://2' });
+  assert.ok(doc.includes('<model src="u://1"></model> u://2. attachment:nope.png attachment:../x'));
+});
+
+test('backup: a JSON export carries the attached files, and import saves them back', async () => {
+  const { dir, store } = tmpChats();
+  const ref = await store.saveFile(PNG);
+  await store.save({ id: 'c1', title: 'Pic', updated: 1, messages: [{ role: 'assistant', content: 'here', attachments: [{ name: 'p.png', mime: 'image/png', size: 14, ref }] }] });
+  const got = await Backup.collect(store);
+  assert.deepStrictEqual(got.files, { [ref]: PNG });
+  assert.deepStrictEqual((await Backup.collect(store, false)).files, {});
+  assert.match(Backup.transcript(got.chats), /Assistant:\nhere\n\[file: p\.png\]/);
+  const read = await Backup.readExport((await Backup.buildExport(got.chats, { files: got.files })).text);
+  const fresh = tmpChats();
+  await Backup.mergeInto(fresh.store, read);
+  assert.strictEqual(await fresh.store.readFile(ref), PNG);
+  for (const d of [dir, fresh.dir]) { fs.rmSync(d, { recursive: true }); fs.rmSync(d + '-set', { recursive: true, force: true }); }
+});
+
+test('mcp fetchFile: http(s) only, named from the URL and typed from the response, and cut off past 50 MB', async () => {
+  const resp = (body, headers = {}) => async () => new Response(body, { headers });
+  const f = await Mcp.fetchFile('https://x.example/out/My%20Pic', resp('abc', { 'content-type': 'image/png; charset=x' }));
+  assert.deepStrictEqual(f, { name: 'My_Pic.png', mime: 'image/png', data: Buffer.from('abc').toString('base64'), size: 3 });
+  await assert.rejects(Mcp.fetchFile('file:///etc/passwd', resp('x')), /Only http and https/);
+  await assert.rejects(Mcp.fetchFile('https://x.example/a', resp('x', { 'content-length': String(Mcp.FILE_MAX + 1) })), /over 50 MB/);
+  const endless = new ReadableStream({ pull(c) { c.enqueue(new Uint8Array(8 * 1024 * 1024)); } });
+  await assert.rejects(Mcp.fetchFile('https://x.example/a', async () => new Response(endless)), /over 50 MB/);
+  await assert.rejects(Mcp.fetchFile('https://x.example/a', async () => new Response('no', { status: 404 })), /HTTP 404/);
+});
+
+test('mcp attachments: names stay link-safe, base64 is padded, sizes read like the page shows them', () => {
+  kept.length = 0;
+  const long = 'a'.repeat(60) + '-' + 'b'.repeat(99) + '.png';
+  Mcp.resultText({ content: [
+    { type: 'resource', resource: { uri: 'file:///' + long, blob: PNG, mimeType: 'image/png' } },
+    { type: 'resource', resource: { uri: 'mem://render', blob: PNG, mimeType: 'image/png' } },
+    { type: 'image', data: 'QUJD', mimeType: 'image/png' }, { type: 'image', data: 'QUI', mimeType: 'image/png' }, { type: 'image', data: 'Q', mimeType: 'image/png' },
+  ] }, keepFn);
+  for (const f of kept) assert.match(f.name, /^\w[\w.-]{0,99}$/, f.name);
+  assert.strictEqual(kept[1].name, 'render.png'); // an extension from the type, as fileFrom gives
+  assert.deepStrictEqual(kept.slice(2).map((f) => [f.data, f.size]), [['QUJD', 3], ['QUI=', 2]]); // 'Q' can't be base64
+  const big = Mcp.gated({ ...fakeSet(), run: async (n, a, s, keep) => { for (let k = 0; k < 3; k++) keep({ name: 'x'.repeat(96) + '.png', mime: 'image/png', data: 'QUJD' + k, size: 3 }); return ''; } }, { allowed: () => true, approve: async () => 'once' });
+  return big.call('mcp__ed__echo', '{}').then(async () => {
+    for (const id of ['f1', 'f2', 'f3']) await big.call('attach_file', JSON.stringify({ id }));
+    assert.deepStrictEqual(big.files.map((f) => f.name.length), [100, 100, 100]);
+    for (const f of big.files) assert.match(f.name, /^\w[\w.-]{0,99}$/);
+    assert.deepStrictEqual(big.files.slice(1).map((f) => f.name.slice(-6)), ['-2.png', '-3.png']);
+  });
+});
+
+test('chat store: no sweep while a chat file is left out of the index (it failed to read just now)', async () => {
+  const { dir, store } = tmpChats();
+  const ref = await store.saveFile(PNG);
+  await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.png', ref }] }] });
+  fs.rmSync(path.join(dir, '_index.json'));
+  const io = sealFor(dir).io, flaky = makeChats({ ...io, read: async (n) => { if (n === 'c1.json') throw new Error('bridge hiccup'); return io.read(n); } });
+  await flaky.list();
+  assert.ok(fs.existsSync(path.join(dir, ref)));
+  fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
+});
+
+test('backup: an export holds attached files up to its cap and counts the rest', async () => {
+  const { dir, store } = tmpChats();
+  const a = await store.saveFile(PNG), b = await store.saveFile(Buffer.from('second file').toString('base64'));
+  await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a', ref: a }, { name: 'b', ref: b }, { name: 'c', ref: 'a-' + '0'.repeat(64) + '.bin' }] }] });
+  const got = await Backup.collect(store, true, PNG.length);
+  assert.deepStrictEqual([Object.keys(got.files), got.filesMissed], [[a], 2]); // b doesn't fit, c is gone
+  fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
 });

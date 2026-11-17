@@ -177,23 +177,24 @@ function codeBox(lang, code) {
   return box;
 }
 
-const loadFrame = async (f, html) => {
-  try { f.src = await window.api.createSandbox(html, getComputedStyle(document.body).color, getComputedStyle(document.documentElement).colorScheme, { css: state.render.css, js: state.render.js }); }
+// `files` are the reply's attachments, which its HTML loads as attachment:<name>.
+const loadFrame = async (f, html, files) => {
+  try { f.src = await window.api.createSandbox(html, getComputedStyle(document.body).color, getComputedStyle(document.documentElement).colorScheme, { css: state.render.css, js: state.render.js }, files); }
   catch (e) { f.replaceWith(el('div', 'mnote', 'Could not display this content: ' + cleanErr(e))); }
 };
-function richFrame(html) {
+function richFrame(html, files) {
   const box = el('div', 'rich'), f = el('iframe'), exp = el('button', 'icon-btn rich-exp');
   f.setAttribute('sandbox', 'allow-scripts'); f.title = 'Rich content'; // no allow-same-origin: the frame can't reach the app
-  exp.type = 'button'; exp.title = 'Expand'; exp.setAttribute('aria-label', 'Expand'); exp.append(svg(ICON.expand)); exp.onclick = () => expandRich(html);
-  box.append(f, exp); loadFrame(f, html); return box;
+  exp.type = 'button'; exp.title = 'Expand'; exp.setAttribute('aria-label', 'Expand'); exp.append(svg(ICON.expand)); exp.onclick = () => expandRich(html, files);
+  box.append(f, exp); loadFrame(f, html, files); return box;
 }
-function expandRich(html) {
+function expandRich(html, files) {
   const ov = el('div', 'richview'), bar = el('div', 'richview-bar'), close = el('button', 'btn', 'Close'), f = el('iframe'), prev = document.activeElement;
   const onKey = (e) => { if (e.key === 'Escape') shut(); };
   const shut = () => { ov.remove(); document.removeEventListener('keydown', onKey); /** @type {HTMLElement|null} */ (prev)?.focus?.(); };
   close.type = 'button'; close.onclick = shut; f.setAttribute('sandbox', 'allow-scripts'); f.title = 'Rich content';
   bar.append(el('span', null, 'Preview'), close); ov.append(bar, f); document.body.append(ov);
-  document.addEventListener('keydown', onKey); close.focus(); loadFrame(f, html);
+  document.addEventListener('keydown', onKey); close.focus(); loadFrame(f, html, files);
 }
 // Frames report their content height so a rich block grows to fit inside the reply.
 addEventListener('message', (e) => {
@@ -202,14 +203,14 @@ addEventListener('message', (e) => {
   if (f) f.style.height = Math.min(4000, Math.max(24, h)) + 'px';
 });
 
-function render(bubble, text) {
+function render(bubble, text, files) {
   const r = state.render;
   bubble.replaceChildren(); bubble.classList.remove('md');
   if (!r.markdown && !r.html) { bubble.textContent = text; return; } // the bubble keeps the model's line breaks
   bubble.classList.add('md');
   try {
     for (const part of Lib.splitRich(text)) {
-      if (part.type === 'html') bubble.append(r.html ? richFrame(part.html) : codeBox('html', part.html)); // html off: show it as code to read
+      if (part.type === 'html') bubble.append(r.html ? richFrame(part.html, files) : codeBox('html', part.html)); // html off: show it as code to read
       else if (r.markdown) mdBlocks(bubble, marked.lexer(part.text, { gfm: true, breaks: true }));
       else bubble.append(el('div', 'plain', part.text));
     }
@@ -220,7 +221,7 @@ function render(bubble, text) {
 const MAX_FILES = 5, MAX_IMG = 25 * 1024 * 1024, MAX_PDF = 25 * 1024 * 1024, MAX_TEXT = 200000;
 const IMG_SIDE = 2048, KEEP_IMG = 2 * 1024 * 1024; // images are stored at most 2048 px on the long side; a small one that fits is kept as is
 let pending = [];
-const fmtSize = (n) => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+const fmtSize = Lib.fmtSize;
 const cleanErr = (e) => e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 const readDataUrl = (f) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(r.error); r.readAsDataURL(f); });
 
@@ -273,11 +274,45 @@ async function attach(files) {
 
 function chip(a, onRemove) {
   const c = el('div', 'att' + (!onRemove && a.kind === 'image' ? ' thumb' : ''));
-  if (a.kind === 'image') { const i = el('img'); i.src = a.url; i.alt = a.name; c.append(i); }
+  if (a.kind === 'image') { const i = el('img'); if (a.url) i.src = a.url; i.alt = a.name; c.append(i); } // a reply's file fills in its url once it's read
   else { const ic = el('span', 'ico'); ic.append(svg(ICON.file)); c.append(ic); }
   if (onRemove || a.kind !== 'image') c.append(el('span', 'nm', a.name), el('span', 'sz', fmtSize(a.size)));
   if (onRemove) { const x = el('button', 'icon-btn'); x.type = 'button'; x.title = x.ariaLabel = 'Remove'; x.append(svg(ICON.x)); x.onclick = onRemove; c.append(x); }
   return c;
+}
+// A file the model attached to its reply ({name, mime, size, ref}): images show as thumbnails; a click opens it, with Save.
+const SHOWN = /^image\/(png|jpeg|gif|webp)$/; // drawn from data: URLs; anything else (SVG can carry script) is only offered to save
+const thumbs = new Map(); // ref+type -> data: URL promise; a ref names its contents, so a redraw never reads and decrypts it again
+const thumbOf = (f) => {
+  const k = f.ref + ' ' + f.mime;
+  let p = thumbs.get(k);
+  if (!p) {
+    p = window.api.readAttachment(f.ref).then((b) => `data:${f.mime};base64,${b}`);
+    p.catch(() => thumbs.delete(k)); // try again next time
+    thumbs.set(k, p);
+    if (thumbs.size > 40) thumbs.delete(thumbs.keys().next().value); // the oldest; shortcut: by count, not size
+  }
+  return p;
+};
+function fileChip(f) {
+  const img = SHOWN.test(f.mime), c = chip({ name: f.name, size: f.size, kind: img ? 'image' : 'file' });
+  let url = '';
+  if (img) thumbOf(f).then((u) => { url = u; c.querySelector('img').src = u; }, () => c.classList.add('gone'));
+  c.classList.add('open'); c.tabIndex = 0; c.setAttribute('role', 'button'); c.title = f.name; c.ariaLabel = 'Open ' + f.name;
+  c.onclick = () => openFile(f, url);
+  c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFile(f, url); } };
+  return c;
+}
+function openFile(f, url) {
+  const d = $('filedlg'), img = /** @type {HTMLImageElement} */ ($('fileimg'));
+  $('filetitle').textContent = f.name; $('filesub').textContent = `${f.mime} · ${fmtSize(f.size)}`;
+  img.hidden = !url; img.src = url; img.alt = f.name;
+  $('fileerr').hidden = true;
+  $('filesave').onclick = async () => {
+    try { if ((await window.api.saveAttachment(f.ref, f.name, f.mime)).saved) { d.close(); toast('Saved'); } }
+    catch (e) { $('fileerr').textContent = 'Could not save: ' + cleanErr(e); $('fileerr').hidden = false; } // a toast would sit under the dialog
+  };
+  d.showModal(); $('filesave').focus();
 }
 function renderChips() {
   $('attachments').replaceChildren(...pending.map((a, i) => chip(a, () => { pending.splice(i, 1); renderChips(); })));
@@ -331,7 +366,7 @@ function editMsg(m, body, bubble, actions) {
     const text = ta.value.trim();
     if (!text && !(user && m.files?.length)) return toast("A message can't be empty");
     if (text === (user ? m.text || '' : m.content).trim()) return close();
-    chat.updated = Date.now(); setMsg(m, Lib.addVersion(m, user ? Lib.editUser(m, text) : { content: text, reasoning: m.reasoning }));
+    chat.updated = Date.now(); setMsg(m, Lib.addVersion(m, user ? Lib.editUser(m, text) : { content: text, reasoning: m.reasoning, ...(m.attachments && { attachments: m.attachments }) }));
   };
   for (const n of hide) n.style.display = 'none';
   actions.before(box); fitBox(ta); ta.focus();
@@ -374,7 +409,8 @@ function addAssistant() {
     delta(d) { reasoning += d.reasoning || ''; content += d.content || ''; raf ||= requestAnimationFrame(flush); },
     done(text, finalReasoning = reasoning, m) {
       cancelAnimationFrame(raf); raf = 0; row.classList.remove('thinking');
-      render(b, text || '(The model returned no text.)');
+      render(b, text || '(The model returned no text.)', m?.attachments);
+      if (m?.attachments?.length) { const row = el('div', 'rfiles'); row.append(...m.attachments.map(fileChip)); body.append(row); }
       if (cNode) fade(b, .55, 120); // streamed plain text becomes the formatted reply; soften the swap
       tb.classList.toggle('placeholder', !finalReasoning); tb.textContent = finalReasoning || NO_REASONING;
       body.append(msgActions(m, body, b, copyBtn(() => text))); scrollDown();
@@ -693,7 +729,7 @@ async function generate(base) {
     const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, sent: out.sent, text: out.content + out.reasoning, sawReasoning, cost: out.cost });
     chat.used = (chat.used || 0) + (stats.total || 0); // a running total: it stays when this reply is later replaced or dropped
     if (out.cost != null) chat.cost = (chat.cost || 0) + out.cost; // the same, in USD, when the provider reports it
-    const fields = { content: out.content, reasoning: out.reasoning, stats }; // reasoning and stats are display-only, never sent back
+    const fields = { content: out.content, reasoning: out.reasoning, stats, ...(out.files && { attachments: out.files }) }; // all but content are display-only, never sent back
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
     return out;
@@ -1043,7 +1079,7 @@ $('expbtn').onclick = async () => {
   $('expbtn').disabled = true;
   try {
     const r = await window.api.exportChats({ format: $('expformat').value, passphrase: pass });
-    if (r.saved) toast(`Exported ${plural(r.count, 'chat')}${r.missed ? `; ${r.missed} couldn't be read` : ''}`);
+    if (r.saved) toast(`Exported ${plural(r.count, 'chat')}${r.missed ? `; ${r.missed} couldn't be read` : ''}${r.filesMissed ? `; ${plural(r.filesMissed, 'attached file')} left out (unreadable, or over the 200 MB an export holds)` : ''}`);
   } catch (e) { fail('Could not export: ' + cleanErr(e)); }
   finally { $('expbtn').disabled = false; }
 };

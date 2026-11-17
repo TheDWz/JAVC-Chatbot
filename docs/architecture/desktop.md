@@ -12,10 +12,11 @@
 ## What `main.js` wires up
 
 - **Data:** `makeDisk(app.getPath('userData'))` for settings and `makeDisk(<userData>/chats)` for chats; `safeStorage` as the `crypto`; `migrateLegacy` from the old "chatbot" app folder at startup (see [storage.md](storage.md)).
-- **Chat:** `chat:send` registers an `AbortController` in `running` before any `await` (so Stop works from the first moment), loads the profile, and streams deltas back as `chat:delta` events unless the sender is gone. `chat:abort` aborts it.
+- **Chat:** `chat:send` registers an `AbortController` in `running` before any `await` (so Stop works from the first moment), loads the profile, streams deltas back as `chat:delta` events unless the sender is gone, and wraps the reply in `chats.keepFiles` so the files the model attached are saved. `chat:abort` aborts it.
 - **PDF:** `pdf:extract` runs `pdf-parse` in the main process.
+- **Files:** `file:read` reads an attached file from the chat store (for thumbnails); `file:save` saves one where the user picks, with the save dialog defaulting to Downloads.
 - **Clipboard:** `clipboard:write` exists because the deny-all permission handlers also refuse the page's clipboard write.
-- **MCP:** `makeHub` with a desktop `spawn` (login-shell PATH, own process group on POSIX, `cmd` with quoting on Windows) and token storage through the store; the loopback OAuth catcher `listen`; `approver` for tool approval; `before-quit` stops the servers first, waiting at most 5 s (see [mcp.md](mcp.md)).
+- **MCP:** `makeHub` with a desktop `spawn` (login-shell PATH, own process group on POSIX, `cmd` with quoting on Windows) and token storage through the store; the loopback OAuth catcher `listen`; `approver` for tool approval; `readFile` for `attach_file` (an absolute path, a `file:` URL, or an http(s) URL through `Mcp.fetchFile`); `before-quit` stops the servers first, waiting at most 5 s (see [mcp.md](mcp.md)).
 - **Rich replies:** the privileged `chatbot-sandbox` scheme and the `sandbox:create` handler (see [rich-replies.md](rich-replies.md)).
 
 ## Window hardening

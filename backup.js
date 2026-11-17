@@ -3,16 +3,32 @@
 const { toB64, fromB64 } = require('./seal');
 
 const APP = 'javc-chatbot', ITERATIONS = 600000; // OWASP's PBKDF2-SHA256 figure
+// shortcut: an export is one string, so its files are capped (base64 characters; JS strings stop near 512 MB); export files apart if people need more
+const EXPORT_FILES_MAX = 200 * 1024 * 1024;
 const utf8 = new TextEncoder(), text = new TextDecoder();
 const subtle = () => globalThis.crypto.subtle;
 const notExport = () => new Error("This file isn't a JAVC Chatbot chat export.");
 const newer = () => new Error('This export is from a newer version of the app. Update the app to import it.');
 
-/** Every chat in full, oldest list entry last; a chat that can't be read (another key, damage) is left out and counted. */
-async function collect(chats) {
-  const out = []; let missed = 0;
-  for (const { id } of await chats.list()) { try { out.push(await chats.load(id)); } catch { missed++; } }
-  return { chats: out, missed };
+/**
+ * Every chat in full, oldest list entry last; a chat that can't be read (another key, damage) is left out and counted.
+ * `files` (ref -> base64) holds the files the model attached to their replies (read only `withFiles`); one that can't be read,
+ * or doesn't fit in `max` characters, is left out and counted in `filesMissed`.
+ */
+async function collect(chats, withFiles = true, max = EXPORT_FILES_MAX) {
+  const out = [], files = {}; let missed = 0, filesMissed = 0, size = 0;
+  for (const { id, files: refs } of await chats.list()) {
+    try { out.push(await chats.load(id)); } catch { missed++; continue; }
+    if (withFiles) {
+      for (const ref of Array.isArray(refs) ? refs : []) {
+        if (ref in files) continue;
+        let data = null; try { data = await chats.readFile(ref); } catch {}
+        if (data === null || size + data.length > max) { filesMissed++; continue; }
+        files[ref] = data; size += data.length;
+      }
+    }
+  }
+  return { chats: out, missed, files, filesMissed };
 }
 
 /** The AES key for `pass` with these PBKDF2 settings. */
@@ -48,7 +64,10 @@ function transcript(chats, names = {}, now = Date.now()) {
       if (m.role === 'user') {
         const files = (m.files || []).map((f) => `[${f.kind === 'image' ? 'image' : 'file'}: ${f.name}]`);
         lines.push('', `${user}:`, ...[m.text || '', ...files].filter(Boolean));
-      } else if (m.role === 'assistant') lines.push('', `${bot}:`, typeof m.content === 'string' ? m.content : '');
+      } else if (m.role === 'assistant') {
+        const files = (Array.isArray(m.attachments) ? m.attachments : []).map((f) => `[file: ${f?.name}]`);
+        lines.push('', `${bot}:`, ...[typeof m.content === 'string' ? m.content : '', ...files].filter(Boolean));
+      }
     }
     parts.push(lines.join('\n'));
   }
@@ -58,14 +77,14 @@ function transcript(chats, names = {}, now = Date.now()) {
 /**
  * The export file for `chats`.
  * @param {object[]} chats Full chats, as `collect` gives them.
- * @param {{format?: string, passphrase?: string, names?: object, now?: number}} opts A passphrase always gives the locked
- *   JSON (it can be imported back); otherwise `format` is 'json' or 'txt'.
+ * @param {{format?: string, passphrase?: string, names?: object, now?: number, files?: Record<string, string>}} opts A passphrase always gives the locked
+ *   JSON (it can be imported back); otherwise `format` is 'json' or 'txt'. JSON carries `files` (as `collect` gives them).
  * @returns {Promise<{name: string, mime: string, text: string}>}
  */
-async function buildExport(chats, { format = 'json', passphrase = '', names = {}, now = Date.now() } = {}) {
+async function buildExport(chats, { format = 'json', passphrase = '', names = {}, now = Date.now(), files = {} } = {}) {
   const { name, mime } = exportName({ format, passphrase, now });
   if (mime === 'text/plain') return { name, mime, text: transcript(chats, names, now) };
-  const json = JSON.stringify({ app: APP, kind: 'chats', version: 1, exported: now, chats });
+  const json = JSON.stringify({ app: APP, kind: 'chats', version: 1, exported: now, chats, files });
   return { name, mime, text: passphrase ? await encryptExport(json, passphrase) : json };
 }
 /** The file name and type `buildExport` gives for these options, known before any work (the desktop asks where to save first). */
@@ -93,15 +112,19 @@ async function readExport(t, passphrase = '') {
   if (f?.kind !== 'chats' || !Array.isArray(f.chats)) throw notExport();
   if (f.version !== 1) throw newer();
   const chats = f.chats.filter(validChat);
-  return { chats, skipped: f.chats.length - chats.length };
+  const files = Object.fromEntries(Object.entries(f.files && typeof f.files === 'object' ? f.files : {}).filter(([, v]) => typeof v === 'string'));
+  return { chats, skipped: f.chats.length - chats.length, files };
 }
 
 /**
  * Saves imported chats into the store: new ids are added, and a chat already here is replaced only by a newer copy.
- * @param {{list(): Promise<{id: string, updated: number}[]>, save(chat: object): Promise<void>}} store The chat store.
+ * Their attached files are saved first; the store names a file by its contents, so the chats' references still match.
+ * @param {{list(): Promise<{id: string, updated: number}[]>, save(chat: object): Promise<void>, saveFile(data: string): Promise<string>}} store The chat store.
+ * @param {{chats: any[], skipped: number, files?: Record<string, string>}} got What readExport returned.
  * @returns {Promise<{added: number, updated: number, kept: number, skipped: number, ids: string[]}>} `ids` are the chats replaced.
  */
-async function mergeInto(store, { chats, skipped }) {
+async function mergeInto(store, { chats, skipped, files = {} }) {
+  for (const data of Object.values(files)) await store.saveFile(data);
   const have = new Map((await store.list()).map((c) => [c.id, c.updated])), newest = new Map();
   for (const c of chats) if (!newest.has(c.id) || c.updated > newest.get(c.id).updated) newest.set(c.id, c); // the same id twice: the newer copy
   let added = 0, kept = 0; const ids = [];

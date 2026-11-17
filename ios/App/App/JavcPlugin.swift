@@ -24,6 +24,7 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "encrypt", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "decrypt", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "sandboxCreate", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "sandboxFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "copyText", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openUrl", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveFile", returnType: CAPPluginReturnPromise),
@@ -231,6 +232,27 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
         return docs.get(String(url.path.dropFirst()))
     }
 
+    private static let files = SandboxFiles()
+
+    /// Holds a reply's file for its rich pages ({key: "<token>/<name>", mime, data: base64}) and returns {held: true, url}.
+    /// Without data it only says whether the file is still held ({held, url}), so the page can skip sending it again.
+    @objc func sandboxFile(_ call: CAPPluginCall) {
+        let key = call.getString("key", "")
+        guard key.range(of: #"^[0-9a-f-]{36}/\w[\w.-]{0,99}$"#, options: .regularExpression) != nil else { return call.reject("Invalid file") }
+        let url = "\(Self.sandboxScheme)://file/\(key)"
+        guard let data = call.getString("data") else { return call.resolve(["held": Self.files.get(key) != nil, "url": url]) }
+        guard let bytes = Data(base64Encoded: data) else { return call.reject("Invalid file") }
+        let mime = call.getString("mime", "")
+        Self.files.put(key, mime: mime.range(of: #"^[\w.+-]+/[\w.+-]+$"#, options: .regularExpression) != nil ? mime : "application/octet-stream", bytes: bytes)
+        call.resolve(["held": true, "url": url])
+    }
+
+    /// A held file for a sandbox URL (javc-sandbox://file/<token>/<name>), or nil. Called by SandboxSchemeHandler.
+    static func sandboxFile(_ url: URL) -> (mime: String, bytes: Data)? {
+        guard url.host == "file" else { return nil }
+        return files.get(String(url.path.dropFirst()))
+    }
+
     // ---- Clipboard and browser ----
 
     /// Copies {text} to the clipboard.
@@ -242,7 +264,7 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// Saves {data} (text) to a file the user picks with the system's save screen, suggesting {name}. Resolves {saved: false}
+    /// Saves {data} (text, or bytes as base64 when {base64} is true) to a file the user picks with the system's save screen, suggesting {name}. Resolves {saved: false}
     /// if they cancel. Used for chat exports. The text goes through a temporary file, removed once the screen closes.
     @objc func saveFile(_ call: CAPPluginCall) {
         let name = (call.getString("name") ?? "export").replacingOccurrences(of: "/", with: "-")
@@ -250,7 +272,9 @@ public class JavcPlugin: CAPPlugin, CAPBridgedPlugin {
         let file = dir.appendingPathComponent(name.isEmpty ? "export" : name)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try Data((call.getString("data") ?? "").utf8).write(to: file, options: [.atomic, .completeFileProtection])
+            let text = call.getString("data") ?? ""
+            guard let data = call.getBool("base64", false) ? Data(base64Encoded: text) : Optional(Data(text.utf8)) else { throw JavcError("Invalid file") }
+            try data.write(to: file, options: [.atomic, .completeFileProtection])
         } catch {
             return call.reject(error.localizedDescription)
         }
@@ -309,6 +333,37 @@ final class SandboxDocs {
             order.removeAll { $0 == id }
             order.append(id) // showing a page counts as using it
             return doc
+        }
+    }
+}
+
+/// Files the model attached to replies, for their rich pages: key -> (mime, bytes), the most recently used 150 MB.
+final class SandboxFiles {
+    private let lock = NSLock()
+    private var files: [String: (mime: String, bytes: Data)] = [:]
+    private var order: [String] = [] // least recently used first
+    private var total = 0
+
+    func put(_ key: String, mime: String, bytes: Data) {
+        lock.withLock {
+            if let old = files[key] { total -= old.bytes.count }
+            files[key] = (mime, bytes)
+            total += bytes.count
+            order.removeAll { $0 == key }
+            order.append(key)
+            while total > 150 * 1024 * 1024, order.count > 1, let first = order.first, first != key {
+                order.removeFirst()
+                if let gone = files.removeValue(forKey: first) { total -= gone.bytes.count }
+            }
+        }
+    }
+
+    func get(_ key: String) -> (mime: String, bytes: Data)? {
+        lock.withLock {
+            guard let f = files[key] else { return nil }
+            order.removeAll { $0 == key }
+            order.append(key)
+            return f
         }
     }
 }

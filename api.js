@@ -267,7 +267,7 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
  * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
  * @param {AbortSignal} [signal]
  * @param {{key: string}} [search]
- * @param {{defs: object[], has: (name: string) => boolean, label: (name: string) => string, call: (name: string, argsJson: string, signal?: AbortSignal) => Promise<string>}} [mcp] MCP tools (see mcp.js `gated`)
+ * @param {{defs: object[], has: (name: string) => boolean, label: (name: string) => string, call: (name: string, argsJson: string, signal?: AbortSignal) => Promise<string>, files?: object[]}} [mcp] MCP tools (see mcp.js `gated`); the files it attached come back as `files`
  */
 async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search, mcp) {
   if (!mcp?.defs.length) mcp = null;
@@ -278,7 +278,8 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
   let searches = 0; // Linkup requests so far in this reply, across rounds and parallel calls
   const add = (r, c) => { total.reasoning += r; total.content += c; };
   const note = (text) => { add(text, ''); onDelta({ reasoning: text, content: '', note: true }); }; // our own text, so stats don't time it as the model's
-  const stopped = (e) => { if (total.content) return { ...total, stopped: true }; throw new Error('Stopped', { cause: e }); };
+  const end = (more) => ({ ...total, ...(mcp?.files?.length && { files: mcp.files }), ...more }); // files the model attached (mcp.js attach_file)
+  const stopped = (e) => { if (total.content) return end({ stopped: true }); throw new Error('Stopped', { cause: e }); };
   // every round is billed, so token counts add up; the last round's total is the context size
   const addUsage = (u) => {
     if (!u) return;
@@ -294,7 +295,7 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
       .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
     add(out.reasoning, out.content); addUsage(out.usage);
     if (out.cost !== undefined) total.cost = (total.cost || 0) + out.cost; // every round is billed
-    if (out.error || out.stopped || final || !calls.length) return { ...total, ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) };
+    if (out.error || out.stopped || final || !calls.length) return end({ ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) });
     // Thinking-mode providers (DeepSeek, GLM, Kimi) reject the follow-up with a 400 unless the round's reasoning goes back with its tool calls
     msgs.push({ role: 'assistant', content: out.content, tool_calls: calls, ...(THINKING_SWITCH.test(endpoint) && out.reasoning && { reasoning_content: out.reasoning }), ...(out.blocks && { blocks: out.blocks }) });
     for (const c of calls) {

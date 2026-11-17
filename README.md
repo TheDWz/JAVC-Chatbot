@@ -33,7 +33,7 @@
 - **Attachments.** Drop in text files, PDFs (text is extracted on your machine) or images for vision models.
 - **Rich replies.** Full Markdown: headings, tables, task lists and code blocks with a copy button. When a model writes HTML, CSS or JavaScript, it runs live inside the reply in a locked-down sandbox, with a full-window view. Markdown, HTML, CSS and JavaScript can each be switched off.
 - **Web search.** Let the model look things up with [Linkup](https://www.linkup.so). It decides when to search and answers from the results. Needs a Linkup API key (Settings → Search) and a model that supports tools.
-- **MCP tools.** Give the model tools from [MCP](https://modelcontextprotocol.io) servers, such as the ones for Blender, Godot or Unity. Paste the same `mcpServers` JSON you would give Claude (Settings → Tools), and allow each tool call before it runs.
+- **MCP tools.** Give the model tools from [MCP](https://modelcontextprotocol.io) servers, such as the ones for Blender, Godot or Unity. Paste the same `mcpServers` JSON you would give Claude (Settings → Tools), and allow each tool call before it runs. A tool that returns a file (an image, audio, a 3D model) can have the model attach it to its reply, where you can view or save it.
 - **Model picker.** Fetch your provider's model list and search it as you type.
 - **Themes.** Six accent gradients (Aurora purple-to-blue is the default) or your own two colors, in dark or light mode following your system setting.
 - **One settings panel.** Appearance, connection profiles and reply formats in one place, opened from the gear.
@@ -90,7 +90,7 @@ Settings → Tools takes the same `mcpServers` JSON you would give Claude, and o
 - **Local servers run on the desktop.** Servers with a `command` run as child processes of the desktop app. `npx` and `uvx` are found through your login shell's `PATH`, so nvm and `~/.local/bin` installs work even when the app is started from the desktop menu.
 - **Remote servers** use Streamable HTTP: `{"mcpServers": {"name": {"type": "http", "url": "https://…/mcp", "headers": {"Authorization": "Bearer …"}}}}`. They work on the desktop and on Android. `headers` is optional. A server that needs a browser sign-in (OAuth) shows a **Sign in** button in Settings → Tools; the app registers itself with that server and keeps the sign-in encrypted.
 - **Other forms.** A bare `{"name": {...}}` object, or a single entry on its own, works too.
-- **Limits.** The model must support tools. Tool results aren't saved with the chat, so later turns see only the model's answer.
+- **Limits.** The model must support tools. Tool results aren't saved with the chat, so later turns see only the model's answer; a file the model attaches to a reply is kept with it (up to 50 MB each, 20 per reply), and an HTML block in a reply can load its own reply's files.
 
 ## Privacy & security
 
@@ -102,7 +102,7 @@ Settings → Tools takes the same `mcpServers` JSON you would give Claude, and o
   - Android: the app's private storage, which other apps can't read. It's left out of cloud backups, and uninstalling the app deletes it.
   - iOS: the app's private storage, likewise left out of iCloud and computer backups and deleted with the app.
   - Settings and chats from an older `chatbot` folder are moved here automatically on first launch.
-- **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN. You can turn HTML, or just its CSS and JavaScript, off in Settings → Replies.
+- **Sandboxed rich content.** Model-written HTML runs in an isolated frame. It can't see the app, your keys, your chats or your files, and it's denied camera, microphone, location and other permissions. It *can* load resources from the internet, for example chart libraries from a CDN, and the files attached to its own reply — no other reply's. You can turn HTML, or just its CSS and JavaScript, off in Settings → Replies.
 - **No tracking pixels.** Remote images in Markdown are never loaded automatically. They show as links instead.
 
 ## Build from source
