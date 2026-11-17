@@ -72,7 +72,7 @@ The repo's structure and infrastructure are explained in docs/Architecture.md, a
 
 ## Delegating to the worker
 
-You are the lead. The OpenCode worker (GLM 5.3) handles easy work. For any task that meets the criteria below, use the opencode-worker skill instead of doing it yourself.
+You are the lead. The OpenCode worker (DeepSeek v4.1 Flash) handles easy work. For any task that meets the criteria below, use the opencode-worker skill instead of doing it yourself.
 
 Delegate when ALL of these are true:
 - It can be fully specified in a short ticket, with no open design questions
