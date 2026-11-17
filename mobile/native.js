@@ -22,7 +22,7 @@ function makeNativeFetch(plugin) {
   });
 
   /** Starts the request; resolves once the status and headers arrive, and aborts through `opts.signal` like fetch. */
-  return async function nativeFetch(url, /** @type {{signal?: AbortSignal, method?: string, headers?: object, body?: (string|null)}} */ opts = {}) {
+  return async function nativeFetch(url, /** @type {{signal?: AbortSignal, method?: string, headers?: HeadersInit, body?: (string|null)}} */ opts = {}) {
     await listening;
     const signal = opts.signal;
     if (signal?.aborted) throw abortError();
