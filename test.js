@@ -2016,8 +2016,10 @@ test('mcp resultText: files in a result are handed to keep, which says how to at
   const text = Mcp.resultText(res, keepFn);
   assert.deepStrictEqual(kept.map((f) => [f.name, f.mime, f.size]), [['file-2.png', 'image/png', 14], ['scene_one.glb', 'model/gltf-binary', 14], ['a.gltf', 'model/gltf+json', 12]]);
   assert.strictEqual(Buffer.from(kept[2].data, 'base64').toString(), '{"asset":{}}');
-  assert.deepStrictEqual(text.split('\n'), ['Done.', '[kept file-2.png]', '[kept scene_one.glb]', '{"asset":{}}', '[kept a.gltf]', 'plain', '[audio omitted]',
-    '[out: https://x.example/o.png. attach_file {"url": "https://x.example/o.png"} attaches it to your reply]']);
+  assert.deepStrictEqual(text.split('\n'), ['Done.', '{"asset":{}}', 'plain', '[audio omitted]',
+    '[out: https://x.example/o.png. attach_file {"url": "https://x.example/o.png"} attaches it to your reply]', '[kept file-2.png]', '[kept scene_one.glb]', '[kept a.gltf]']);
+  const long = Mcp.resultText({ content: [{ type: 'text', text: 'x'.repeat(30000) }, { type: 'image', data: PNG, mimeType: 'image/png' }] }, keepFn);
+  assert.match(long, /\[cut off after 20000 characters\]\n\[kept file-2\.png\]$/); // the hint survives the cut
   assert.match(Mcp.resultText(res), /\[image omitted\]/); // without keep (no attach_file), as before
 });
 
@@ -2098,6 +2100,19 @@ test('chat store: an index from before attachments gets each chat\'s files befor
   await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.png', ref }] }] });
   await io.write('_index.json', JSON.stringify([{ id: 'c1', title: 'A', updated: 1 }])); // as an older version writes it
   assert.deepStrictEqual((await makeChats(sealFor(dir).io).list())[0].files, [ref]);
+  assert.ok(fs.existsSync(path.join(dir, ref)));
+  fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
+});
+
+test('chat store: a save cut off before its index entry is written never loses the new files to the sweep', async () => {
+  const { dir, store } = tmpChats();
+  const io = sealFor(dir).io, chat = { id: 'c1', title: 'A', updated: 1, messages: [] };
+  await store.save(chat);
+  const ref = await store.saveFile(PNG), withFile = { ...chat, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.png', ref }] }] };
+  const killed = makeChats({ ...io, write: async (n, t) => { if (n === 'c1.json') throw new Error('killed'); return io.write(n, t); } }); // dies writing the chat
+  await assert.rejects(killed.save(withFile), /killed/);
+  await io.write('c1.json', JSON.stringify(withFile)); // or the other way: the chat got written, its index entry didn't
+  await makeChats(sealFor(dir).io).list(); // the next launch sweeps
   assert.ok(fs.existsSync(path.join(dir, ref)));
   fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
 });

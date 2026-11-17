@@ -487,17 +487,20 @@ function fileOf(c, i) {
  * @param {(file: {name: string, mime: string, data: string, size: number}) => string} [keep]
  */
 function resultText(res, keep) {
-  const parts = (Array.isArray(res?.content) ? res.content : []).map((c, i) => {
-    if (c?.type === 'text') return String(c.text ?? '');
-    const f = keep && fileOf(c, i), hint = f ? keep(f) : '';
-    if (c?.type === 'resource' && typeof c.resource?.text === 'string') return c.resource.text + (hint && '\n' + hint);
-    if (c?.type === 'resource_link') return `[${c.name || 'resource'}: ${c.uri}${keep ? `. attach_file {"url": ${JSON.stringify(String(c.uri))}} attaches it to your reply` : ''}]`;
-    return hint || `[${c?.type || 'content'} omitted]`;
+  const hints = []; // how to attach each file: after the text, so a long text's cut-off never drops them
+  const parts = (Array.isArray(res?.content) ? res.content : []).flatMap((c, i) => {
+    if (c?.type === 'text') return [String(c.text ?? '')];
+    const f = keep && fileOf(c, i);
+    if (f) hints.push(keep(f));
+    if (c?.type === 'resource' && typeof c.resource?.text === 'string') return [c.resource.text];
+    if (c?.type === 'resource_link') return [`[${c.name || 'resource'}: ${c.uri}${keep ? `. attach_file {"url": ${JSON.stringify(String(c.uri))}} attaches it to your reply` : ''}]`];
+    return f ? [] : [`[${c?.type || 'content'} omitted]`];
   });
   let text = parts.join('\n');
   if (!text.trim() && res?.structuredContent !== undefined) text = JSON.stringify(res.structuredContent);
   if (res?.isError) text = 'Tool error: ' + (text || 'unknown error');
-  return text.length > RESULT_MAX ? text.slice(0, RESULT_MAX) + `\n[cut off after ${RESULT_MAX} characters]` : text || '(no output)';
+  if (text.length > RESULT_MAX) text = text.slice(0, RESULT_MAX) + `\n[cut off after ${RESULT_MAX} characters]`;
+  return [text, ...hints].filter(Boolean).join('\n') || '(no output)';
 }
 
 /** Function names for the model: mcp__server__tool in [a-zA-Z0-9_-], at most 64 characters, unique. */

@@ -102,9 +102,12 @@ module.exports = (io) => {
     }),
     /** Writes the chat, then its index entry. */
     save: serial(async (chat) => {
-      const f = file(chat.id);
+      const f = file(chat.id), entry = entryOf(chat), ix = await index(), had = ix.find((c) => c.id === chat.id), rest = ix.filter((c) => c.id !== chat.id);
+      // new files go in the index first, so an app killed before the index catches up can't have them swept as unused
+      const added = Array.isArray(had?.files) ? entry.files.filter((r) => !had.files.includes(r)) : [];
+      if (added.length) await io.write(INDEX, JSON.stringify([...rest, { ...had, files: [...had.files, ...added] }]));
       await io.write(f, JSON.stringify(chat));
-      await io.write(INDEX, JSON.stringify([...(await index()).filter((c) => c.id !== chat.id), entryOf(chat)]));
+      await io.write(INDEX, JSON.stringify([...rest, entry]));
     }),
     /** Keeps a file (base64) and returns the name messages refer to it by; the same file is kept once. */
     saveFile: serial(async (data) => {
