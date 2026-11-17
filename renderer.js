@@ -274,7 +274,7 @@ async function attach(files) {
 
 function chip(a, onRemove) {
   const c = el('div', 'att' + (!onRemove && a.kind === 'image' ? ' thumb' : ''));
-  if (a.kind === 'image') { const i = el('img'); i.src = a.url; i.alt = a.name; c.append(i); }
+  if (a.kind === 'image') { const i = el('img'); if (a.url) i.src = a.url; i.alt = a.name; c.append(i); } // a reply's file fills in its url once it's read
   else { const ic = el('span', 'ico'); ic.append(svg(ICON.file)); c.append(ic); }
   if (onRemove || a.kind !== 'image') c.append(el('span', 'nm', a.name), el('span', 'sz', fmtSize(a.size)));
   if (onRemove) { const x = el('button', 'icon-btn'); x.type = 'button'; x.title = x.ariaLabel = 'Remove'; x.append(svg(ICON.x)); x.onclick = onRemove; c.append(x); }
