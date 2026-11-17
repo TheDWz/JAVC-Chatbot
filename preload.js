@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   saveSearch: (p) => ipcRenderer.invoke('search:save', p),
   getSearchKey: () => ipcRenderer.invoke('search:key'),
   getProfileKey: (id) => ipcRenderer.invoke('profiles:key', id),
-  createSandbox: (html, color, scheme, flags) => ipcRenderer.invoke('sandbox:create', html, color, scheme, flags),
+  createSandbox: (html, color, scheme, flags, files) => ipcRenderer.invoke('sandbox:create', html, color, scheme, flags, files),
   listModels: (profileId) => ipcRenderer.invoke('models:list', profileId),
   // Streams: onDelta gets {reasoning, content} pieces tagged with this request's id; resolves to the full reply.
   chat: async (messages, onDelta, opts) => {
@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('api', {
   loadChat: (id) => ipcRenderer.invoke('chats:load', id),
   saveChat: (chat) => ipcRenderer.invoke('chats:save', chat),
   deleteChat: (id) => ipcRenderer.invoke('chats:delete', id),
+  readAttachment: (ref) => ipcRenderer.invoke('file:read', ref),
+  saveAttachment: (ref, name, mime) => ipcRenderer.invoke('file:save', ref, name, mime),
   extractPdf: (buf) => ipcRenderer.invoke('pdf:extract', buf),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   getMcpConfig: () => ipcRenderer.invoke('mcp:config'),

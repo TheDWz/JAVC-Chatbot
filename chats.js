@@ -1,5 +1,6 @@
-// One JSON file per chat, plus _index.json (id, title, updated, personaId) so listing doesn't open every chat.
-// Each chat holds only its own messages, which is what keeps chats isolated.
+// One JSON file per chat, plus _index.json (id, title, updated, personaId, files) so listing doesn't open every chat.
+// Each chat holds only its own messages, which is what keeps chats isolated. Files the model attached to replies are kept
+// beside them as a-<sha256>.bin (base64, sealed like the chats); messages hold only that name, and the index lists each chat's.
 // `io` is the chats folder (see disk.js); the same code runs on the desktop and on Android. Hosts pass it sealed (seal.js),
 // so every file is encrypted; `ready`, `needsSeal` and `setAside` come from there.
 
@@ -15,6 +16,25 @@ module.exports = (io) => {
     return id + '.json';
   };
   const INDEX = '_index.json'; // '_' can't appear in an id, so it never collides with a chat
+  const FILE = /^a-[0-9a-f]{64}\.bin$/;
+  const fileName = (ref) => { if (typeof ref !== 'string' || !FILE.test(ref)) throw new Error('Invalid file'); return ref; };
+  const fresh = new Set(); // files saved since the app started: a reply's files are saved before its chat is, so they're never swept meanwhile
+  let swept = false;
+  /** The files chat `c` uses, in any version of any message. */
+  const filesOf = (c) => [...new Set((Array.isArray(c.messages) ? c.messages : []).flatMap((m) => [m, ...(Array.isArray(m?.versions) ? m.versions : [])])
+    .flatMap((m) => (Array.isArray(m?.attachments) ? m.attachments.map((a) => a?.ref) : [])).filter((r) => typeof r === 'string' && FILE.test(r)))];
+  const entryOf = (c) => ({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId, files: filesOf(c) });
+  /**
+   * Deletes the files no chat in index `ix` uses. Skipped while that can't be known: an entry from an older version without
+   * its file list, or a chat set aside as unreadable (the right key may still open it).
+   */
+  const sweep = async (ix) => {
+    if (ix.some((c) => !Array.isArray(c.files))) return;
+    let names; try { names = await io.list(); } catch { return; }
+    if (names.some((n) => n.endsWith('.unreadable'))) return;
+    const used = new Set(ix.flatMap((c) => c.files));
+    for (const n of names) if (FILE.test(n) && !used.has(n) && !fresh.has(n)) await io.remove(n).catch(() => {});
+  };
   let queue = Promise.resolve(); // one operation at a time, so the index is never rewritten from a stale copy
   const serial = (fn) => (...args) => { const run = queue.then(() => fn(...args)); queue = run.catch(() => {}); return run; };
 
@@ -31,7 +51,7 @@ module.exports = (io) => {
     for (const n of names) {
       try {
         const c = JSON.parse(await io.read(n));
-        if (c && c.id + '.json' === n) out.push({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId });
+        if (c && c.id + '.json' === n) out.push(entryOf(c));
       } catch (e) { if (e?.code === 'UNREADABLE') await io.setAside?.(n).catch(() => {}); } // it would fail every list; the seal gives one notice
     }
     return out;
@@ -42,7 +62,7 @@ module.exports = (io) => {
   const index = async () => (await readIndex()) ?? entries((await chatFiles()) ?? []);
   const sorted = (ix) => [...ix].sort((a, b) => b.updated - a.updated);
 
-  return {
+  const store = {
     /**
      * All chats, newest first. The index is checked against the chat files, so an interrupted save or delete can't hide a
      * chat or list a deleted one: entries without a file are dropped and files missing from the index are added.
@@ -62,7 +82,13 @@ module.exports = (io) => {
         const added = await entries(names.filter((n) => !known.has(n.slice(0, -5))));
         ix = kept.length === saved.length && !added.length ? saved : [...kept, ...added];
       }
+      const old = ix.filter((c) => !Array.isArray(c.files)); // written by a version before attachments: read their files once
+      if (old.length) {
+        const got = new Map((await entries(old.map((c) => c.id + '.json'))).map((c) => [c.id, c]));
+        ix = ix.map((c) => got.get(c.id) ?? c);
+      }
       if (ix !== saved && (ix.length || saved)) await io.write(INDEX, JSON.stringify(ix));
+      if (!swept) { swept = true; await sweep(ix); } // once a run: files of deleted chats, and of replies that were never saved
       return sorted(ix);
     }),
     /** The full chat `id`; an error if it no longer exists. */
@@ -78,8 +104,23 @@ module.exports = (io) => {
     save: serial(async (chat) => {
       const f = file(chat.id);
       await io.write(f, JSON.stringify(chat));
-      await io.write(INDEX, JSON.stringify([...(await index()).filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title, updated: chat.updated, personaId: chat.personaId }]));
+      await io.write(INDEX, JSON.stringify([...(await index()).filter((c) => c.id !== chat.id), entryOf(chat)]));
     }),
+    /** Keeps a file (base64) and returns the name messages refer to it by; the same file is kept once. */
+    saveFile: serial(async (data) => {
+      if (typeof data !== 'string') throw new Error('Invalid file');
+      const hash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(data)));
+      const name = `a-${Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('')}.bin`;
+      fresh.add(name);
+      if (!(await io.list()).includes(name)) await io.write(name, data);
+      return name;
+    }),
+    /** File `ref` as base64; an error if it's gone. */
+    async readFile(ref) {
+      const data = await io.read(fileName(ref));
+      if (data === null) throw new Error('This file is no longer saved');
+      return data;
+    },
     /** Seals any file still saved as plain text (from before encryption). Returns how many it sealed. */
     upgrade: serial(async () => {
       if (!io.needsSeal) return 0;
@@ -93,7 +134,18 @@ module.exports = (io) => {
     /** Deletes the chat, then its index entry. */
     remove: serial(async (id) => {
       await io.remove(file(id));
-      await io.write(INDEX, JSON.stringify((await index()).filter((c) => c.id !== id)));
+      const ix = (await index()).filter((c) => c.id !== id);
+      await io.write(INDEX, JSON.stringify(ix));
+      await sweep(ix);
     }),
   };
+  /** A reply from api.chatStream with its attached files saved: each becomes {name, mime, size, ref}. If they can't be saved, the reply comes back without them and says so. */
+  store.keepFiles = async (reply) => {
+    if (!reply?.files) return reply;
+    const { files, ...rest } = reply, out = [];
+    try { for (const { data, ...f } of files) out.push({ ...f, ref: await store.saveFile(data) }); }
+    catch (e) { return { ...rest, error: rest.error || `The attached files couldn't be saved: ${e.message}` }; }
+    return { ...rest, files: out };
+  };
+  return store;
 };

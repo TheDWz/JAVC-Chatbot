@@ -384,9 +384,69 @@ public class JavcPlugin extends Plugin {
         call.resolve(r);
     }
 
-    /** The response for a request to the sandbox host: the stored page with its policy, or a 404. Called by MainActivity's WebViewClient. */
+    // Files the model attached to a reply, for its rich pages: "<token>/<name>" -> file, least recently used first, 150 MB at most.
+    private static final long FILES_MAX = 150L * 1024 * 1024;
+    private static final class Held {
+        final String mime;
+        final byte[] bytes;
+        Held(String mime, byte[] bytes) { this.mime = mime; this.bytes = bytes; }
+    }
+    private static final LinkedHashMap<String, Held> files = new LinkedHashMap<>(16, 0.75f, true); // guarded by itself
+    private static long filesBytes = 0;
+
+    /**
+     * Holds a reply's file for its rich pages ({key: "<token>/<name>", mime, data: base64}) and returns {held: true, url}.
+     * Without data it only says whether the file is still held ({held, url}), so the page can skip sending it again.
+     */
+    @PluginMethod
+    public void sandboxFile(PluginCall call) {
+        String key = call.getString("key", ""), data = call.getString("data"), mime = call.getString("mime", "");
+        if (!key.matches("[0-9a-f-]{36}/\\w[\\w.-]{0,99}")) {
+            call.reject("Invalid file");
+            return;
+        }
+        JSObject r = new JSObject();
+        r.put("url", "https://" + SANDBOX_HOST + "/file/" + key);
+        if (data == null) {
+            synchronized (files) { r.put("held", files.get(key) != null); }
+            call.resolve(r);
+            return;
+        }
+        byte[] bytes;
+        try { bytes = Base64.decode(data, Base64.DEFAULT); } catch (IllegalArgumentException e) {
+            call.reject("Invalid file");
+            return;
+        }
+        Held f = new Held(mime.matches("[\\w.+-]+/[\\w.+-]+") ? mime : "application/octet-stream", bytes);
+        synchronized (files) {
+            Held old = files.put(key, f);
+            filesBytes += bytes.length - (old != null ? old.bytes.length : 0);
+            Iterator<Map.Entry<String, Held>> it = files.entrySet().iterator();
+            while (filesBytes > FILES_MAX && it.hasNext()) {
+                Map.Entry<String, Held> e = it.next();
+                if (e.getKey().equals(key)) continue;
+                filesBytes -= e.getValue().bytes.length;
+                it.remove();
+            }
+        }
+        r.put("held", true);
+        call.resolve(r);
+    }
+
+    /** The response for a request to the sandbox host: the stored page with its policy, a held file, or a 404. Called by MainActivity's WebViewClient. */
     static WebResourceResponse serveSandbox(Uri url) {
         String path = url.getPath();
+        if (path != null && path.startsWith("/file/")) { // a frame (opaque origin) fetches it, so CORS; `sandbox` keeps an HTML file from running as a page
+            Held f;
+            synchronized (files) { f = files.get(path.substring(6)); }
+            Map<String, String> h = new HashMap<>();
+            h.put("Access-Control-Allow-Origin", "*");
+            h.put("Content-Security-Policy", "sandbox");
+            h.put("X-Content-Type-Options", "nosniff");
+            h.put("Cache-Control", "no-store");
+            if (f == null) return new WebResourceResponse("text/plain", "utf-8", 404, "Not Found", h, new ByteArrayInputStream(new byte[0]));
+            return new WebResourceResponse(f.mime, null, 200, "OK", h, new ByteArrayInputStream(f.bytes));
+        }
         String[] doc = path != null && path.startsWith("/doc/") ? docs.get(path.substring(5)) : null;
         Map<String, String> headers = new HashMap<>();
         headers.put("Content-Security-Policy", doc != null ? doc[1] : SANDBOX_CSP);
@@ -398,8 +458,8 @@ public class JavcPlugin extends Plugin {
     // ---- Clipboard ----
 
     /**
-     * Saves {data} (text) to a file the user picks with the system's save screen, suggesting {name} with type {mime}.
-     * Resolves {saved: false} if they cancel. Used for chat exports.
+     * Saves {data} (text, or bytes as base64 when {base64} is true) to a file the user picks with the system's save screen,
+     * suggesting {name} with type {mime}. Resolves {saved: false} if they cancel. Used for chat exports and attached files.
      */
     @PluginMethod
     public void saveFile(PluginCall call) {
@@ -415,6 +475,7 @@ public class JavcPlugin extends Plugin {
         if (call == null) return;
         Uri uri = result.getResultCode() == Activity.RESULT_OK && result.getData() != null ? result.getData().getData() : null;
         String data = call.getString("data", "");
+        boolean base64 = Boolean.TRUE.equals(call.getBoolean("base64", false));
         getBridge().releaseCall(call); // Capacitor keeps a call saved for an activity; drop it so the export text isn't held
         if (uri == null) {
             JSObject r = new JSObject();
@@ -425,7 +486,7 @@ public class JavcPlugin extends Plugin {
         http.execute(() -> { // off the main thread: an export with images can be many megabytes
             try (OutputStream out = getContext().getContentResolver().openOutputStream(uri, "w")) { // a new document starts empty; some providers (Drive) refuse "wt"
                 if (out == null) throw new IOException("Could not open the file");
-                out.write(data.getBytes(StandardCharsets.UTF_8));
+                out.write(base64 ? Base64.decode(data, Base64.DEFAULT) : data.getBytes(StandardCharsets.UTF_8));
                 JSObject r = new JSObject();
                 r.put("saved", true);
                 call.resolve(r);

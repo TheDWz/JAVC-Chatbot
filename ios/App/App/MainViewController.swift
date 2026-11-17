@@ -68,10 +68,21 @@ final class PermissionGuard: NSObject, WKUIDelegate {
     }
 }
 
-/// Answers javc-sandbox://doc/<id> with the stored page and its Content-Security-Policy, or a 404.
+/// Answers javc-sandbox://doc/<id> with the stored page and its Content-Security-Policy, javc-sandbox://file/<token>/<name> with a held file, or a 404.
 final class SandboxSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let url = task.request.url else { return task.didFailWithError(URLError(.badURL)) }
+        if url.host == "file" { // a reply's file: a frame (opaque origin) fetches it, so CORS; `sandbox` keeps an HTML file from running as a page
+            let f = JavcPlugin.sandboxFile(url)
+            let headers = ["Content-Type": f?.mime ?? "text/plain", "Access-Control-Allow-Origin": "*", "Content-Security-Policy": "sandbox",
+                           "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Content-Length": String(f?.bytes.count ?? 0)]
+            guard let res = HTTPURLResponse(url: url, statusCode: f != nil ? 200 : 404, httpVersion: "HTTP/1.1", headerFields: headers) else {
+                return task.didFailWithError(URLError(.cannotParseResponse))
+            }
+            task.didReceive(res)
+            task.didReceive(f?.bytes ?? Data())
+            return task.didFinish()
+        }
         let doc = JavcPlugin.sandboxDoc(url)
         let body = Data((doc?.html ?? "").utf8)
         // an HTTPURLResponse, since a plain URLResponse carries no headers and the CSP would be lost
