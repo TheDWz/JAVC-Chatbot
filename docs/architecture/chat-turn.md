@@ -1,20 +1,20 @@
 # One chat turn
 
-**Scope:** what happens from pressing Send to a saved reply: request building, streaming, tools, Stop, Regenerate/Edit/versions, summaries, stats.
+**Scope:** what happens from pressing Send to a saved reply: request building, streaming, tools, the files a model attaches to its reply, Stop, Regenerate/Edit/versions, summaries, stats.
 **Source:** `renderer.js` (`send`, `generate`, `summarize`, `regenerate`, `persist`), `lib.js`, `api.js`, `anthropic.js`; the host side is in `main.js` / `mobile/main.js` (see [window-api.md](window-api.md)).
 
 ## Flow
 
 1. **`send()`** (`renderer.js`) builds the user message `{role, content: Lib.buildContent(text, atts), text, files}`, pushes it on `chat.messages` and calls `generate()`. If the reply fails, the turn is popped and the draft and attachments are restored.
 2. **`generate(base)`** adds the assistant row and calls `setBusy(true)`, which locks chat switching, the profile and persona pickers and New chat, and turns Send into Stop. It first awaits `summarize(reply)` (below), then calls `window.api.chat(Lib.requestMessages(chat, persona, {render}), onDelta, {search, mcp})`. `search` and `mcp` are on only when the model is known to support tools (`toolsOk()`) and the feature is switched on.
-3. **Host:** loads the active profile with `store.load` (the key is decrypted here, never in the page), runs `api.requestArgs`, then `api.chatStream`. On desktop this is `chat:send` in `main.js`; on phones it is `window.api.chat` in `mobile/main.js` with `nativeFetch`. If MCP is on, `Mcp.replyTools(hub, store, ...)` supplies the tools (see [mcp.md](mcp.md)).
+3. **Host:** loads the active profile with `store.load` (the key is decrypted here, never in the page), runs `api.requestArgs`, then `api.chatStream`. On desktop this is `chat:send` in `main.js`; on phones it is `window.api.chat` in `mobile/main.js` with `nativeFetch`. If MCP is on, `Mcp.replyTools(hub, store, ...)` supplies the tools (see [mcp.md](mcp.md)). The host wraps the reply in `chats.keepFiles`, which saves the files the model attached; the reply reaches the page with `files` as `{name, mime, size, ref}`.
 4. **Streaming:** `onDelta({reasoning, content})` pieces are buffered in `reply.delta` and flushed once per animation frame as plain text. Reasoning goes to the panel behind the assistant's avatar. When the stream ends, `reply.done` swaps in the fully rendered reply (see [rich-replies.md](rich-replies.md)).
 5. **Stats:** `Lib.replyStats` computes time to first token and tokens per second; the result is stored on the message and added to `chat.used` (a running total that doesn't drop when later replies are cut). When the provider reports what the reply cost, it goes into the stats too and into `chat.cost`, the same kind of total in USD; summaries add to both.
 6. **`persist()`** saves the chat through `window.api.saveChat` (see [storage.md](storage.md)); the first reply also titles the chat.
 
 ## Building the request (`lib.js`)
 
-- `Lib.requestMessages(chat, persona, {render})` strips display-only fields and builds one system message from the persona (`systemPrompt`, with `{{user}}`/`{{char}}`), the render hint (`renderHint`, which tells the model only about the formats that are switched on) and the summary if there is one. Only this chat's messages are sent.
+- `Lib.requestMessages(chat, persona, {render})` strips display-only fields (text, files, reasoning, attachments) and builds one system message from the persona (`systemPrompt`, with `{{user}}`/`{{char}}`), the render hint (`renderHint`, which tells the model only about the formats that are switched on) and the summary if there is one. Only this chat's messages are sent.
 - `api.requestArgs(s, opts)` picks the model, the reasoning parameters and whether search or MCP applies. A summary request uses its own profile and model, no extra parameters, no tools.
 - `reasoningParams` / `resolveFormat` (`api.js`) produce one of four shapes: OpenRouter `reasoning: {effort}`, a thinking switch for DeepSeek, Z.ai and Moonshot (`THINKING_SWITCH`, which turns thinking off with `thinking: {type: 'disabled'}`), plain `reasoning_effort`, or just `{effort}` for an Anthropic endpoint. `resolveFormat` answers `anthropic` from the endpoint host before any saved format, so the Reasoning format setting doesn't apply there; `anthropic.js` turns the effort into thinking and `output_config` (below).
 
@@ -26,7 +26,7 @@
 - `costOf` reads what a request cost, in USD, from whichever provider reports it: NanoGPT's `x_nanogpt_pricing` (`cost` or `amount`; skipped when its `currency` isn't USD, and then nothing else is read, so `usage.cost` is never mistaken for it), OpenRouter's `usage.cost` (credits, 1 = $1), or xAI's `usage.cost_in_usd_ticks` (1e-10 USD). `chatStream` adds up the cost of every tool round. Other providers (and Anthropic) don't report cost, and none is estimated.
 - Mistral's reasoning models send content as a list of `text` and `thinking` chunks. `parts` splits it into reasoning and content, in both the SSE deltas and a plain-JSON answer.
 - Gemini's tool calls carry `extra_content`, a thought signature. It is kept on the call and sent back with the tool calls on the next round, or Gemini rejects the follow-up.
-- `chatStream` is one `streamOnce` when there are no tools. With tools it loops: up to `TOOL_ROUNDS` (20) rounds when MCP tools are offered, otherwise `SEARCH_ROUNDS` (4); the last round sends `tool_choice: 'none'`. Linkup searches are capped at 4 per reply across rounds. A failing tool becomes tool-result text and the model carries on. Thinking-mode providers get the round's reasoning sent back with its tool calls (they reject the follow-up otherwise). Token usage is summed over rounds; `ctx` is the last round's total and `sent` is the first round's prompt tokens.
+- `chatStream` is one `streamOnce` when there are no tools. With tools it loops: up to `TOOL_ROUNDS` (20) rounds when MCP tools are offered, otherwise `SEARCH_ROUNDS` (4); the last round sends `tool_choice: 'none'`. Linkup searches are capped at 4 per reply across rounds. A failing tool becomes tool-result text and the model carries on. Thinking-mode providers get the round's reasoning sent back with its tool calls (they reject the follow-up otherwise). Token usage is summed over rounds; `ctx` is the last round's total and `sent` is the first round's prompt tokens. The files the model attached (MCP `attach_file`) come back as `files` alongside `content` and `reasoning`.
 - The tool exchange is **not** saved with the chat: later turns see only the final answer.
 - Web search is a `web_search` tool backed by `linkupSearch` (Linkup `fast` depth, 5 results, 2000 characters each).
 
@@ -50,7 +50,7 @@ The page calls `stopChat`, which aborts the `AbortController` for the running re
 ## Regenerate, Edit and versions
 
 - `regenerate(m)` cuts `chat.messages` back to just before the target reply and calls `generate(base)`; the new reply is added as another version with `Lib.addVersion`. On failure, error or Stop, the previous messages and summary come back.
-- Editing a message uses `Lib.editUser` + `Lib.addVersion` and keeps the messages after it. A user version stores only the typed text; attachments are stored once on the message.
+- Editing a message uses `Lib.editUser` + `Lib.addVersion` and keeps the messages after it. A user version stores only the typed text; attachments are stored once on the message. Editing an assistant reply keeps its `attachments` (a version key).
 - `versionNav` (`‹ 2/3 ›`) switches versions with `Lib.showVersion`; switching changes only that message.
 - A summary that covers an edited message is dropped.
 
@@ -65,6 +65,8 @@ The page calls `stopChat`, which aborts the `AbortController` for the running re
 ## Attachments
 
 `attach` takes up to 5 files per message. Images are scaled so the long side is at most 2048 px (`Lib.fitSize`). Text files are inlined up to 200,000 characters. PDFs go through `window.api.extractPdf` (25 MB limit); text is extracted on the device with `pdf-parse`.
+
+Files the **model** attaches to a reply (MCP `attach_file`, see [mcp.md](mcp.md)) come back as `files` on the reply; the host saves them (`chats.keepFiles`) and `generate` puts them on the message as `attachments: [{name, mime, size, ref}]`, display-only like `reasoning` and `stats`, never sent to the model. Editing a reply keeps its attachments (they're one of the version keys, `Lib.VKEYS`); they show as chips and thumbnails (see [rich-replies.md](rich-replies.md) for the ones its HTML loads).
 
 ## Stats for nerds
 

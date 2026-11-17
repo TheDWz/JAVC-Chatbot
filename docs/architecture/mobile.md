@@ -21,22 +21,22 @@ The plugin is passed in, so `test.js` runs all of this with a fake.
 
 ## `mobile/main.js`
 
-Builds `window.api` (same names as `preload.js`), plus: PDF extraction in the page with `pdf-parse`'s browser build, loaded on first use; `copyText` through the plugin; the OAuth redirect (`io.github.thedwz.javcchatbot:/oauth`, received as `appUrlOpen`); MCP with `fetchFn: nativeFetch` and no `spawn`; and the Back button (`closeTopLayer()` closes the top dialog, otherwise the app is minimized).
+Builds `window.api` (same names as `preload.js`), plus: PDF extraction in the page with `pdf-parse`'s browser build, loaded on first use; `copyText` through the plugin; the OAuth redirect (`io.github.thedwz.javcchatbot:/oauth`, received as `appUrlOpen`); MCP with `fetchFn: nativeFetch` and no `spawn`, and `attach_file` reading http(s) URLs only (`Mcp.fetchFile` through `nativeFetch`); `readAttachment`/`saveAttachment` over the chat store and the plugin's `saveFile` (`base64: true`); and the Back button (`closeTopLayer()` closes the top dialog, otherwise the app is minimized).
 
 ## The plugin contract
 
-Both plugins implement the same 14 methods with the same arguments and results: `httpStart`, `httpAbort`, `fsRead`, `fsWrite`, `fsRemove`, `fsList`, `fsRename`, `cryptoAvailable`, `encrypt`, `decrypt`, `sandboxCreate`, `copyText`, `openUrl`, `saveFile`. `saveFile({name, mime, data})` shows the system's save screen for a chat export and resolves `{saved}` (false if cancelled): Android uses `ACTION_CREATE_DOCUMENT` and writes off the main thread; iOS writes a temporary file (complete file protection), presents `UIDocumentPickerViewController(forExporting:asCopy:)` and removes the file when the screen closes. Keep them in step when one changes. Ciphertext is `base64(nonce | ciphertext | tag)` with AES-256-GCM on both.
+Both plugins implement the same 15 methods with the same arguments and results: `httpStart`, `httpAbort`, `fsRead`, `fsWrite`, `fsRemove`, `fsList`, `fsRename`, `cryptoAvailable`, `encrypt`, `decrypt`, `sandboxCreate`, `sandboxFile`, `copyText`, `openUrl`, `saveFile`. `saveFile({name, mime, data, base64})` shows the system's save screen and resolves `{saved}` (false if cancelled): with `base64: true` it writes `data` as bytes (an attached file or any binary export), otherwise as text (a chat export). Android uses `ACTION_CREATE_DOCUMENT` and writes off the main thread; iOS writes a temporary file (complete file protection), presents `UIDocumentPickerViewController(forExporting:asCopy:)` and removes the file when the screen closes. `sandboxFile({key, mime, data})` holds one of a reply's files for its rich pages and answers `{held, url}`; without `data` it only says whether it still holds the key, so a page never sends the same file twice (see [rich-replies.md](rich-replies.md)). Keep them in step when one changes. Ciphertext is `base64(nonce | ciphertext | tag)` with AES-256-GCM on both.
 
 ## Android (`android/app/src/main/java/io/github/thedwz/javcchatbot/`)
 
-- **`JavcPlugin.java`:** HTTP through `HttpURLConnection` on a thread pool (http and https only; 30 s connect, 300 s read; events posted on the main thread to keep order). Files under `getFilesDir()` with path canonicalization; writes go temp file, fsync, rename. Keys: an AES-256-GCM key (alias `javc-api-keys`) in the Android Keystore, never exported; the layout is `base64(12-byte IV | ciphertext+tag)`. Sandbox pages: see [rich-replies.md](rich-replies.md). `copyText` uses `ClipboardManager`; `openUrl` allows http(s) only.
+- **`JavcPlugin.java`:** HTTP through `HttpURLConnection` on a thread pool (http and https only; 30 s connect, 300 s read; events posted on the main thread to keep order). Files under `getFilesDir()` with path canonicalization; writes go temp file, fsync, rename. Keys: an AES-256-GCM key (alias `javc-api-keys`) in the Android Keystore, never exported; the layout is `base64(12-byte IV | ciphertext+tag)`. Sandbox pages and their reply files: see [rich-replies.md](rich-replies.md). `copyText` uses `ClipboardManager`; `openUrl` allows http(s) only.
 - **`MainActivity.java`:** refuses to start unless the web view supports `WEB_MESSAGE_LISTENER` and is version 123 or newer (the page needs CSS `light-dark()` and `field-sizing`), and shows an update dialog instead. Without that feature Capacitor's bridge would be reachable from every frame, including sandboxed model HTML. It also intercepts the sandbox host, and its Chrome client denies every permission request and geolocation.
 - **Manifest and Gradle:** `allowBackup=false`, cleartext allowed (for local servers), `singleTask`, the OAuth intent filter; minSdk 26, compile and target SDK 36. `app/build.gradle` reads the version from `package.json` (see [build-ci.md](build-ci.md)); release signing comes from environment variables, falling back to the debug key when there is no keystore.
 
 ## iOS (`ios/App/App/`)
 
-- **`JavcPlugin.swift`:** HTTP through one ephemeral `URLSession` (no cache or cookies; 300 s timeout; a serial delegate queue keeps events ordered). Files in `Application Support/javc`, excluded from backup. Keys: a random 256-bit key in the Keychain (service `io.github.thedwz.javcchatbot`, account `javc-api-keys`, `AfterFirstUnlockThisDeviceOnly`), AES-GCM with CryptoKit. The key belongs to the signer, so re-signing with a different Apple ID makes the app ask for API keys again. `SandboxDocs` holds the sandbox pages.
-- **`MainViewController.swift`:** registers the sandbox scheme handler, then replaces Capacitor's `bridge` script message handler with **`MainFrameOnly`**, which drops messages from any frame but the main one (iOS's equivalent of the Android gate). **`PermissionGuard`** wraps the UI delegate and denies media capture and device motion.
+- **`JavcPlugin.swift`:** HTTP through one ephemeral `URLSession` (no cache or cookies; 300 s timeout; a serial delegate queue keeps events ordered). Files in `Application Support/javc`, excluded from backup. Keys: a random 256-bit key in the Keychain (service `io.github.thedwz.javcchatbot`, account `javc-api-keys`, `AfterFirstUnlockThisDeviceOnly`), AES-GCM with CryptoKit. The key belongs to the signer, so re-signing with a different Apple ID makes the app ask for API keys again. `SandboxDocs` holds the sandbox pages, `SandboxFiles` their reply's files (see [rich-replies.md](rich-replies.md)).
+- **`MainViewController.swift`:** registers the sandbox scheme handler (docs and files), then replaces Capacitor's `bridge` script message handler with **`MainFrameOnly`**, which drops messages from any frame but the main one (iOS's equivalent of the Android gate). **`PermissionGuard`** wraps the UI delegate and denies media capture and device motion.
 - **Other:** `SceneDelegate` creates the window and forwards `openURLContexts` to Capacitor for OAuth. `Info.plist` allows arbitrary loads (local servers), has the local-network usage text and the OAuth URL scheme, and takes its versions from build settings. The deployment target is iOS 17.5 (`project.pbxproj`).
 
 ## Platform comparison
@@ -47,10 +47,11 @@ Both plugins implement the same 14 methods with the same arguments and results: 
 | Network | Node `fetch` | `HttpURLConnection` | `URLSession` |
 | Files | `disk.js` | `getFilesDir()` | Application Support |
 | Key encryption | `safeStorage` | Keystore AES-GCM | Keychain-held AES-GCM key |
-| Sandbox URL | `chatbot-sandbox:` | `javc-sandbox.invalid` | `javc-sandbox:` |
+| Sandbox doc URL | `chatbot-sandbox:` | `javc-sandbox.invalid` | `javc-sandbox:` |
 | Bridge protection | context isolation | `WEB_MESSAGE_LISTENER` gate | `MainFrameOnly` |
 | Permissions | handlers deny | Chrome client denies | `PermissionGuard` denies |
 | Local MCP servers | yes | no | no |
+| `attach_file` paths | yes (absolute path or `file:` URL) | no (http(s) URLs only) | no (http(s) URLs only) |
 | OAuth return | loopback server | intent filter | URL scheme |
 
 ## Quirks
