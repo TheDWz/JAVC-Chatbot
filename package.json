@@ -1,7 +1,7 @@
 {
   "name": "javc-chatbot",
   "version": "1.0.2",
-  "description": "JAVC Chatbot: a desktop client for OpenAI-compatible APIs",
+  "description": "JAVC Chatbot: a desktop client for Anthropic and OpenAI-compatible APIs",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -55,8 +55,8 @@
       ],
       "category": "Utility",
       "executableName": "javc-chatbot",
-      "synopsis": "Chat with any OpenAI-compatible API",
-      "description": "JAVC Chatbot is a desktop client for OpenAI-compatible APIs with connection profiles, personas, streaming replies and a live reasoning view.",
+      "synopsis": "Chat with Anthropic or any OpenAI-compatible API",
+      "description": "JAVC Chatbot is a desktop client for Anthropic and OpenAI-compatible APIs with connection profiles, personas, streaming replies and a live reasoning view.",
       "files": [
         "main.js",
         "preload.js",

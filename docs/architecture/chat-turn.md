@@ -1,7 +1,7 @@
 # One chat turn
 
 **Scope:** what happens from pressing Send to a saved reply: request building, streaming, tools, Stop, Regenerate/Edit/versions, summaries, stats.
-**Source:** `renderer.js` (`send`, `generate`, `summarize`, `regenerate`, `persist`), `lib.js`, `api.js`; the host side is in `main.js` / `mobile/main.js` (see [window-api.md](window-api.md)).
+**Source:** `renderer.js` (`send`, `generate`, `summarize`, `regenerate`, `persist`), `lib.js`, `api.js`, `anthropic.js`; the host side is in `main.js` / `mobile/main.js` (see [window-api.md](window-api.md)).
 
 ## Flow
 
@@ -16,16 +16,31 @@
 
 - `Lib.requestMessages(chat, persona, {render})` strips display-only fields and builds one system message from the persona (`systemPrompt`, with `{{user}}`/`{{char}}`), the render hint (`renderHint`, which tells the model only about the formats that are switched on) and the summary if there is one. Only this chat's messages are sent.
 - `api.requestArgs(s, opts)` picks the model, the reasoning parameters and whether search or MCP applies. A summary request uses its own profile and model, no extra parameters, no tools.
-- `reasoningParams` / `resolveFormat` (`api.js`) produce one of three shapes: OpenRouter `reasoning: {effort}`, a thinking switch for DeepSeek, Z.ai and Moonshot (`THINKING_SWITCH`, which turns thinking off with `thinking: {type: 'disabled'}`), or plain `reasoning_effort`.
+- `reasoningParams` / `resolveFormat` (`api.js`) produce one of four shapes: OpenRouter `reasoning: {effort}`, a thinking switch for DeepSeek, Z.ai and Moonshot (`THINKING_SWITCH`, which turns thinking off with `thinking: {type: 'disabled'}`), plain `reasoning_effort`, or just `{effort}` for an Anthropic endpoint. `resolveFormat` answers `anthropic` from the endpoint host before any saved format, so the Reasoning format setting doesn't apply there; `anthropic.js` turns the effort into thinking and `output_config` (below).
 
 ## The client (`api.js`)
 
 - `call` sends the request with a Bearer header and turns a non-OK answer into `HTTP <status>: <body>`; an abort becomes the error `Stopped`.
-- `listModelsDetailed` reads `/models` (NanoGPT gets `?detailed=true` so context sizes are included) and extracts reasoning support (`reasoningInfo`), a `tools: false` flag (`noTools`) and the context window (`ctxOf`).
+- `listModelsDetailed` reads `/models` (NanoGPT gets `?detailed=true` so context sizes are included) and extracts reasoning support (`reasoningInfo`), a `tools: false` flag (`noTools`: OpenRouter's `supported_parameters`, or Mistral's `capabilities.function_calling === false`) and the context window (`ctxOf`).
 - `streamOnce` sends `stream_options.include_usage` for token counts. If the server answers 400 or 422, it retries once without it, and remembers the endpoint in `NO_USAGE` only if the retry works, so a real error never disables usage. It parses SSE `data:` lines, assembles tool calls that arrive in pieces, and handles servers that ignore `stream: true` and answer with plain JSON. `thinkSplitter` turns a leading `<think>...</think>` into reasoning even when the tags are split across chunks. If the stream breaks after some text arrived, the partial reply comes back with `error` or `stopped` set.
+- Mistral's reasoning models send content as a list of `text` and `thinking` chunks. `parts` splits it into reasoning and content, in both the SSE deltas and a plain-JSON answer.
+- Gemini's tool calls carry `extra_content`, a thought signature. It is kept on the call and sent back with the tool calls on the next round, or Gemini rejects the follow-up.
 - `chatStream` is one `streamOnce` when there are no tools. With tools it loops: up to `TOOL_ROUNDS` (20) rounds when MCP tools are offered, otherwise `SEARCH_ROUNDS` (4); the last round sends `tool_choice: 'none'`. Linkup searches are capped at 4 per reply across rounds. A failing tool becomes tool-result text and the model carries on. Thinking-mode providers get the round's reasoning sent back with its tool calls (they reject the follow-up otherwise). Token usage is summed over rounds; `ctx` is the last round's total and `sent` is the first round's prompt tokens.
 - The tool exchange is **not** saved with the chat: later turns see only the final answer.
 - Web search is a `web_search` tool backed by `linkupSearch` (Linkup `fast` depth, 5 results, 2000 characters each).
+
+## Anthropic (`anthropic.js`)
+
+An Anthropic endpoint goes through the official `@anthropic-ai/sdk`, not the OpenAI-compatible path. `api.js` requires the module and hands it the three jobs: model listing, format resolution and streaming. The tool loop, the usage totals and Stop stay in `api.js`.
+
+- Detection is the endpoint host (`anthropic.com`) only, so Anthropic-compatible proxies are not detected. `resolveFormat` answers `anthropic` before any saved Reasoning format, so the format setting doesn't apply.
+- `listModels` reads the Models API: the context size from `max_input_tokens`, effort levels from `capabilities`. Each model's output cap and thinking support are cached in `INFO` for the session.
+- `streamOnce` has the same contract as `api.js`'s `streamOnce`: OpenAI-style messages and tools in, `{content, reasoning, usage}` out, tool calls pushed in OpenAI shape.
+- `convert` turns the messages into Anthropic's: system messages move into the top-level `system` field, images go as base64 or URL image blocks, OpenAI-style tools become `input_schema` tools, and one round's tool results go into a single user message.
+- Every request sends `cache_control` ephemeral (prompt caching), `max_tokens` set to the model's cap (at most 64,000), and adaptive thinking with `display: 'summarized'` when the model supports it. Effort low to max goes to `output_config.effort`; `minimal` is sent as `low`; `none` sends thinking disabled. Models without adaptive thinking (Haiku 4.5) get no thinking or effort fields.
+- `claude-fable-5-2`, `claude-fable-5-1`, `claude-opus-5-5`, `claude-opus-5` and `claude-sonnet-5-5` also send server-side refusal fallbacks (`fallbacks: 'default'`, beta `server-side-fallback-2026-07-01`).
+- In a tool loop the reply's content blocks (thinking with signatures, `tool_use`) go back unchanged on the next round. After a fallback block, the declined partial's thinking and `tool_use` blocks are dropped. A refusal is an error.
+- SDK HTTP errors become `HTTP <status>: ...`. On phones the SDK runs in the web view with `dangerouslyAllowBrowser`, using the native fetch; the key still only lives in the host code (`store.load`), never in the page.
 
 ## Stop
 

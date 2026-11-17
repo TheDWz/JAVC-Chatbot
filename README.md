@@ -4,7 +4,7 @@
 
 # JAVC Chatbot
 
-**A fast, private client for any OpenAI-compatible API, on Linux, Windows, Android and iOS.**
+**A fast, private client for Anthropic and for any OpenAI-compatible API, on Linux, Windows, Android and iOS.**
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-6d28d9?style=flat-square)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20Android%20%7C%20iOS-4f46e5?style=flat-square)](#download)
@@ -23,7 +23,7 @@
 
 ## Features
 
-- **Any OpenAI-compatible provider.** OpenRouter, NanoGPT, Venice, OpenAI, or a local server like Ollama or LM Studio. Built-in templates fill in the endpoint for you.
+- **Anthropic and any OpenAI-compatible provider.** Anthropic (its own Messages API), Gemini, Grok (xAI), Mistral, NVIDIA NIM, OpenRouter, NanoGPT, Venice, OpenAI, or a local server like Ollama or LM Studio. Built-in templates fill in the endpoint for you.
 - **Streaming replies.** Answers appear as they're written. Stop at any time and keep what's been generated so far.
 - **Live reasoning.** Watch a reasoning model think in real time, and choose how hard it thinks.
 - **Connection profiles.** Save several endpoint, key and model combinations and switch between them in one click. Keys are encrypted by your operating system.
@@ -186,6 +186,7 @@ To sign a local build, set the same names as environment variables, with `ANDROI
 | `index.html` / `renderer.js` | User interface, shared by the desktop and phone apps |
 | `lib.js` | Shared pure logic: prompts, attachments, model search, rich-reply splitting and sandbox pages |
 | `api.js` | OpenAI-compatible streaming client and reasoning support |
+| `anthropic.js` | Anthropic's native Messages API through the official `@anthropic-ai/sdk` |
 | `mcp.js` | MCP client: reads the pasted config, runs local servers, connects to remote ones and offers their tools to the model |
 | `profiles.js` / `store.js` | Connection profiles, personas and encrypted settings |
 | `chats.js` | Chat history |

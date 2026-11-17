@@ -1,6 +1,6 @@
 # Architecture
 
-JAVC Chatbot is a chat client for any OpenAI-compatible API. It runs on Linux and Windows (Electron), and on Android and iOS (Capacitor). **One JavaScript core and one web page are shared by every platform.** Each platform only supplies the "host" pieces: file access, key encryption, networking, sandboxed pages and a few native calls.
+JAVC Chatbot is a chat client for Anthropic and for any OpenAI-compatible API. It runs on Linux and Windows (Electron), and on Android and iOS (Capacitor). **One JavaScript core and one web page are shared by every platform.** Each platform only supplies the "host" pieces: file access, key encryption, networking, sandboxed pages and a few native calls.
 
 This file is the index. Read it, then read only the topic files that match your task. Each topic file opens with its scope and the source files it covers.
 
@@ -18,9 +18,9 @@ This file is the index. Read it, then read only the topic files that match your 
         +-----------------------------+------------------------------+
                                       |
             shared core, host-agnostic, host pieces are passed in
-            api.js   store.js + profiles.js   chats.js   mcp.js   lib.js   disk.js (desktop io)
+            api.js + anthropic.js   store.js + profiles.js   chats.js   mcp.js   lib.js   disk.js (desktop io)
                                       |
-                 provider API (OpenAI-compatible)  ·  Linkup search  ·  MCP servers
+                 provider API (OpenAI-compatible or Anthropic)  ·  Linkup search  ·  MCP servers
 ```
 
 The core never imports Electron or Capacitor. It takes what it needs as arguments: `io` (files), `crypto` (key encryption), `fetchFn` (network) and `spawn` (child processes). That is how the same code runs on three hosts and under `test.js` with fakes. See [window-api.md](architecture/window-api.md).
@@ -31,7 +31,7 @@ The core never imports Electron or Capacitor. It takes what it needs as argument
 | :-- | :-- | :-- |
 | [window-api.md](architecture/window-api.md) | any `window.api` method, IPC channel, or what a host must provide | `preload.js`, `main.js`, `mobile/main.js` |
 | [storage.md](architecture/storage.md) | settings, profiles, personas, saved chats, chat and key encryption, on-disk formats, migrations | `store.js`, `profiles.js`, `chats.js`, `seal.js`, `backup.js`, `disk.js` |
-| [chat-turn.md](architecture/chat-turn.md) | sending a message, streaming, Stop, Regenerate/Edit/versions, summaries, stats, web search, reasoning | `renderer.js`, `api.js`, `lib.js` |
+| [chat-turn.md](architecture/chat-turn.md) | sending a message, streaming, Stop, Regenerate/Edit/versions, summaries, stats, web search, reasoning | `renderer.js`, `api.js`, `anthropic.js`, `lib.js` |
 | [rich-replies.md](architecture/rich-replies.md) | Markdown/HTML/CSS/JS replies, the sandboxed iframes, their CSP | `lib.js`, `renderer.js`, `main.js`, native plugins |
 | [mcp.md](architecture/mcp.md) | MCP servers, tool approval, OAuth sign-in | `mcp.js`, `store.js` |
 | [desktop.md](architecture/desktop.md) | the Electron main process, windows, packaging for Linux and Windows | `main.js`, `preload.js`, `package.json` |
@@ -46,7 +46,8 @@ The core never imports Electron or Capacitor. It takes what it needs as argument
 | :-- | :-- |
 | `index.html`, `renderer.js` | The page: markup and all UI logic (one classic script, no framework). |
 | `lib.js` | Pure helpers shared by the page and Node (UMD, global `Lib`): prompts, rich-reply pages, versions, summaries, stats, themes. |
-| `api.js` | OpenAI-compatible client: model list, streaming, tool rounds, Linkup search. |
+| `api.js` | OpenAI-compatible client: model list, streaming, tool rounds, Linkup search; hands Anthropic endpoints to `anthropic.js`. |
+| `anthropic.js` | Anthropic's native Messages API through the official SDK: model list, streaming, thinking. |
 | `store.js`, `profiles.js` | Settings: profiles, personas, search, MCP, display options, key encryption. |
 | `chats.js` | Saved chats: one file per chat plus an index. |
 | `seal.js` | Chat encryption: the chat key in `chatkey.json` and the sealed `io` `chats.js` writes through. |
