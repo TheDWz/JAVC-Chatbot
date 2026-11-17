@@ -1,4 +1,5 @@
-// Minimal OpenAI-compatible client. fetchFn is injectable for tests.
+// Minimal OpenAI-compatible client, with Anthropic's own API in anthropic.js. fetchFn is injectable for tests.
+const Anthropic = require('./anthropic');
 /**
  * @param {string} endpoint
  * @param {string} key
@@ -38,7 +39,7 @@ function reasoningInfo(m) {
 }
 
 // tools:false only when the list says so (OpenRouter-style supported_parameters without `tools`); plain /models says nothing.
-const noTools = (m) => Array.isArray(m.supported_parameters) && !m.supported_parameters.includes('tools');
+const noTools = (m) => (Array.isArray(m.supported_parameters) && !m.supported_parameters.includes('tools')) || m.capabilities?.function_calling === false; // OpenRouter-style, or Mistral's capabilities
 
 // The model's context window in tokens, from whichever field the provider uses (OpenRouter, Venice, NanoGPT, others), or 0 when none says.
 const ctxOf = (m) => [m.context_length, m.top_provider?.context_length, m.model_spec?.availableContextTokens, m.context_window, m.max_context_length, m.max_model_len]
@@ -50,6 +51,7 @@ const ctxOf = (m) => [m.context_length, m.top_provider?.context_length, m.model_
  * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
  */
 async function listModelsDetailed(endpoint, key, fetchFn) {
+  if (Anthropic.isAnthropic(endpoint)) return Anthropic.listModels(endpoint, key, fetchFn);
   // NanoGPT only lists context lengths when asked; other servers never see the extra parameter
   const path = /nano-gpt\.com/i.test(endpoint) ? '/models?detailed=true' : '/models';
   const json = parseJson(await (await call(endpoint, key, path, null, fetchFn)).text());
@@ -62,6 +64,7 @@ const THINKING_SWITCH = /deepseek\.com|api\.z\.ai|bigmodel\.cn|moonshot\.(ai|cn)
 // Which request shape to use. A gateway whose model list carries OpenRouter-style `reasoning` metadata (meta)
 // is treated as OpenRouter-compatible, so custom gateway domains work; `format` overrides the guess.
 function resolveFormat(format, endpoint, meta) {
+  if (Anthropic.isAnthropic(endpoint)) return 'anthropic'; // its own API: no saved format applies
   if (format && format !== 'auto') return format;
   if (meta || /openrouter\.ai/i.test(endpoint)) return 'openrouter';
   return THINKING_SWITCH.test(endpoint) ? 'thinking' : 'openai';
@@ -70,6 +73,7 @@ function resolveFormat(format, endpoint, meta) {
 function reasoningParams(endpoint, effort, /** @type {{format?: string, meta?: boolean}} */ { format, meta } = {}) {
   if (!effort) return {};
   const f = resolveFormat(format, endpoint, meta);
+  if (f === 'anthropic') return { effort }; // anthropic.js turns it into thinking and output_config
   if (f === 'openrouter') return { reasoning: { effort } };
   if (f === 'thinking') {
     if (effort === 'none') return { thinking: { type: 'disabled' } };
@@ -117,6 +121,12 @@ function thinkSplitter() {
   };
 }
 
+// Mistral's reasoning models send content as a list of chunks: {type:'text', text} and {type:'thinking', thinking:[{type:'text', text}]}.
+const parts = (c) => {
+  if (!Array.isArray(c)) return { reasoning: '', content: c || '' };
+  const text = (x) => (Array.isArray(x) ? x.map((p) => p?.text || '').join('') : String(x || ''));
+  return { reasoning: c.filter((p) => p?.type === 'thinking').map((p) => text(p.thinking)).join(''), content: c.filter((p) => p?.type === 'text').map((p) => p.text || '').join('') };
+};
 const pickReasoning = (o) => (typeof o.reasoning_content === 'string' ? o.reasoning_content : typeof o.reasoning === 'string' ? o.reasoning : '');
 
 // ---- Web search through Linkup (https://docs.linkup.so). The model asks for it with a web_search tool call. ----
@@ -186,9 +196,9 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
   if ((res.headers?.get?.('content-type') || '').includes('application/json')) {
     const json = parseJson(await res.text());
     if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
-    const m = json.choices?.[0]?.message || {};
-    emit(pickReasoning(m), m.content || '', true);
-    for (const c of m.tool_calls || []) calls.push({ id: c.id, type: 'function', function: { name: c.function?.name || '', arguments: c.function?.arguments || '' } });
+    const m = json.choices?.[0]?.message || {}, p = parts(m.content);
+    emit(pickReasoning(m) + p.reasoning, p.content, true);
+    for (const c of m.tool_calls || []) calls.push({ id: c.id, type: 'function', function: { name: c.function?.name || '', arguments: c.function?.arguments || '' }, ...(c.extra_content && { extra_content: c.extra_content }) });
     if (json.usage) out.usage = json.usage;
     return out;
   }
@@ -202,12 +212,13 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
     let j; try { j = JSON.parse(data); } catch { return false; }
     if (j.error) throw new Error('Stream error: ' + (j.error.message || JSON.stringify(j.error)));
     if (j.usage) out.usage = j.usage; // usually its own last chunk, with empty choices
-    const d = j.choices?.[0]?.delta || {};
-    emit(pickReasoning(d), d.content);
+    const d = j.choices?.[0]?.delta || {}, p = parts(d.content);
+    emit(pickReasoning(d) + p.reasoning, p.content);
     for (const t of d.tool_calls || []) {
       const c = (byIndex[t.index ?? 0] ||= { id: '', type: 'function', function: { name: '', arguments: '' } });
       if (t.id) c.id = t.id;
       if (t.function?.name) c.function.name ||= t.function.name;
+      if (t.extra_content) c.extra_content = t.extra_content; // Gemini's thought signature: it rejects the follow-up without it
       c.function.arguments += t.function?.arguments || '';
     }
     return false;
@@ -250,7 +261,8 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
  */
 async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search, mcp) {
   if (!mcp?.defs.length) mcp = null;
-  if (!search && !mcp) return streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []);
+  const once = Anthropic.isAnthropic(endpoint) ? Anthropic.streamOnce : streamOnce;
+  if (!search && !mcp) { const r = await once(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []); delete r.blocks; return r; } // Anthropic's raw blocks are only for the tool loop
   const tools = [...(search ? [SEARCH_TOOL] : []), ...(mcp ? mcp.defs : [])], rounds = mcp ? TOOL_ROUNDS : SEARCH_ROUNDS;
   const total = { content: '', reasoning: '' }, msgs = /** @type {object[]} */ ([...messages]);
   let searches = 0; // Linkup requests so far in this reply, across rounds and parallel calls
@@ -268,12 +280,12 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
   for (let round = 0; ; round++) {
     const final = round >= rounds, calls = [];
     // tools stay in the request on the last round (tool_choice none): some backends reject tool messages when no tools are defined
-    const out = await streamOnce(endpoint, key, model, msgs, { ...extra, tools, tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
+    const out = await once(endpoint, key, model, msgs, { ...extra, tools, tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
       .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
     add(out.reasoning, out.content); addUsage(out.usage);
     if (out.error || out.stopped || final || !calls.length) return { ...total, ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) };
     // Thinking-mode providers (DeepSeek, GLM, Kimi) reject the follow-up with a 400 unless the round's reasoning goes back with its tool calls
-    msgs.push({ role: 'assistant', content: out.content, tool_calls: calls, ...(THINKING_SWITCH.test(endpoint) && out.reasoning && { reasoning_content: out.reasoning }) });
+    msgs.push({ role: 'assistant', content: out.content, tool_calls: calls, ...(THINKING_SWITCH.test(endpoint) && out.reasoning && { reasoning_content: out.reasoning }), ...(out.blocks && { blocks: out.blocks }) });
     for (const c of calls) {
       let q = '', result;
       if (mcp?.has(c.function.name)) {

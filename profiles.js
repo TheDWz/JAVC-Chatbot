@@ -6,13 +6,18 @@ const TEMPLATES = [
   { id: 'openrouter', name: 'OpenRouter', endpoint: 'https://openrouter.ai/api/v1' },
   { id: 'venice', name: 'Venice', endpoint: 'https://api.venice.ai/api/v1' },
   { id: 'openai', name: 'OpenAI', endpoint: 'https://api.openai.com/v1' },
+  { id: 'anthropic', name: 'Anthropic', endpoint: 'https://api.anthropic.com/v1' },
+  { id: 'gemini', name: 'Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+  { id: 'xai', name: 'Grok (xAI)', endpoint: 'https://api.x.ai/v1' },
+  { id: 'mistral', name: 'Mistral', endpoint: 'https://api.mistral.ai/v1' },
+  { id: 'nim', name: 'NVIDIA NIM', endpoint: 'https://integrate.api.nvidia.com/v1' },
 ];
 
 const norm = (u) => (u || '').trim().replace(/\/+$/, '').toLowerCase();
 const KEY_FIELDS = ['keyEnc', 'keyPlain'];
 const keyOf = (o) => Object.fromEntries(KEY_FIELDS.filter((k) => o[k]).map((k) => [k, o[k]]));
 const hasKey = (p) => KEY_FIELDS.some((k) => p[k]);
-const TEMPLATE_IDS = TEMPLATES.map((t) => t.id);
+const TEMPLATE_IDS = ['nanogpt', 'openrouter', 'venice', 'openai']; // the ones an earlier version pre-created as profiles
 const fallbackActive = (profiles, id) => (profiles.some((p) => p.id === id) ? id : profiles[0]?.id || '');
 
 // Whether migrate() understands `raw`: a v2 file, or an old single-endpoint one (it had no version). Anything else is moved aside, never overwritten.

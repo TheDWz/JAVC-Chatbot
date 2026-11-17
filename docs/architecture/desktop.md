@@ -29,7 +29,7 @@
 
 - **Linux:** `AppImage`, `deb`, `rpm`, `tar.gz`; executable name `javc-chatbot`; app id `io.github.thedwz.javc-chatbot`.
 - **Windows:** `nsis` installer, named `JAVC-Chatbot-Setup-<version>.exe`. The `dist:win` script installs the Windows build of `@napi-rs/canvas` (a `pdf-parse` dependency) before building.
-- Each target has an explicit `files` list of the runtime files: `main.js`, `preload.js`, `api.js`, `chats.js`, `seal.js`, `backup.js`, `profiles.js`, `store.js`, `disk.js`, `lib.js`, `mcp.js`, `renderer.js`, `index.html`, `build/icon.png`. **A new top-level source file that `main.js` or the page loads must be added to both lists**, or it will be missing from the packaged app (tests and `npm start` won't show the problem).
+- Each target has an explicit `files` list of the runtime files: `main.js`, `preload.js`, `api.js`, `anthropic.js`, `chats.js`, `seal.js`, `backup.js`, `profiles.js`, `store.js`, `disk.js`, `lib.js`, `mcp.js`, `renderer.js`, `index.html`, `build/icon.png`. **A new top-level source file that `main.js` or the page loads must be added to both lists**, or it will be missing from the packaged app (tests and `npm start` won't show the problem).
 
 ## Platform notes
 

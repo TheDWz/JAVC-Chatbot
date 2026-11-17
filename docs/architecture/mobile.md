@@ -15,7 +15,7 @@ Recreates `www/` (not committed): bundles `mobile/main.js` to `www/mobile.js` wi
 
 The plugin is passed in, so `test.js` runs all of this with a fake.
 
-- **`makeNativeFetch(plugin)`** gives `api.js` and `mcp.js` a `fetch`: `httpStart` resolves with `{status, headers}`, then the body arrives as `http` events (`data` as base64, `end`, `error`) feeding a `ReadableStream` inside a real `Response`. Aborts call `httpAbort`. No CORS applies, and `http://` works for local servers. Statuses 204, 205 and 304 get no body.
+- **`makeNativeFetch(plugin)`** gives `api.js`, `anthropic.js` and `mcp.js` a `fetch`: `httpStart` resolves with `{status, headers}`, then the body arrives as `http` events (`data` as base64, `end`, `error`) feeding a `ReadableStream` inside a real `Response`. Request headers are flattened to a plain object first, since a `Headers` instance (what the Anthropic SDK sends) would cross the bridge as `{}`. Aborts call `httpAbort`. No CORS applies, and `http://` works for local servers. Statuses 204, 205 and 304 get no body.
 - **`makeNativeDisk(plugin, dir)`** maps `io` to `fsRead`, `fsWrite`, `fsRemove`, `fsList`, `fsRename`, and rejects names with a slash, `.` or `..`.
 - **`makeNativeCrypto(plugin)`** maps `crypto` to `cryptoAvailable`, `encrypt`, `decrypt`. `available()` does one real round trip and caches it; if it fails, `store.js` keeps keys as `keyPlain` in the private file.
 

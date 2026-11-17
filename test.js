@@ -328,10 +328,179 @@ test('chatStream throws on HTTP errors and mid-stream error chunks', async () =>
 
 const profiles = require('./profiles');
 
+test('chatStream splits Mistral content chunks into reasoning and text, streamed and as JSON', async () => {
+  const chunks = [{ type: 'thinking', thinking: [{ type: 'text', text: 'hmm' }] }, { type: 'text', text: 'Hi' }];
+  assert.deepStrictEqual(await chatStream('http://x', '', 'm', [], {}, () => {}, sse(frames([{ content: chunks }]))), { content: 'Hi', reasoning: 'hmm' });
+  const json = JSON.stringify({ choices: [{ message: { content: chunks } }] });
+  assert.deepStrictEqual(await chatStream('http://x', '', 'm', [], {}, () => {}, sse(json, {}, 'application/json')), { content: 'Hi', reasoning: 'hmm' });
+});
+
+test('chatStream sends Gemini thought signatures back with the tool calls', async () => {
+  const bodies = [], sig = { google: { thought_signature: 'abc' } };
+  const call = { index: 0, id: 'c1', function: { name: 'web_search', arguments: '{"query":"q"}' }, extra_content: sig };
+  const replies = [frames([{ tool_calls: [call] }]), frames([{ content: 'done' }])];
+  const fetchFn = async (url, opts) => {
+    if (url.includes('linkup')) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    bodies.push(JSON.parse(opts.body));
+    return sse(replies.shift())(url, opts);
+  };
+  const out = await chatStream('https://generativelanguage.googleapis.com/v1beta/openai', 'k', 'm', [{ role: 'user', content: 'hi' }], {}, () => {}, fetchFn, undefined, { key: 'l' });
+  assert.strictEqual(out.content, 'done');
+  assert.deepStrictEqual(bodies[1].messages[1].tool_calls[0].extra_content, sig);
+});
+
+// ---- Anthropic (anthropic.js through the SDK). The fake answers the Models API and streams Messages events. ----
+const ANT = 'https://api.anthropic.com/v1';
+const antModel = (id, { adaptive = true, effort = true, max = 128000, ctx = 1000000 } = {}) => ({
+  id, type: 'model', display_name: id, created_at: '2026-01-01T00:00:00Z', max_input_tokens: ctx, max_tokens: max,
+  capabilities: { thinking: { supported: true, types: { adaptive: { supported: adaptive }, enabled: { supported: !adaptive } } },
+    effort: { supported: effort, low: { supported: effort }, medium: { supported: effort }, high: { supported: effort }, xhigh: { supported: false }, max: { supported: effort } } },
+});
+const antEvents = (blocks, { stop = 'end_turn', usage = { input_tokens: 10, cache_read_input_tokens: 5, output_tokens: 7 } } = {}) => {
+  const ev = (type, data) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  let text = ev('message_start', { message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'm', content: [], stop_reason: null, usage: { ...usage, output_tokens: 0 } } });
+  blocks.forEach((b, index) => {
+    if (b.type === 'text') { text += ev('content_block_start', { index, content_block: { type: 'text', text: '' } }) + ev('content_block_delta', { index, delta: { type: 'text_delta', text: b.text } }); }
+    else if (b.type === 'thinking') { text += ev('content_block_start', { index, content_block: { type: 'thinking', thinking: '', signature: '' } }) + ev('content_block_delta', { index, delta: { type: 'thinking_delta', thinking: b.thinking } }) + ev('content_block_delta', { index, delta: { type: 'signature_delta', signature: 'sig' } }); }
+    else if (b.type === 'tool_use') { text += ev('content_block_start', { index, content_block: { type: 'tool_use', id: b.id, name: b.name, input: {} } }) + ev('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(b.input) } }); }
+    else text += ev('content_block_start', { index, content_block: b });
+    text += ev('content_block_stop', { index });
+  });
+  return text + ev('message_delta', { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: usage.output_tokens } }) + ev('message_stop', {});
+};
+/** A fake Anthropic API: `models` for the Models API, `turns` (event streams) answered in order; records each Messages request. */
+const antFake = (models, turns, seen = []) => async (url, opts) => {
+  const u = new URL(String(url));
+  if (u.pathname.startsWith('/v1/models/')) {
+    const m = models.find((x) => x.id === decodeURIComponent(u.pathname.slice(11)));
+    return new Response(JSON.stringify(m || { type: 'error', error: { type: 'not_found_error', message: 'no' } }), { status: m ? 200 : 404, headers: { 'content-type': 'application/json' } });
+  }
+  if (u.pathname === '/v1/models') return new Response(JSON.stringify({ data: models, has_more: false, first_id: null, last_id: null }), { headers: { 'content-type': 'application/json' } });
+  const h = new Headers(opts.headers);
+  seen.push({ url: String(url), key: h.get('x-api-key') || h.get('authorization'), beta: h.get('anthropic-beta'), body: JSON.parse(opts.body) });
+  const t = turns.shift();
+  if (typeof t === 'number') return new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'bad key' } }), { status: t, headers: { 'content-type': 'application/json' } });
+  return new Response(t, { headers: { 'content-type': 'text/event-stream' } });
+};
+
+test('anthropic: the model list gives context sizes and effort levels', async () => {
+  const list = await listModelsDetailed(ANT, 'k', antFake([antModel('claude-b'), antModel('claude-a', { effort: false, ctx: 200000 })], []));
+  assert.deepStrictEqual(list, [
+    { id: 'claude-a', efforts: false, meta: false, ctx: 200000 },
+    { id: 'claude-b', efforts: ['low', 'medium', 'high', 'max'], meta: false, ctx: 1000000 },
+  ]);
+});
+
+test('anthropic: a reply sends system, images, thinking, effort and caching, and streams thinking and text', async () => {
+  const seen = [], deltas = [];
+  const msgs = [{ role: 'system', content: 'Be brief.' }, { role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }] },
+    { role: 'assistant', content: '' }, { role: 'user', content: 'and?' }];
+  // a saved OpenAI reasoning format must not change the Anthropic request
+  const { model, extra } = requestArgs({ model: 'claude-x', endpoint: ANT, effort: 'high', format: 'openai' });
+  const out = await chatStream(ANT, 'key1', model, msgs, extra, (d) => deltas.push(d),
+    antFake([antModel('claude-x', { max: 32000 })], [antEvents([{ type: 'thinking', thinking: 'mull' }, { type: 'text', text: 'A cat.' }])], seen));
+  assert.deepStrictEqual([out.content, out.reasoning], ['A cat.', 'mull']);
+  assert.deepStrictEqual(out.usage, { prompt_tokens: 15, completion_tokens: 7, total_tokens: 22 });
+  assert.deepStrictEqual(deltas, [{ reasoning: 'mull', content: '' }, { reasoning: '', content: 'A cat.' }]);
+  const { url, key, body } = seen[0];
+  assert.strictEqual(url, 'https://api.anthropic.com/v1/messages'); assert.match(key, /key1/);
+  assert.strictEqual(body.system, 'Be brief.'); assert.strictEqual(body.max_tokens, 32000);
+  assert.deepStrictEqual(body.thinking, { type: 'adaptive', display: 'summarized' }); assert.deepStrictEqual(body.output_config, { effort: 'high' });
+  assert.deepStrictEqual(body.cache_control, { type: 'ephemeral' });
+  assert.deepStrictEqual(body.messages, [
+    { role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] },
+    { role: 'user', content: 'and?' },
+  ]);
+  assert.ok(!('fallbacks' in body) && !('tools' in body));
+});
+
+test('anthropic: models without adaptive thinking get no thinking fields; None turns thinking off; fallbacks only on listed models', async () => {
+  const seen = [];
+  const fake = antFake([antModel('claude-haiku-4-5', { adaptive: false, effort: false }), antModel('claude-opus-5-5')], [antEvents([{ type: 'text', text: 'a' }]), antEvents([{ type: 'text', text: 'b' }])], seen);
+  await chatStream(ANT, 'k', 'claude-haiku-4-5', [{ role: 'user', content: 'hi' }], requestArgs({ endpoint: ANT, effort: 'high' }).extra, () => {}, fake);
+  await chatStream(ANT, 'k', 'claude-opus-5-5', [{ role: 'user', content: 'hi' }], requestArgs({ endpoint: ANT, effort: 'none' }).extra, () => {}, fake);
+  assert.ok(!('thinking' in seen[0].body) && !('output_config' in seen[0].body) && !('fallbacks' in seen[0].body));
+  assert.deepStrictEqual(seen[1].body.thinking, { type: 'disabled' }); assert.ok(!('output_config' in seen[1].body));
+  assert.strictEqual(seen[1].body.fallbacks, 'default'); assert.match(seen[1].beta, /server-side-fallback-2026-07-01/);
+});
+
+test('anthropic: a tool round sends the reply blocks back unchanged with one message of tool results', async () => {
+  const seen = [];
+  const turn1 = antEvents([{ type: 'thinking', thinking: 'plan' }, { type: 'tool_use', id: 't1', name: 'web_search', input: { query: 'a' } }, { type: 'tool_use', id: 't2', name: 'web_search', input: { query: 'b' } }], { stop: 'tool_use' });
+  const fake = antFake([antModel('claude-x')], [turn1, antEvents([{ type: 'text', text: 'Found it.' }])], seen);
+  const fetchFn = async (url, opts) => (String(url).includes('linkup') ? new Response(JSON.stringify({ results: [{ type: 'text', name: 'N', url: 'u', content: 'c' }] })) : fake(url, opts));
+  const out = await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'search' }], {}, () => {}, fetchFn, undefined, { key: 'l' });
+  assert.strictEqual(out.content, 'Found it.');
+  const [first, second] = seen.map((s) => s.body);
+  assert.deepStrictEqual(first.tools.map((t) => t.name), ['web_search']); assert.ok(first.tools[0].input_schema.properties.query);
+  assert.deepStrictEqual(first.tool_choice, { type: 'auto' });
+  assert.deepStrictEqual(second.messages[1].content.map((b) => b.type), ['thinking', 'tool_use', 'tool_use']);
+  assert.strictEqual(second.messages[1].content[0].signature, 'sig');
+  assert.deepStrictEqual(second.messages[2].content.map((b) => [b.type, b.tool_use_id]), [['tool_result', 't1'], ['tool_result', 't2']]);
+});
+
+test('anthropic: after a fallback, the declined partial\'s thinking and tool calls are dropped', async () => {
+  const seen = [];
+  const blocks = [{ type: 'thinking', thinking: 'x' }, { type: 'tool_use', id: 'old', name: 'web_search', input: { query: 'no' } },
+    { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' } }, { type: 'text', text: 'ok' }, { type: 'tool_use', id: 'new', name: 'web_search', input: { query: 'yes' } }];
+  const fake = antFake([antModel('claude-opus-5-5')], [antEvents(blocks, { stop: 'tool_use' }), antEvents([{ type: 'text', text: 'done' }])], seen);
+  const fetchFn = async (url, opts) => (String(url).includes('linkup') ? new Response(JSON.stringify({ results: [] })) : fake(url, opts));
+  await chatStream(ANT, 'k', 'claude-opus-5-5', [{ role: 'user', content: 'q' }], {}, () => {}, fetchFn, undefined, { key: 'l' });
+  const echoed = seen[1].body.messages[1].content;
+  assert.deepStrictEqual(echoed.map((b) => b.type), ['fallback', 'text', 'tool_use']); assert.strictEqual(echoed[2].id, 'new');
+  assert.deepStrictEqual(seen[1].body.messages[2].content.map((b) => b.tool_use_id), ['new']);
+});
+
+test('anthropic: Disabled and summaries send no thinking or effort fields', async () => {
+  const seen = [], fake = antFake([antModel('claude-x')], [antEvents([{ type: 'text', text: 'a' }]), antEvents([{ type: 'text', text: 'b' }])], seen);
+  await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'hi' }], requestArgs({ endpoint: ANT, effort: '' }).extra, () => {}, fake);
+  await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'hi' }], requestArgs({ endpoint: ANT, effort: 'high' }, { summary: { profileId: 'p' } }).extra, () => {}, fake);
+  for (const { body } of seen) assert.ok(!('thinking' in body) && !('output_config' in body));
+});
+
+test('anthropic: a failed model lookup is not remembered, so the next reply asks again', async () => {
+  const seen = [], real = antFake([antModel('claude-old', { adaptive: false, effort: false, max: 8192 })], [antEvents([{ type: 'text', text: 'a' }]), antEvents([{ type: 'text', text: 'b' }])], seen);
+  let lookups = 0;
+  const fake = async (url, opts) => (String(url).includes('/v1/models/') && ++lookups === 1 ? new Response('{}', { status: 503 }) : real(url, opts));
+  const ep = 'https://lookup.anthropic.com/v1'; // its own endpoint, so other tests' cached models don't count
+  await chatStream(ep, 'k', 'claude-old', [{ role: 'user', content: 'hi' }], { effort: 'high' }, () => {}, fake);
+  await chatStream(ep, 'k', 'claude-old', [{ role: 'user', content: 'hi' }], { effort: 'high' }, () => {}, fake);
+  assert.strictEqual(lookups, 2);
+  assert.strictEqual(seen[0].body.max_tokens, 64000); assert.ok('thinking' in seen[0].body); // guessed: a current model
+  assert.strictEqual(seen[1].body.max_tokens, 8192); assert.ok(!('thinking' in seen[1].body)); // the real answer
+});
+
+test('anthropic: without a key nothing is sent, so no other credentials are picked up', async () => {
+  let calls = 0; const fake = async () => { calls++; return new Response('{}'); };
+  await assert.rejects(chatStream(ANT, '', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, fake), /API key/);
+  await assert.rejects(listModelsDetailed(ANT, '', fake), /API key/);
+  assert.strictEqual(calls, 0);
+});
+
+test('anthropic: a reply cut off at the length limit runs no tool calls and says it was cut off', async () => {
+  const seen = [], fake = antFake([antModel('claude-x')], [antEvents([{ type: 'text', text: 'Let me look' }, { type: 'tool_use', id: 't1', name: 'web_search', input: {} }], { stop: 'max_tokens' })], seen);
+  let searched = 0;
+  const fetchFn = async (url, opts) => (String(url).includes('linkup') ? (searched++, new Response('{"results":[]}')) : fake(url, opts));
+  const out = await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, fetchFn, undefined, { key: 'l' });
+  assert.strictEqual(out.content, 'Let me look'); assert.match(out.error, /length limit/);
+  assert.strictEqual(searched, 0); assert.strictEqual(seen.length, 1);
+});
+
+test('anthropic: a reply without tools returns no raw blocks to the page', async () => {
+  const out = await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, antFake([antModel('claude-x')], [antEvents([{ type: 'thinking', thinking: 't' }, { type: 'text', text: 'a' }])]));
+  assert.ok(!('blocks' in out)); assert.strictEqual(out.content, 'a');
+});
+
+test('anthropic: refusals and HTTP errors become errors', async () => {
+  const models = [antModel('claude-x')];
+  await assert.rejects(chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, antFake(models, [antEvents([], { stop: 'refusal' })])), /declined/);
+  await assert.rejects(chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, antFake(models, [401])), /^Error: HTTP 401: .*bad key/);
+});
+
 test('profiles: first run is empty; templates are not profiles', () => {
   const st = profiles.migrate(null);
   assert.deepStrictEqual([st.profiles, st.activeId], [[], '']);
-  assert.deepStrictEqual(profiles.publicView(st).templates.map((t) => t.name), ['NanoGPT', 'OpenRouter', 'Venice', 'OpenAI']);
+  assert.deepStrictEqual(profiles.publicView(st).templates.map((t) => t.name), ['NanoGPT', 'OpenRouter', 'Venice', 'OpenAI', 'Anthropic', 'Gemini', 'Grok (xAI)', 'Mistral', 'NVIDIA NIM']);
   const urls = Object.fromEntries(profiles.TEMPLATES.map((t) => [t.id, t.endpoint]));
   assert.strictEqual(urls.nanogpt, 'https://nano-gpt.com/api/v1'); assert.strictEqual(urls.venice, 'https://api.venice.ai/api/v1');
   assert.strictEqual(urls.openrouter, 'https://openrouter.ai/api/v1'); assert.strictEqual(urls.openai, 'https://api.openai.com/v1');
@@ -807,7 +976,14 @@ test('native fetch: chatStream streams through the plugin, even with characters 
   assert.deepStrictEqual([out.reasoning, out.content], ['hmm… ', 'Grüße 🙂']);
   assert.ok(deltas.length >= 3);
   assert.strictEqual(seen[0].url, 'https://x/v1/chat/completions'); assert.strictEqual(seen[0].method, 'POST');
-  assert.strictEqual(seen[0].headers.Authorization, 'Bearer k'); assert.strictEqual(JSON.parse(seen[0].body).stream, true);
+  assert.strictEqual(seen[0].headers.authorization, 'Bearer k'); assert.strictEqual(JSON.parse(seen[0].body).stream, true);
+});
+
+test('native fetch: Headers instances reach the plugin as plain objects (the Anthropic SDK sends one)', async () => {
+  const { fetch, seen } = fakeHttp(() => ({ status: 204, headers: {} }));
+  await fetch('https://x', { headers: new Headers({ 'x-api-key': 'k', 'anthropic-version': 'v' }) });
+  await fetch('https://x', { headers: { Authorization: 'Bearer k' } });
+  assert.deepStrictEqual(seen.map((r) => r.headers), [{ 'anthropic-version': 'v', 'x-api-key': 'k' }, { authorization: 'Bearer k' }]);
 });
 
 test('native fetch: error bodies, network failures and empty responses behave like fetch', async () => {
