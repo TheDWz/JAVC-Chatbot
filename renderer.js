@@ -441,7 +441,9 @@ $('statsbtn').onclick = () => { closeMore(); openStats(); };
 const fmtMs = (v) => (v == null ? ['—'] : v < 1000 ? [String(Math.round(v)), 'ms'] : [(v / 1000).toFixed(2), 's']);
 const fmtTps = (v, est) => (v == null ? ['—'] : [(est ? '~' : '') + v.toFixed(1), 'tok/s']);
 const fmtTok = (v) => (v == null ? ['—'] : [v.toLocaleString(), 'tokens']);
-const fmtCost = (v) => (v == null ? ['—'] : [new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumSignificantDigits: 3 }).format(v)]);
+// cents from $1 up; below that, 3 significant digits so tiny replies ($0.000169) still show
+const usd = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }), usdSmall = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumSignificantDigits: 2, maximumSignificantDigits: 3 });
+const fmtCost = (v) => (v == null ? ['—'] : [(v >= 1 || v === 0 ? usd : usdSmall).format(v)]);
 /**
  * One stat as a tile: the big value and the small unit under/next to it.
  * @param {string} label
@@ -484,7 +486,7 @@ function renderStats() {
   );
   if (s.cost != null) tiles.append(tile('Last reply cost', fmtCost(last.cost)), tile('Cost of this chat', fmtCost(s.cost)));
   notes.push(`Averages over ${s.points.length} repl${s.points.length === 1 ? 'y' : 'ies'}${model ? ` from ${model}` : ''}. Tokens used counts every reply, including ones regenerated or edited away.`);
-  if (s.cost != null) notes.push('Cost is what the provider reported. Replies from providers that don\'t report it aren\'t counted.');
+  if (s.cost != null) notes.push('Cost is what the provider reported, for replies and summaries. Ones from providers that don\'t report it aren\'t counted.');
   if (s.est || s.noTotal) notes.push('Some replies have no token counts, because the provider didn\'t send them or the reply was stopped early.'
     + (s.est ? ' Their speed (marked ~) is estimated from the text length.' : '') + ' They aren\'t in the token totals.');
   $('statsbody').replaceChildren(tiles, ...notes.map((t) => el('p', 'statnote', t)));

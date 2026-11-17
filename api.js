@@ -128,12 +128,12 @@ const parts = (c) => {
   return { reasoning: c.filter((p) => p?.type === 'thinking').map((p) => text(p.thinking)).join(''), content: c.filter((p) => p?.type === 'text').map((p) => p.text || '').join('') };
 };
 // What the request cost in USD, when the provider says: NanoGPT's x_nanogpt_pricing, OpenRouter's usage.cost (credits, 1 = $1),
-// xAI's usage.cost_in_usd_ticks (1e-10 USD). The first one found counts, so NanoGPT's two fields are never added together.
+// xAI's usage.cost_in_usd_ticks (1e-10 USD). When NanoGPT's pricing is there, only it counts (never also usage.cost);
+// its `currency` decides the unit (paymentSource is how the user paid, not the unit).
 function costOf(j) {
-  const p = j.x_nanogpt_pricing, cur = p?.currency ?? p?.paymentSource;
-  const usd = [p && (cur == null || /^usd$/i.test(cur)) ? p.cost ?? p.amount : undefined, j.usage?.cost,
-    typeof j.usage?.cost_in_usd_ticks === 'number' ? j.usage.cost_in_usd_ticks / 1e10 : undefined];
-  return usd.find((v) => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+  const p = j.x_nanogpt_pricing, ok = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  if (p && typeof p === 'object') return p.currency == null || /^usd$/i.test(p.currency) ? ok(p.cost ?? p.amount) : undefined;
+  return ok(j.usage?.cost) ?? (typeof j.usage?.cost_in_usd_ticks === 'number' ? ok(j.usage.cost_in_usd_ticks / 1e10) : undefined);
 }
 const pickReasoning = (o) => (typeof o.reasoning_content === 'string' ? o.reasoning_content : typeof o.reasoning === 'string' ? o.reasoning : '');
 

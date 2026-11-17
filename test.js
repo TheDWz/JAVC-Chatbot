@@ -503,7 +503,8 @@ test('chatStream reads the cost OpenRouter, NanoGPT and xAI report, once, in USD
   assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost: 0.002 } })), 0.002); // OpenRouter
   assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost: 0.5 }, x_nanogpt_pricing: { cost: 0.000169, paymentSource: 'USD' } })), 0.000169); // NanoGPT: counted once
   assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost_in_usd_ticks: 158500 } })), 0.00001585); // xAI ticks
-  assert.strictEqual(await run(last({ x_nanogpt_pricing: { amount: 3, currency: 'XNO' } })), undefined); // not USD
+  assert.strictEqual(await run(last({ usage: { total_tokens: 2, cost: 0.5 }, x_nanogpt_pricing: { amount: 3, currency: 'XNO' } })), undefined); // not USD, and usage.cost isn't used instead
+  assert.strictEqual(await run(last({ x_nanogpt_pricing: { cost: 0.0002, paymentSource: 'XNO' } })), 0.0002); // paid with XNO, priced in USD
   assert.strictEqual(await run(last({})), undefined);
   const json = JSON.stringify({ choices: [{ message: { content: 'hi' } }], usage: { total_tokens: 2, cost: 0.01 } });
   assert.strictEqual((await chatStream('http://x', '', 'm', [], {}, () => {}, sse(json, {}, 'application/json'))).cost, 0.01);
