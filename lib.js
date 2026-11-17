@@ -238,34 +238,35 @@
   // ---- Stats for nerds: saved on each reply (and each of its versions), never sent to the model ----
   /**
    * One reply's stats from its timings (ms, from performance.now()) and the server's token counts.
-   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, usage?: {completion_tokens?: number, completion_tokens_details?: {reasoning_tokens?: number}, total_tokens?: number, prompt_tokens?: number}, ctx?: number, sent?: number, text: string, sawReasoning?: boolean}} r
+   * @param {{model: string, t0: number, t1: number, t2: number, paused?: number, cost?: number, usage?: {completion_tokens?: number, completion_tokens_details?: {reasoning_tokens?: number}, total_tokens?: number, prompt_tokens?: number}, ctx?: number, sent?: number, text: string, sawReasoning?: boolean}} r
    *   t0 request sent, t1 the model's first text (0 = none), t2 reply finished, paused time spent waiting on web searches after t1;
    *   text is the reply plus its reasoning; sawReasoning says whether any reasoning text was streamed.
    *   sent is the prompt tokens of the request's first round (search rounds add more), which the next request's size is counted from.
-   * @returns {{model, ttft, tps, out, total, ctx, prompt, est}} Without usage, `out` is guessed from the length (about 4 characters a token) and `est` is set.
+   *   cost is what the provider reported the reply cost, in USD, when it says.
+   * @returns {{model, ttft, tps, out, total, ctx, prompt, est, cost}} Without usage, `out` is guessed from the length (about 4 characters a token) and `est` is set.
    */
-  function replyStats({ model, t0, t1, t2, paused = 0, usage, ctx, sent, text, sawReasoning = true }) {
+  function replyStats({ model, t0, t1, t2, paused = 0, usage, ctx, sent, text, sawReasoning = true, cost }) {
     const est = usage?.completion_tokens == null, out = est ? Math.round((text || '').length / 4) : usage.completion_tokens;
     // Hidden reasoning (o-series, GPT-5) is counted but never streamed: it happens before t1, so it isn't part of the speed.
     const shown = out - (!est && !sawReasoning ? usage.completion_tokens_details?.reasoning_tokens || 0 : 0);
     const gen = (t2 - (t1 || t2) - paused) / 1000; // a reply that arrives in one piece has no measurable speed
     return {
       model, ttft: t1 ? Math.round(t1 - t0) : null, tps: gen > 0.05 && shown > 0 ? Math.round((shown / gen) * 10) / 10 : null,
-      out, total: usage?.total_tokens ?? null, ctx: ctx ?? usage?.total_tokens ?? null, prompt: sent ?? usage?.prompt_tokens ?? null, ...(est && { est: true }),
+      out, total: usage?.total_tokens ?? null, ctx: ctx ?? usage?.total_tokens ?? null, prompt: sent ?? usage?.prompt_tokens ?? null, ...(est && { est: true }), ...(typeof cost === 'number' && { cost }),
     };
   }
   const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
   /**
    * A chat's stats. Averages and `points` (oldest first, each with `n`, its reply number in the chat) count only `model` when given;
    * `last` and the token totals always cover the whole chat. `used` is the chat's running total (chat.used), which never goes down,
-   * since replies that were regenerated, edited away or dropped used tokens too.
+   * since replies that were regenerated, edited away or dropped used tokens too. `cost` (chat.cost, USD) is the same kind of total, or null when no provider reported one.
    */
   function chatStats(chat, model) {
     const all = chat.messages.filter((m) => m.role === 'assistant').flatMap((m, i) => (m.stats ? [{ ...m.stats, n: i + 1 }] : []));
     const points = model ? all.filter((s) => s.model === model) : all, num = (k) => points.map((s) => s[k]).filter((v) => typeof v === 'number');
     return {
       last: all.at(-1) || null, points, models: [...new Set(all.map((s) => s.model))], avgTtft: avg(num('ttft')), avgTps: avg(num('tps')),
-      used: chat.used || 0, context: all.at(-1)?.ctx ?? null, est: all.some((s) => s.est), noTotal: all.some((s) => s.total == null),
+      used: chat.used || 0, cost: chat.cost ?? null, context: all.at(-1)?.ctx ?? null, est: all.some((s) => s.est), noTotal: all.some((s) => s.total == null),
     };
   }
 
