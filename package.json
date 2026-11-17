@@ -35,6 +35,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.9.0",
     "marked": "^18.1.2",
     "pdf-parse": "^2.4.5"
   },
@@ -60,6 +61,7 @@
         "main.js",
         "preload.js",
         "api.js",
+        "anthropic.js",
         "chats.js",
         "seal.js",
         "backup.js",
@@ -83,6 +85,7 @@
         "main.js",
         "preload.js",
         "api.js",
+        "anthropic.js",
         "chats.js",
         "seal.js",
         "backup.js",
