@@ -31,7 +31,7 @@
 
 ## Anthropic (`anthropic.js`)
 
-An Anthropic endpoint goes through the official `@anthropic-ai/sdk`, not the OpenAI-compatible path. `api.js` requires the module and hands it the three jobs: model listing, format resolution and streaming. The tool loop, the usage totals and Stop stay in `api.js`.
+An Anthropic endpoint goes through the official `@anthropic-ai/sdk`, not the OpenAI-compatible path. `api.js` requires the module and hands it model listing and streaming; `resolveFormat` stays in `api.js` and only asks `isAnthropic`. The tool loop, the usage totals and Stop stay in `api.js`.
 
 - Detection is the endpoint host (`anthropic.com`) only, so Anthropic-compatible proxies are not detected. `resolveFormat` answers `anthropic` before any saved Reasoning format, so the format setting doesn't apply.
 - `listModels` reads the Models API: the context size from `max_input_tokens`, effort levels from `capabilities`. Each model's output cap and thinking support are cached in `INFO` for the session.

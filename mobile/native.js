@@ -44,7 +44,7 @@ function makeNativeFetch(plugin) {
     let head;
     try {
       head = await Promise.race([
-        plugin.httpStart({ id, url: String(url), method: opts.method || 'GET', headers: opts.headers || {}, body: opts.body ?? null }),
+        plugin.httpStart({ id, url: String(url), method: opts.method || 'GET', headers: Object.fromEntries(new Headers(opts.headers ?? {})), body: opts.body ?? null }), // plain object: a Headers instance (the Anthropic SDK sends one) crosses the bridge as {}
         abortedStart,
       ]);
     } catch (e) {

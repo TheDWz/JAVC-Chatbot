@@ -936,7 +936,14 @@ test('native fetch: chatStream streams through the plugin, even with characters 
   assert.deepStrictEqual([out.reasoning, out.content], ['hmm… ', 'Grüße 🙂']);
   assert.ok(deltas.length >= 3);
   assert.strictEqual(seen[0].url, 'https://x/v1/chat/completions'); assert.strictEqual(seen[0].method, 'POST');
-  assert.strictEqual(seen[0].headers.Authorization, 'Bearer k'); assert.strictEqual(JSON.parse(seen[0].body).stream, true);
+  assert.strictEqual(seen[0].headers.authorization, 'Bearer k'); assert.strictEqual(JSON.parse(seen[0].body).stream, true);
+});
+
+test('native fetch: Headers instances reach the plugin as plain objects (the Anthropic SDK sends one)', async () => {
+  const { fetch, seen } = fakeHttp(() => ({ status: 204, headers: {} }));
+  await fetch('https://x', { headers: new Headers({ 'x-api-key': 'k', 'anthropic-version': 'v' }) });
+  await fetch('https://x', { headers: { Authorization: 'Bearer k' } });
+  assert.deepStrictEqual(seen.map((r) => r.headers), [{ 'anthropic-version': 'v', 'x-api-key': 'k' }, { authorization: 'Bearer k' }]);
 });
 
 test('native fetch: error bodies, network failures and empty responses behave like fetch', async () => {
