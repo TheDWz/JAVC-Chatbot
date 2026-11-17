@@ -10,10 +10,19 @@ const OUT_CAP = 64000; // max_tokens per reply; lower if the model's own cap is 
 // Models whose refusals can be retried on Anthropic's default fallback model, inside the same request.
 const FALLBACKS = new Set(['claude-fable-5-2', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5']);
 
-/** @param {string} endpoint @param {string} key @param {any} [fetchFn] */
-const client = (endpoint, key, fetchFn) => new Anthropic({
-  apiKey: key || null, baseURL: endpoint.replace(/\/+$/, '').replace(/\/v1$/, ''), fetch: fetchFn, dangerouslyAllowBrowser: true, // phones run the core in the web view; the key still only lives in the host
-});
+// One client, reused while the endpoint, key and fetch stay the same (a reply's tool rounds).
+let last = null;
+/** @param {string} endpoint @param {string} key @param {any} [fetchFn] @returns {Anthropic} */
+function client(endpoint, key, fetchFn) {
+  // without a key the SDK would fall back to credentials from the environment or ~/.config/anthropic, an account the user never set up here
+  if (!key) throw new Error('Add your Anthropic API key in the profile settings.');
+  if (last?.endpoint !== endpoint || last.key !== key || last.fetchFn !== fetchFn) {
+    last = { endpoint, key, fetchFn, c: new Anthropic({
+      apiKey: key, baseURL: endpoint.replace(/\/+$/, '').replace(/\/v1$/, ''), fetch: fetchFn, dangerouslyAllowBrowser: true, // phones run the core in the web view; the key still only lives in the host
+    }) };
+  }
+  return last.c;
+}
 
 // What a request needs to know about a model, from the Models API: {maxOut, adaptive, efforts}. Kept for as long as the app runs.
 const INFO = new Map();
@@ -70,9 +79,9 @@ function convert(messages) {
   return { system: system.join('\n\n'), messages: out };
 }
 
-/** Thinking and effort for the app's reasoning level ('' = send nothing). */
+/** Thinking and effort for the app's reasoning level ('' or none given, as for summaries = send nothing). */
 function reasoning(info, effort) {
-  if (!info.adaptive) return {}; // shortcut: older models (Haiku 4.5) only take budget_tokens; they reply without reasoning here
+  if (!effort || !info.adaptive) return {}; // shortcut: older models (Haiku 4.5) only take budget_tokens; they reply without reasoning here
   if (effort === 'none') return { thinking: { type: 'disabled' } }; // models that can't turn thinking off say so
   const level = effort === 'minimal' ? 'low' : effort;
   return { thinking: { type: 'adaptive', display: 'summarized' }, ...(EFFORTS.includes(level) && info.efforts !== false && { output_config: { effort: level } }) };
@@ -91,11 +100,12 @@ function afterFallback(blocks) {
  */
 async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, calls) {
   const api = client(endpoint, key, fetchFn), id = endpoint + ' ' + model;
-  if (!INFO.has(id)) {
-    try { INFO.set(id, infoOf(await api.models.retrieve(model, null, { signal }))); }
-    catch (e) { if (signal?.aborted) throw new Error('Stopped', { cause: e }); INFO.set(id, { maxOut: OUT_CAP, adaptive: true, efforts: EFFORTS }); } // unknown: assume a current model
+  let info = INFO.get(id);
+  if (!info) {
+    try { info = infoOf(await api.models.retrieve(model, null, { signal, maxRetries: 0 })); INFO.set(id, info); }
+    catch (e) { if (signal?.aborted) throw new Error('Stopped', { cause: e }); info = { maxOut: OUT_CAP, adaptive: true, efforts: EFFORTS }; } // unknown for now: assume a current model, and ask again next time
   }
-  const info = INFO.get(id), { system, messages: msgs } = convert(messages);
+  const { system, messages: msgs } = convert(messages);
   const tools = extra.tools?.map((t) => ({ name: t.function.name, description: t.function.description || '', input_schema: t.function.parameters || { type: 'object' } }));
   const params = {
     model, max_tokens: Math.min(info.maxOut, OUT_CAP), messages: msgs, cache_control: { type: 'ephemeral' },
@@ -119,9 +129,13 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
     if (!out.content) throw new Error('Claude declined to answer.');
     return { ...out, error: 'Claude stopped: it declined to continue.' };
   }
+  if (msg.stop_reason === 'max_tokens') { // a cut-off tool call has incomplete arguments, so nothing runs
+    if (!out.content) throw new Error('The reply hit the length limit before any text.');
+    return { ...out, error: 'The reply hit the length limit.' };
+  }
   const blocks = afterFallback(/** @type {any[]} */ (msg.content));
   for (const b of blocks) if (b.type === 'tool_use') calls.push({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } });
   return { ...out, blocks };
 }
 
-module.exports = { isAnthropic, listModels, streamOnce, convert };
+module.exports = { isAnthropic, listModels, streamOnce };

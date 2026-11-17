@@ -451,6 +451,46 @@ test('anthropic: after a fallback, the declined partial\'s thinking and tool cal
   assert.deepStrictEqual(seen[1].body.messages[2].content.map((b) => b.tool_use_id), ['new']);
 });
 
+test('anthropic: Disabled and summaries send no thinking or effort fields', async () => {
+  const seen = [], fake = antFake([antModel('claude-x')], [antEvents([{ type: 'text', text: 'a' }]), antEvents([{ type: 'text', text: 'b' }])], seen);
+  await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'hi' }], requestArgs({ endpoint: ANT, effort: '' }).extra, () => {}, fake);
+  await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'hi' }], requestArgs({ endpoint: ANT, effort: 'high' }, { summary: { profileId: 'p' } }).extra, () => {}, fake);
+  for (const { body } of seen) assert.ok(!('thinking' in body) && !('output_config' in body));
+});
+
+test('anthropic: a failed model lookup is not remembered, so the next reply asks again', async () => {
+  const seen = [], real = antFake([antModel('claude-old', { adaptive: false, effort: false, max: 8192 })], [antEvents([{ type: 'text', text: 'a' }]), antEvents([{ type: 'text', text: 'b' }])], seen);
+  let lookups = 0;
+  const fake = async (url, opts) => (String(url).includes('/v1/models/') && ++lookups === 1 ? new Response('{}', { status: 503 }) : real(url, opts));
+  const ep = 'https://lookup.anthropic.com/v1'; // its own endpoint, so other tests' cached models don't count
+  await chatStream(ep, 'k', 'claude-old', [{ role: 'user', content: 'hi' }], { effort: 'high' }, () => {}, fake);
+  await chatStream(ep, 'k', 'claude-old', [{ role: 'user', content: 'hi' }], { effort: 'high' }, () => {}, fake);
+  assert.strictEqual(lookups, 2);
+  assert.strictEqual(seen[0].body.max_tokens, 64000); assert.ok('thinking' in seen[0].body); // guessed: a current model
+  assert.strictEqual(seen[1].body.max_tokens, 8192); assert.ok(!('thinking' in seen[1].body)); // the real answer
+});
+
+test('anthropic: without a key nothing is sent, so no other credentials are picked up', async () => {
+  let calls = 0; const fake = async () => { calls++; return new Response('{}'); };
+  await assert.rejects(chatStream(ANT, '', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, fake), /API key/);
+  await assert.rejects(listModelsDetailed(ANT, '', fake), /API key/);
+  assert.strictEqual(calls, 0);
+});
+
+test('anthropic: a reply cut off at the length limit runs no tool calls and says it was cut off', async () => {
+  const seen = [], fake = antFake([antModel('claude-x')], [antEvents([{ type: 'text', text: 'Let me look' }, { type: 'tool_use', id: 't1', name: 'web_search', input: {} }], { stop: 'max_tokens' })], seen);
+  let searched = 0;
+  const fetchFn = async (url, opts) => (String(url).includes('linkup') ? (searched++, new Response('{"results":[]}')) : fake(url, opts));
+  const out = await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, fetchFn, undefined, { key: 'l' });
+  assert.strictEqual(out.content, 'Let me look'); assert.match(out.error, /length limit/);
+  assert.strictEqual(searched, 0); assert.strictEqual(seen.length, 1);
+});
+
+test('anthropic: a reply without tools returns no raw blocks to the page', async () => {
+  const out = await chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, antFake([antModel('claude-x')], [antEvents([{ type: 'thinking', thinking: 't' }, { type: 'text', text: 'a' }])]));
+  assert.ok(!('blocks' in out)); assert.strictEqual(out.content, 'a');
+});
+
 test('anthropic: refusals and HTTP errors become errors', async () => {
   const models = [antModel('claude-x')];
   await assert.rejects(chatStream(ANT, 'k', 'claude-x', [{ role: 'user', content: 'q' }], {}, () => {}, antFake(models, [antEvents([], { stop: 'refusal' })])), /declined/);

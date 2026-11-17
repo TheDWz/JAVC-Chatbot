@@ -262,7 +262,7 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
 async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search, mcp) {
   if (!mcp?.defs.length) mcp = null;
   const once = Anthropic.isAnthropic(endpoint) ? Anthropic.streamOnce : streamOnce;
-  if (!search && !mcp) return once(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []);
+  if (!search && !mcp) { const r = await once(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []); delete r.blocks; return r; } // Anthropic's raw blocks are only for the tool loop
   const tools = [...(search ? [SEARCH_TOOL] : []), ...(mcp ? mcp.defs : [])], rounds = mcp ? TOOL_ROUNDS : SEARCH_ROUNDS;
   const total = { content: '', reasoning: '' }, msgs = /** @type {object[]} */ ([...messages]);
   let searches = 0; // Linkup requests so far in this reply, across rounds and parallel calls
