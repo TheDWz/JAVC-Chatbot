@@ -1269,8 +1269,10 @@ $('mcpsave').onclick = async () => {
 $('mcpreload').onclick = () => showMcpStatus(true);
 
 // Before a tool runs: Deny, Allow once or Always allow. Escape, Back and anything else that closes the dialog mean Deny.
-window.api.onToolApproval?.((/** @type {{server: string, tool: string, args: object}} */ info) => new Promise((resolve) => {
+// A file the model attaches by path or URL (`app`) is asked every time, so it gets no Always allow.
+window.api.onToolApproval?.((/** @type {{server: string, tool: string, args: object, app?: boolean}} */ info) => new Promise((resolve) => {
   const d = $('tooldlg');
+  $('toolalways').hidden = !!info.app;
   $('toolsub').textContent = `${info.server} wants to run ${info.tool} with:`;
   $('toolargs').textContent = JSON.stringify(info.args, null, 2);
   $('toolwarn').hidden = !/order|trade|buy|sell|transfer|withdraw|delete|remove|write|send|pay/i.test(info.tool);
