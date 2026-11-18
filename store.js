@@ -102,15 +102,16 @@ module.exports = ({ io, crypto }) => {
     mcpConfig: serial(async () => keyOf((await read()).mcp, 'MCP servers')),
     /** The MCP servers ({name: entry}, see mcp.js), or {} when MCP is off or none are set up. */
     mcpServers: serial(async () => servers((await read()).mcp)),
-    /** What a reply needs, from one read: {servers, allow}. */
-    mcpForReply: serial(async () => { const m = (await read()).mcp; return { servers: await servers(m), allow: m.allow }; }),
+    /** What a reply needs, from one read: {servers, allow, autoApprove}. */
+    mcpForReply: serial(async () => { const m = (await read()).mcp; return { servers: await servers(m), allow: m.allow, autoApprove: m.autoApprove }; }),
     /**
-     * Saves {enabled, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
+     * Saves {enabled, autoApprove, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
      * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in.
      */
     saveMcp: serial(async (p) => {
       const st = await read();
       if (typeof p.enabled === 'boolean') st.mcp.enabled = p.enabled;
+      if (typeof p.autoApprove === 'boolean') st.mcp.autoApprove = p.autoApprove;
       if (typeof p.config === 'string') {
         const next = parseConfig(p.config);
         let prev = {}; try { prev = parseConfig(await keyOf(st.mcp, 'MCP servers')); } catch {} // unreadable: treat every server as new

@@ -120,9 +120,10 @@ module.exports = (io) => {
       if (typeof data !== 'string') throw new Error('Invalid file');
       const hash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(data)));
       const name = `a-${Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('')}.bin`;
-      fresh.add(name);
+      const known = fresh.has(name); fresh.add(name);
       stored ??= new Set(await io.list());
-      if (!stored.has(name)) { await io.write(name, data); stored.add(name); }
+      // one from an earlier run may be sealed with a lost key (after Start over): write it again unless it still reads
+      if (!stored.has(name) || (!known && !(await io.read(name).then((d) => d !== null, () => false)))) { await io.write(name, data); stored.add(name); }
       return name;
     }),
     /** File `ref` as base64; an error if it's gone. */

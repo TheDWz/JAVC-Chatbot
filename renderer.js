@@ -282,17 +282,20 @@ function chip(a, onRemove) {
 }
 // A file the model attached to its reply ({name, mime, size, ref}): images show as thumbnails; a click opens it, with Save.
 const SHOWN = /^image\/(png|jpeg|gif|webp)$/; // drawn from data: URLs; anything else (SVG can carry script) is only offered to save
-const thumbs = new Map(); // ref+type -> data: URL promise; a ref names its contents, so a redraw never reads and decrypts it again
+const thumbs = new Map(); // ref+type -> {p: data: URL promise, size}; a ref names its contents, so a redraw never reads and decrypts it again
+const THUMBS_MAX = 64 * 1024 * 1024; // file bytes kept as thumbnails; the least recently drawn go first
+let thumbBytes = 0;
+const dropThumb = (k) => { thumbBytes -= thumbs.get(k)?.size ?? 0; thumbs.delete(k); };
 const thumbOf = (f) => {
   const k = f.ref + ' ' + f.mime;
-  let p = thumbs.get(k);
-  if (!p) {
-    p = window.api.readAttachment(f.ref).then((b) => `data:${f.mime};base64,${b}`);
-    p.catch(() => thumbs.delete(k)); // try again next time
-    thumbs.set(k, p);
-    if (thumbs.size > 40) thumbs.delete(thumbs.keys().next().value); // the oldest; shortcut: by count, not size
-  }
-  return p;
+  let t = thumbs.get(k);
+  if (t) { thumbs.delete(k); thumbs.set(k, t); return t.p; } // most recent last
+  t = { p: window.api.readAttachment(f.ref).then((b) => `data:${f.mime};base64,${b}`), size: Number(f.size) || 0 };
+  const mine = t;
+  t.p.catch(() => { if (thumbs.get(k) === mine) dropThumb(k); }); // try again next time
+  thumbs.set(k, t); thumbBytes += t.size;
+  for (const old of thumbs.keys()) { if (thumbBytes <= THUMBS_MAX || old === k) break; dropThumb(old); }
+  return t.p;
 };
 function fileChip(f) {
   const img = SHOWN.test(f.mime), c = chip({ name: f.name, size: f.size, kind: img ? 'image' : 'file' });
@@ -1028,7 +1031,7 @@ addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); 
 $('input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch.matches) { e.preventDefault(); send(); } };
 
 // ---- Settings dialog: Appearance / Profiles / Search / Tools / Replies / Summaries ----
-const PANES = ['appearance', 'profiles', 'search', 'tools', 'replies', 'summaries', 'chats'];
+const PANES = ['appearance', 'profiles', 'search', 'tools', 'replies', 'summaries', 'chats', 'advanced'];
 let prefsDirty = false; // a Replies switch changed: redraw the open chat when the dialog closes
 function showPane(name, focus) {
   for (const n of PANES) {
@@ -1213,6 +1216,7 @@ let mcpDirty = false, mcpLoad = 0, mcpStatusSeq = 0;
 async function loadMcpPane() {
   const mine = ++mcpLoad; mcpDirty = false; $('mcperr').hidden = true;
   $('mcpon').checked = state.mcp.enabled; $('mcpconfig').value = '';
+  $('autoapprove').checked = state.mcp.autoApprove; $('adverr').hidden = true;
   if (settings.model && !toolsOk()) { $('mcperr').textContent = "The current model doesn't support tools, so it can't use these."; $('mcperr').hidden = false; }
   try { const c = await window.api.getMcpConfig(); if (mine === mcpLoad && !mcpDirty) $('mcpconfig').value = c; }
   catch (e) { if (mine === mcpLoad && !mcpDirty) { $('mcperr').textContent = cleanErr(e); $('mcperr').hidden = false; } }
@@ -1267,6 +1271,29 @@ $('mcpsave').onclick = async () => {
   toast(sent.trim() ? 'Servers saved' : 'Servers removed');
 };
 $('mcpreload').onclick = () => showMcpStatus(true);
+
+// ---- Advanced pane: approve every tool call. Turning it on needs the typed phrase; turning it off doesn't. ----
+const RISK_OK = /^i accept the risk\.?$/i;
+async function saveAutoApprove(on, err) {
+  err.hidden = true;
+  try { applyState(await window.api.saveMcp({ autoApprove: on })); return true; }
+  catch (e) { err.textContent = cleanErr(e); err.hidden = false; return false; }
+}
+$('autoapprove').onchange = async () => {
+  if ($('autoapprove').checked) { // stays off until the dialog says yes
+    $('autoapprove').checked = false;
+    /** @type {HTMLInputElement} */ ($('riskphrase')).value = ''; $('riskgo').disabled = true; $('riskerr').hidden = true;
+    $('riskdlg').showModal(); $('riskphrase').focus();
+  } else if (!(await saveAutoApprove(false, $('adverr')))) $('autoapprove').checked = state.mcp.autoApprove;
+};
+$('riskphrase').oninput = () => { $('riskgo').disabled = !RISK_OK.test(/** @type {HTMLInputElement} */ ($('riskphrase')).value.trim()); };
+$('riskcancel').onclick = () => $('riskdlg').close();
+$('riskform').onsubmit = async (e) => {
+  e.preventDefault();
+  if (!RISK_OK.test(/** @type {HTMLInputElement} */ ($('riskphrase')).value.trim())) return; // Enter before the phrase is typed
+  if (!(await saveAutoApprove(true, $('riskerr')))) return;
+  $('autoapprove').checked = state.mcp.autoApprove; $('riskdlg').close(); toast('Tools now run without asking');
+};
 
 // Before a tool runs: Deny, Allow once or Always allow. Escape, Back and anything else that closes the dialog mean Deny.
 // A file the model attaches by path or URL (`app`) is asked every time, so it gets no Always allow.

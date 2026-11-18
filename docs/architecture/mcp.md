@@ -37,6 +37,8 @@ The browser's return is host-specific and passed in as `{openUrl, listen}`:
 
 `replyTools(hub, store, {approve, onDelta, signal, readFile})` reads `store.mcpForReply()` once, configures the hub, turns failures into notes in the reply, and returns the gated set. `gated(set, {allowed, approve, readFile})` returns `{defs, has, label, files, call}`; `call` parses and checks the model's arguments, then asks `approve({server, tool, args})`, which resolves to `once`, `always` or `deny`. `always` is remembered with `store.allowMcpTool`; anything else than once/always means deny (`DECLINED` is the text the model sees).
 
+**Auto-approve** (Settings → Advanced, `mcp.autoApprove`, off by default): when `mcpForReply` reports it on, `replyTools`'s `approve` answers `once` without asking, so every tool call and every attach_file path or URL runs without a dialog, and nothing is saved to the allow-list. The page only turns it on after the user types "I accept the risk." in `#riskdlg`; turning it off needs no confirmation.
+
 The approval path to the page: `approver(sender)` in `main.js` (desktop) sends `mcp:approve` and waits for `mcp:answer`; a page that closes or crashes meanwhile denies. On phones, `approve` is the function registered with `onToolApproval`. Stop works while a dialog is open.
 
 ## Attaching files (`attach_file`)

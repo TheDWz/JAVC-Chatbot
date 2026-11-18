@@ -96,7 +96,10 @@ function exportName({ format = 'json', passphrase = '', now = Date.now() } = {})
 /** Persona id -> {user, bot}, the names a text export uses. */
 const personaNames = (personas) => Object.fromEntries(personas.map((p) => [p.id, { user: p.user, bot: p.bot }]));
 
-const validMessage = (m) => !!m && typeof m === 'object' && typeof m.role === 'string' && (m.files === undefined || Array.isArray(m.files));
+/** A reply's attachments ({name, mime, size, ref}); the page draws them and the chat store sweeps by `ref`. */
+const validAttachments = (a) => a === undefined || (Array.isArray(a) && a.every((f) => !!f && typeof f === 'object' && typeof f.name === 'string' && typeof f.ref === 'string'));
+const validMessage = (m) => !!m && typeof m === 'object' && typeof m.role === 'string' && (m.files === undefined || Array.isArray(m.files))
+  && validAttachments(m.attachments) && (m.versions === undefined || (Array.isArray(m.versions) && m.versions.every((v) => validAttachments(v?.attachments))));
 const validChat = (c) => !!c && typeof c === 'object' && typeof c.id === 'string' && /^[a-z0-9-]+$/.test(c.id)
   && Array.isArray(c.messages) && c.messages.every(validMessage) && Number.isFinite(c.updated) && (c.title === undefined || typeof c.title === 'string');
 /** The chats in an export file, unlocking it with `passphrase` if it is locked. Chats that don't look right are counted, not kept. */
@@ -118,13 +121,12 @@ async function readExport(t, passphrase = '') {
 
 /**
  * Saves imported chats into the store: new ids are added, and a chat already here is replaced only by a newer copy.
- * Their attached files are saved first; the store names a file by its contents, so the chats' references still match.
+ * The attached files of each chat that is saved go first; the store names a file by its contents, so the chats' references still match.
  * @param {{list(): Promise<{id: string, updated: number}[]>, save(chat: object): Promise<void>, saveFile(data: string): Promise<string>}} store The chat store.
  * @param {{chats: any[], skipped: number, files?: Record<string, string>}} got What readExport returned.
  * @returns {Promise<{added: number, updated: number, kept: number, skipped: number, ids: string[]}>} `ids` are the chats replaced.
  */
 async function mergeInto(store, { chats, skipped, files = {} }) {
-  for (const data of Object.values(files)) await store.saveFile(data);
   const have = new Map((await store.list()).map((c) => [c.id, c.updated])), newest = new Map();
   for (const c of chats) if (!newest.has(c.id) || c.updated > newest.get(c.id).updated) newest.set(c.id, c); // the same id twice: the newer copy
   let added = 0, kept = 0; const ids = [];
@@ -132,6 +134,7 @@ async function mergeInto(store, { chats, skipped, files = {} }) {
     if (!have.has(c.id)) added++;
     else if (c.updated > have.get(c.id)) ids.push(c.id);
     else { kept++; continue; }
+    for (const m of c.messages) for (const v of [m, ...(m.versions ?? [])]) for (const a of v?.attachments ?? []) if (Object.hasOwn(files, a.ref)) await store.saveFile(files[a.ref]);
     await store.save(c);
   }
   return { added, updated: ids.length, kept, skipped, ids };

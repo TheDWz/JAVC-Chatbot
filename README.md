@@ -86,7 +86,7 @@ Settings → Tools takes the same `mcpServers` JSON you would give Claude, and o
 { "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"] } } }
 ```
 
-- **Approval.** Every tool call shows a dialog first: **Deny**, **Allow once** or **Always allow**. <kbd>Esc</kbd> or the back button denies. "Always allow" is remembered per server and tool, and forgotten if that server's entry changes. A file the model attaches by path or URL is asked every time, without "Always allow".
+- **Approval.** Every tool call shows a dialog first: **Deny**, **Allow once** or **Always allow**. <kbd>Esc</kbd> or the back button denies. "Always allow" is remembered per server and tool, and forgotten if that server's entry changes. A file the model attaches by path or URL is asked every time, without "Always allow". Settings → Advanced can approve everything automatically, after you type "I accept the risk." This is not recommended.
 - **Local servers run on the desktop.** Servers with a `command` run as child processes of the desktop app. `npx` and `uvx` are found through your login shell's `PATH`, so nvm and `~/.local/bin` installs work even when the app is started from the desktop menu.
 - **Remote servers** use Streamable HTTP: `{"mcpServers": {"name": {"type": "http", "url": "https://…/mcp", "headers": {"Authorization": "Bearer …"}}}}`. They work on the desktop and on Android. `headers` is optional. A server that needs a browser sign-in (OAuth) shows a **Sign in** button in Settings → Tools; the app registers itself with that server and keeps the sign-in encrypted.
 - **Other forms.** A bare `{"name": {...}}` object, or a single entry on its own, works too.

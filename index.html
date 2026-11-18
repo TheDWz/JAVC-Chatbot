@@ -97,6 +97,17 @@
   #profile { max-width: 160px; }
   #templates { justify-content: flex-start; }
   .btn.danger { color: var(--err); border-color: var(--err-line); background: transparent; }
+  /* The auto-approve warning: a red badge by the title, a tinted callout, and a red Turn on that wakes once the phrase is typed */
+  #riskdlg .risk-head { display: flex; align-items: center; gap: 12px; }
+  #riskdlg .risk-head span { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; color: var(--err); background: var(--err-bg); border: 1px solid var(--err-line); flex-shrink: 0; }
+  #riskdlg .risk-head svg { width: 20px; height: 20px; }
+  .risk-box { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 16px; border: 1px solid var(--err-line); background: var(--err-bg); font-size: 13.5px; line-height: 1.5; }
+  .risk-box p { margin: 0; }
+  .risk-box strong { color: var(--err); }
+  #riskdlg .phrase { color: var(--text); font-weight: 650; user-select: all; }
+  #riskgo { background: #dc2626; border-color: #dc2626; /* the light theme's --err in both: white on dark mode's lighter red is too faint */ color: #fff; transition: background .15s, opacity .15s, filter .15s; }
+  #riskgo:hover:not(:disabled) { filter: brightness(1.08); }
+  #riskgo:disabled { background: transparent; border-color: var(--err-line); color: var(--err); opacity: .5; cursor: default; }
   .perr { margin: 0; color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
 
   /* Top bar */
@@ -584,6 +595,7 @@
       <button type="button" role="tab" id="tab-replies" data-pane="replies" aria-controls="pane-replies">Replies</button>
       <button type="button" role="tab" id="tab-summaries" data-pane="summaries" aria-controls="pane-summaries">Summaries</button>
       <button type="button" role="tab" id="tab-chats" data-pane="chats" aria-controls="pane-chats">Chats</button>
+      <button type="button" role="tab" id="tab-advanced" data-pane="advanced" aria-controls="pane-advanced">Advanced</button>
     </div>
     <div class="prefs-body">
       <button type="button" class="icon-btn prefs-close" id="prefsclose" title="Close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
@@ -621,7 +633,7 @@
       <section role="tabpanel" id="pane-tools" aria-labelledby="tab-tools" tabindex="0" hidden>
         <h3>MCP servers</h3>
         <p class="sub">Gives the model tools from <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer">MCP</a> servers, such as the ones for Blender, Godot or Unity. Paste the same <code>mcpServers</code> JSON you would give Claude. The editor's own plugin or addon still has to be installed in the editor.</p>
-        <label class="opt"><input type="checkbox" class="sw" id="mcpon"><span>Let models use MCP tools<small>Needs a model that supports tools. You're asked before every tool call.</small></span></label>
+        <label class="opt"><input type="checkbox" class="sw" id="mcpon"><span>Let models use MCP tools<small>Needs a model that supports tools. You're asked before every tool call, unless you turn that off in Advanced.</small></span></label>
         <label class="field">Servers (JSON)
           <span class="input"><textarea id="mcpconfig" spellcheck="false" autocomplete="off" placeholder='{
   "mcpServers": {
@@ -681,6 +693,12 @@
         <input type="file" id="impfile" accept=".json,application/json,text/plain" hidden>
         <p id="imperr" class="perr" role="alert" hidden></p>
         <div class="btns"><button type="button" class="btn" id="impbtn">Import chats…</button></div>
+      </section>
+      <section role="tabpanel" id="pane-advanced" aria-labelledby="tab-advanced" tabindex="0" hidden>
+        <h3>Tool approval</h3>
+        <p class="sub">Normally you approve each MCP tool call, and each file the model attaches from your computer or the web, before it happens.</p>
+        <label class="opt"><input type="checkbox" class="sw" id="autoapprove"><span>Approve all tool calls automatically<small>Tools and file attachments run without asking you first. Not recommended.</small></span></label>
+        <p id="adverr" class="perr" role="alert" hidden></p>
       </section>
     </div>
   </div>
@@ -742,6 +760,26 @@
   </form>
 </dialog>
 
+<dialog id="riskdlg" aria-labelledby="risktitle" aria-describedby="riskbox">
+  <form id="riskform" method="dialog">
+    <div class="risk-head">
+      <span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+      <h2 id="risktitle">Approve every tool call automatically?</h2>
+    </div>
+    <div class="risk-box" id="riskbox">
+      <p>Tools will run the moment the model calls them, and you won't get a chance to check them first. A model that misreads you, or a web page or file that slips instructions into the chat, could delete your work, send messages, spend money or read any file on this computer.</p>
+      <p>Only turn this on if you fully trust every MCP server you've added. <strong>We don't recommend it.</strong></p>
+    </div>
+    <label class="field"><span>Type <span class="phrase">I accept the risk.</span> to continue</span>
+      <span class="input"><input id="riskphrase" autocomplete="off" spellcheck="false" autocapitalize="off"></span>
+    </label>
+    <p id="riskerr" class="perr" role="alert" hidden></p>
+    <div class="btns">
+      <button type="button" class="btn" id="riskcancel">Cancel</button>
+      <button type="submit" class="btn" id="riskgo" disabled>Turn on</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="impdlg">
   <form id="impform" method="dialog">
     <h2>Protected export</h2>
