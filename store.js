@@ -104,19 +104,24 @@ module.exports = ({ io, crypto }) => {
     mcpServers: serial(async () => servers((await read()).mcp)),
     /** What a reply needs, from one read: {servers, allow}. */
     mcpForReply: serial(async () => { const m = (await read()).mcp; return { servers: await servers(m), allow: m.allow }; }),
+    /** Whether every tool call runs without asking; read at each call, so switching it off counts for a reply already running. */
+    mcpAutoApprove: serial(async () => (await read()).mcp.autoApprove),
     /**
-     * Saves {enabled, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
-     * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in.
+     * Saves {enabled, autoApprove, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
+     * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in; a new or changed server
+     * turns auto-approve off, since it was confirmed for the servers there were then.
      */
     saveMcp: serial(async (p) => {
       const st = await read();
       if (typeof p.enabled === 'boolean') st.mcp.enabled = p.enabled;
+      if (typeof p.autoApprove === 'boolean') st.mcp.autoApprove = p.autoApprove;
       if (typeof p.config === 'string') {
         const next = parseConfig(p.config);
         let prev = {}; try { prev = parseConfig(await keyOf(st.mcp, 'MCP servers')); } catch {} // unreadable: treat every server as new
         for (const name of new Set([...Object.keys(st.mcp.allow), ...Object.keys(st.mcp.auth)])) {
           if (!next[name] || JSON.stringify(prev[name]) !== JSON.stringify(next[name])) { delete st.mcp.allow[name]; delete st.mcp.auth[name]; }
         }
+        if (Object.keys(next).some((n) => JSON.stringify(prev[n]) !== JSON.stringify(next[n]))) st.mcp.autoApprove = false;
         delete st.mcp.keyEnc; delete st.mcp.keyPlain;
         if (p.config.trim()) Object.assign(st.mcp, await encKey(p.config.trim()));
         st.mcp.names = Object.keys(next);

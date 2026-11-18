@@ -478,7 +478,7 @@ function fileFrom(name, mime, bytes) {
 /** The file in content block `c` (the `i`th of its result): images, audio, binary resources, and text resources of a type other than plain text. */
 function fileOf(c, i) {
   const r = c?.type === 'resource' && isObj(c.resource) ? c.resource : null;
-  const textFile = typeof r?.text === 'string' && typeof r.mimeType === 'string' && r.mimeType !== 'text/plain';
+  const textFile = typeof r?.text === 'string' && typeof r.mimeType === 'string' && typeOf(r.mimeType, '') !== 'text/plain';
   const raw = c?.type === 'image' || c?.type === 'audio' ? c.data : typeof r?.blob === 'string' ? r.blob : textFile ? toB64(new TextEncoder().encode(r.text)) : null;
   if (typeof raw !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) return null;
   const bare = raw.replace(/=+$/, '');
@@ -767,10 +767,10 @@ function gated(set, { allowed, approve, readFile }) {
 }
 
 /**
- * The MCP tools for one reply, each call put to the user through `approve`; "Always allow" is saved. Servers that don't
+ * The MCP tools for one reply, each call put to the user through `approve` (unless `autoApprove` is on); "Always allow" is saved. Servers that don't
  * start, and a config that can't be read (a locked keyring), become notes in the reply instead of failing it.
  * @param {ReturnType<typeof makeHub>} hub
- * @param {{mcpForReply: () => Promise<{servers: object, allow: Record<string, string[]>}>, allowMcpTool: (server: string, tool: string) => Promise<unknown>}} store
+ * @param {{mcpForReply: () => Promise<{servers: object, allow: Record<string, string[]>}>, mcpAutoApprove: () => Promise<boolean>, allowMcpTool: (server: string, tool: string) => Promise<unknown>}} store
  * @param {{approve: (info: {server: string, tool: string, args: object}) => Promise<string>, onDelta: (d: object) => void, signal?: AbortSignal,
  *   readFile?: Parameters<typeof gated>[1]['readFile']}} reply `readFile` reads what attach_file names by path or URL.
  */
@@ -785,6 +785,7 @@ async function replyTools(hub, store, { approve, onDelta, signal, readFile }) {
     allowed: (server, tool) => !!allow[server]?.includes(tool),
     readFile,
     approve: async (info) => {
+      if (await store.mcpAutoApprove()) return 'once'; // Settings → Advanced: tool calls and attach_file paths/URLs run unasked
       const a = await approve(info);
       if (a === 'always' && !info.app) { await store.allowMcpTool(info.server, info.tool); (allow[info.server] ||= []).push(info.tool); } // counts for the rest of this reply too
       return a;

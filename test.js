@@ -264,9 +264,12 @@ test('backup: import rejects other files and drops chats with bad ids or shapes'
   await assert.rejects(Backup.readExport('{"app":"javc-chatbot","kind":"chats","version":2,"chats":[]}'), /newer version/);
   await assert.rejects(Backup.readExport('{"app":"javc-chatbot","kind":"chats-encrypted","version":2}', 'pw'), /newer version/);
   const bad = [{ id: '../evil', updated: 1, messages: [] }, { id: 'ok2', updated: 1 }, null, { id: 'm1', updated: 1, messages: [null] },
-    { id: 'm2', updated: 1, messages: [{ role: 'user', files: {} }] }, { id: 'm3', updated: 1, title: 5, messages: [] }]; // each would break opening the chat or the text export
+    { id: 'm2', updated: 1, messages: [{ role: 'user', files: {} }] }, { id: 'm3', updated: 1, title: 5, messages: [] },
+    { id: 'm4', updated: 1, messages: [{ role: 'assistant', attachments: 'x' }] }, { id: 'm5', updated: 1, messages: [{ role: 'assistant', attachments: [{ name: 'a' }] }] },
+    { id: 'm6', updated: 1, messages: [{ role: 'assistant', versions: [{ attachments: [null] }] }] },
+    { id: 'm7', updated: 1, messages: [{ role: 'assistant', versions: [null] }] }]; // each would break opening the chat or the text export
   const r = await Backup.readExport(JSON.stringify({ app: 'javc-chatbot', kind: 'chats', version: 1, chats: [sample()[0], ...bad] }));
-  assert.deepStrictEqual(r.chats.map((c) => c.id), ['c1']); assert.strictEqual(r.skipped, 6);
+  assert.deepStrictEqual(r.chats.map((c) => c.id), ['c1']); assert.strictEqual(r.skipped, 10);
 });
 
 test('backup: the text export is a readable transcript without reasoning', async () => {
@@ -1617,9 +1620,9 @@ test('mcp hub: a reply refuses calls to a server changed or removed meanwhile; a
 test('mcp replyTools: notes for servers that fail and a config that cannot be read; "always" is saved', async () => {
   const notes = [], saved = [];
   const onDelta = (d) => notes.push(d.reasoning);
-  const store = (servers) => ({ mcpForReply: async () => ({ servers, allow: {} }), allowMcpTool: async (s, t) => { saved.push(s + '/' + t); } });
+  const store = (servers) => ({ mcpForReply: async () => ({ servers, allow: {} }), mcpAutoApprove: async () => false, allowMcpTool: async (s, t) => { saved.push(s + '/' + t); } });
   const hub = Mcp.makeHub({ spawn: nodeSpawn });
-  const locked = { mcpForReply: async () => { throw new Error("Couldn't read the saved MCP servers"); }, allowMcpTool: async () => {} };
+  const locked = { mcpForReply: async () => { throw new Error("Couldn't read the saved MCP servers"); }, mcpAutoApprove: async () => false, allowMcpTool: async () => {} };
   assert.strictEqual(await Mcp.replyTools(hub, locked, { approve: async () => 'deny', onDelta }), undefined);
   assert.match(notes.pop(), /MCP tools are off for this reply: Couldn't read/);
   const needsAuth = { configure() {}, tools: async () => ({ ...fakeSet(), defs: [], failed: [{ name: 'rh', error: 'x', auth: true }] }) };
@@ -1633,6 +1636,21 @@ test('mcp replyTools: notes for servers that fail and a config that cannot be re
     assert.strictEqual(await tools.call('mcp__ed__echo', '{"t":"b"}'), 'echo:b cancelled:');
     assert.strictEqual(asked, 1); assert.deepStrictEqual(saved, ['ed/echo']);
   } finally { await hub.closeAll(); }
+});
+
+test('mcp replyTools: auto-approve runs tool calls and attach_file paths without asking or saving, checked at each call', async () => {
+  const ran = [], saved = [], asked = [];
+  let auto = true;
+  const hub = { configure() {}, tools: async () => fakeSet(ran) };
+  const store = { mcpForReply: async () => ({ servers: {}, allow: {} }), mcpAutoApprove: async () => auto, allowMcpTool: async (s, t) => { saved.push(s + '/' + t); } };
+  const readFile = async () => ({ name: 'a.txt', mime: 'text/plain', data: 'aGk=', size: 2 });
+  const tools = await Mcp.replyTools(/** @type {any} */ (hub), store, { approve: async (i) => { asked.push(i.tool); return 'deny'; }, onDelta: () => {}, readFile });
+  assert.strictEqual(await tools.call('mcp__ed__echo', '{"t":"x"}'), 'echoed x');
+  assert.match(await tools.call('attach_file', '{"path":"/tmp/a.txt"}'), /^Attached "a.txt"/);
+  assert.deepStrictEqual(ran, [{ t: 'x' }]); assert.deepStrictEqual(saved, []); assert.deepStrictEqual(asked, []);
+  auto = false; // switched off while the reply runs
+  assert.strictEqual(await tools.call('mcp__ed__echo', '{"t":"y"}'), Mcp.DECLINED);
+  assert.deepStrictEqual(asked, ['echo']); assert.deepStrictEqual(ran, [{ t: 'x' }]);
 });
 
 const fakeSet = (ran = []) => ({
@@ -1684,10 +1702,16 @@ test('chatStream with MCP tools: a failing tool becomes tool text, and Stop duri
 
 test('mcp settings: off by default, config encrypted and never exposed, bad pastes refused, changed servers lose "Always allow"', async () => {
   const { dir, file, store } = tmpStore();
-  assert.deepStrictEqual((await store.get()).mcp, { enabled: false, hasConfig: false, servers: [], allow: {} });
+  assert.deepStrictEqual((await store.get()).mcp, { enabled: false, autoApprove: false, hasConfig: false, servers: [], allow: {} });
   const cfg = JSON.stringify({ mcpServers: { ed: { command: 'npx', args: ['ed'], env: { TOKEN: 'secret-tok' } }, rh: { url: 'https://x.example/mcp' } } });
   let v = await store.saveMcp({ config: cfg, enabled: true });
-  assert.deepStrictEqual(v.mcp, { enabled: true, hasConfig: true, servers: ['ed', 'rh'], allow: {} });
+  assert.deepStrictEqual(v.mcp, { enabled: true, autoApprove: false, hasConfig: true, servers: ['ed', 'rh'], allow: {} });
+  assert.strictEqual((await store.saveMcp({ autoApprove: true })).mcp.autoApprove, true);
+  assert.strictEqual(await store.mcpAutoApprove(), true);
+  assert.strictEqual((await store.saveMcp({ config: cfg })).mcp.autoApprove, true); // the same servers: still on
+  const more = JSON.stringify({ mcpServers: { ...JSON.parse(cfg).mcpServers, nu: { url: 'https://new.example/mcp' } } });
+  assert.strictEqual((await store.saveMcp({ config: more })).mcp.autoApprove, false); // a new server wasn't confirmed
+  await store.saveMcp({ config: cfg });
   assert.ok(!fs.readFileSync(file, 'utf8').includes('secret-tok'));
   assert.strictEqual(await store.mcpConfig(), cfg);
   assert.deepStrictEqual(Object.keys(await store.mcpServers()), ['ed', 'rh']);
@@ -1700,7 +1724,7 @@ test('mcp settings: off by default, config encrypted and never exposed, bad past
   await store.saveMcp({ enabled: false });
   assert.deepStrictEqual(await store.mcpServers(), {});
   v = await store.saveMcp({ config: '' });
-  assert.deepStrictEqual(v.mcp, { enabled: false, hasConfig: false, servers: [], allow: {} });
+  assert.deepStrictEqual(v.mcp, { enabled: false, autoApprove: false, hasConfig: false, servers: [], allow: {} });
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -2010,13 +2034,14 @@ test('mcp resultText: files in a result are handed to keep, which says how to at
     { type: 'resource', resource: { uri: 'file:///out/scene%20one.glb', blob: PNG, mimeType: 'model/gltf-binary' } },
     { type: 'resource', resource: { uri: 'file:///a.gltf', text: '{"asset":{}}', mimeType: 'model/gltf+json' } },
     { type: 'resource', resource: { uri: 'file:///n.txt', text: 'plain', mimeType: 'text/plain' } },
+    { type: 'resource', resource: { uri: 'file:///m.txt', text: 'also plain', mimeType: 'Text/Plain; charset=utf-8' } },
     { type: 'audio', data: 'not base64!', mimeType: 'audio/wav' },
     { type: 'resource_link', name: 'out', uri: 'https://x.example/o.png' },
   ] };
   const text = Mcp.resultText(res, keepFn);
   assert.deepStrictEqual(kept.map((f) => [f.name, f.mime, f.size]), [['file-2.png', 'image/png', 14], ['scene_one.glb', 'model/gltf-binary', 14], ['a.gltf', 'model/gltf+json', 12]]);
   assert.strictEqual(Buffer.from(kept[2].data, 'base64').toString(), '{"asset":{}}');
-  assert.deepStrictEqual(text.split('\n'), ['Done.', '{"asset":{}}', 'plain', '[audio omitted]',
+  assert.deepStrictEqual(text.split('\n'), ['Done.', '{"asset":{}}', 'plain', 'also plain', '[audio omitted]',
     '[out: https://x.example/o.png. attach_file {"url": "https://x.example/o.png"} attaches it to your reply]', '[kept file-2.png]', '[kept scene_one.glb]', '[kept a.gltf]']);
   const long = Mcp.resultText({ content: [{ type: 'text', text: 'x'.repeat(30000) }, { type: 'image', data: PNG, mimeType: 'image/png' }] }, keepFn);
   assert.match(long, /\[cut off after 20000 characters\]\n\[kept file-2\.png\]$/); // the hint survives the cut
@@ -2028,7 +2053,7 @@ test('mcp attach_file: ids attach without asking; paths and URLs are approved fi
   let answer = 'once';
   const run = async (n, args, signal, keep) => keep({ name: args.t + '.png', mime: 'image/png', data: Buffer.from(args.t).toString('base64'), size: args.t.length });
   const hub = { configure() {}, tools: async () => ({ ...fakeSet(), run }) };
-  const store = { mcpForReply: async () => ({ servers: {}, allow: { ed: ['echo'] } }), allowMcpTool: async (...a) => { saved.push(a); } };
+  const store = { mcpForReply: async () => ({ servers: {}, allow: { ed: ['echo'] } }), mcpAutoApprove: async () => false, allowMcpTool: async (...a) => { saved.push(a); } };
   const readFile = async (ref) => { read.push(ref); if (ref.path === '/missing') throw new Error('ENOENT'); return { name: 'r.bin', mime: 'application/octet-stream', data: Buffer.from(ref.path || ref.url).toString('base64'), size: 9 }; };
   const mcp = await Mcp.replyTools(/** @type {any} */ (hub), store, { approve: async (i) => { asked.push(i); return answer; }, onDelta() {}, readFile });
   assert.ok(mcp.defs.some((d) => d.function.name === 'attach_file')); assert.ok(mcp.has('attach_file'));
@@ -2144,7 +2169,26 @@ test('backup: a JSON export carries the attached files, and import saves them ba
   const fresh = tmpChats();
   await Backup.mergeInto(fresh.store, read);
   assert.strictEqual(await fresh.store.readFile(ref), PNG);
+  const written = [], spy = { list: () => fresh.store.list(), save: async () => {}, saveFile: async (d) => { written.push(d); return ''; } };
+  await Backup.mergeInto(spy, { ...read, files: { ...read.files, 'a-unused.bin': 'eA==' } });
+  assert.deepStrictEqual(written, []); // c1 is already here, as new: none of its files, nor ones no chat uses, are written
+  const att = [{ name: 'p.png', ref }], twice = { id: 'c9', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: att, versions: [{ content: 'w', attachments: att }, { content: 'x', attachments: att }] }] };
+  await Backup.mergeInto(spy, { chats: [twice], skipped: 0, files: read.files });
+  assert.deepStrictEqual(written, [PNG]); // one file used three times is saved once
   for (const d of [dir, fresh.dir]) { fs.rmSync(d, { recursive: true }); fs.rmSync(d + '-set', { recursive: true, force: true }); }
+});
+
+test('chat store: a file left from a lost key is written again when the same file comes back', async () => {
+  const { dir, store } = tmpChats();
+  const ref = await store.saveFile(PNG);
+  await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.png', ref }] }] });
+  fs.rmSync(dir + '-set', { recursive: true }); // the key is gone, as after Start over; the sealed files stay
+  const next = makeChats(sealFor(dir).io);
+  assert.deepStrictEqual(await next.list(), []); // its chat can't be opened, so it's set aside
+  await assert.rejects(next.readFile(ref), /could not be decrypted/);
+  assert.strictEqual(await next.saveFile(PNG), ref); // an import brings the same bytes back
+  assert.strictEqual(await next.readFile(ref), PNG);
+  fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
 });
 
 test('mcp fetchFile: http(s) only, named from the URL and typed from the response, and cut off past 50 MB', async () => {
