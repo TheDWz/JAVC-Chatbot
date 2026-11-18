@@ -9,21 +9,23 @@
  * @param {import('./disk').DiskIo & {ready?(): Promise<void>, needsSeal?(name: string): Promise<boolean>, setAside?(name: string): Promise<void>}} io The chats folder:
  *   { read, write, remove, list } as in disk.js, optionally sealed.
  */
-module.exports = (io) => {
+const FILE = /^a-[0-9a-f]{64}\.bin$/;
+/** The files chat `c` uses, in any version of any message. */
+const filesOf = (c) => [...new Set((Array.isArray(c.messages) ? c.messages : []).flatMap((m) => [m, ...(Array.isArray(m?.versions) ? m.versions : [])])
+  .flatMap((m) => (Array.isArray(m?.attachments) ? m.attachments.map((a) => a?.ref) : [])).filter((r) => typeof r === 'string' && FILE.test(r)))];
+
+function makeChats(io) {
   /** The file name of chat `id`; rejects anything that isn't a plain id, so a name can never point outside the folder. */
   const file = (id) => {
     if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) throw new Error('Invalid chat id');
     return id + '.json';
   };
   const INDEX = '_index.json'; // '_' can't appear in an id, so it never collides with a chat
-  const FILE = /^a-[0-9a-f]{64}\.bin$/;
   const fileName = (ref) => { if (typeof ref !== 'string' || !FILE.test(ref)) throw new Error('Invalid file'); return ref; };
   const fresh = new Set(); // files saved since the app started: a reply's files are saved before its chat is, so they're never swept meanwhile
   let stored = null; // the file names in the folder, listed once, so saving 20 files doesn't list it 20 times
+  let lost = false; // chats were set aside as unreadable when it was listed: a key may have been lost (Start over)
   let swept = false;
-  /** The files chat `c` uses, in any version of any message. */
-  const filesOf = (c) => [...new Set((Array.isArray(c.messages) ? c.messages : []).flatMap((m) => [m, ...(Array.isArray(m?.versions) ? m.versions : [])])
-    .flatMap((m) => (Array.isArray(m?.attachments) ? m.attachments.map((a) => a?.ref) : [])).filter((r) => typeof r === 'string' && FILE.test(r)))];
   const entryOf = (c) => ({ id: c.id, title: c.title, updated: c.updated, personaId: c.personaId, files: filesOf(c) });
   /**
    * Deletes the files no chat in index `ix` uses. Skipped while that can't be known: an entry from an older version without
@@ -121,9 +123,9 @@ module.exports = (io) => {
       const hash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(data)));
       const name = `a-${Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('')}.bin`;
       const known = fresh.has(name); fresh.add(name);
-      stored ??= new Set(await io.list());
-      // one from an earlier run may be sealed with a lost key (after Start over): write it again unless it still reads
-      if (!stored.has(name) || (!known && !(await io.read(name).then((d) => d !== null, () => false)))) { await io.write(name, data); stored.add(name); }
+      if (!stored) { stored = new Set(await io.list()); lost = [...stored].some((n) => n.endsWith('.unreadable')); }
+      // after a lost key, one from an earlier run may be sealed with it: write it again unless it still reads (this decrypts it, so only then)
+      if (!stored.has(name) || (lost && !known && !(await io.read(name).then((d) => d !== null, () => false)))) { await io.write(name, data); stored.add(name); }
       return name;
     }),
     /** File `ref` as base64; an error if it's gone. */
@@ -159,4 +161,6 @@ module.exports = (io) => {
     return { ...rest, files: out };
   };
   return store;
-};
+}
+makeChats.filesOf = filesOf;
+module.exports = makeChats;

@@ -283,19 +283,25 @@ function chip(a, onRemove) {
 // A file the model attached to its reply ({name, mime, size, ref}): images show as thumbnails; a click opens it, with Save.
 const SHOWN = /^image\/(png|jpeg|gif|webp)$/; // drawn from data: URLs; anything else (SVG can carry script) is only offered to save
 const thumbs = new Map(); // ref+type -> {p: data: URL promise, size}; a ref names its contents, so a redraw never reads and decrypts it again
-const THUMBS_MAX = 64 * 1024 * 1024; // file bytes kept as thumbnails; the least recently drawn go first
-let thumbBytes = 0;
-const dropThumb = (k) => { thumbBytes -= thumbs.get(k)?.size ?? 0; thumbs.delete(k); };
+const THUMBS_MAX = 64 * 1024 * 1024; // characters of data: URLs kept; the least recently drawn go first
+let thumbChars = 0;
+const dropThumb = (k) => { thumbChars -= thumbs.get(k)?.size ?? 0; thumbs.delete(k); };
 const thumbOf = (f) => {
   const k = f.ref + ' ' + f.mime;
-  let t = thumbs.get(k);
+  const t = thumbs.get(k);
   if (t) { thumbs.delete(k); thumbs.set(k, t); return t.p; } // most recent last
-  t = { p: window.api.readAttachment(f.ref).then((b) => `data:${f.mime};base64,${b}`), size: Number(f.size) || 0 };
-  const mine = t;
-  t.p.catch(() => { if (thumbs.get(k) === mine) dropThumb(k); }); // try again next time
-  thumbs.set(k, t); thumbBytes += t.size;
-  for (const old of thumbs.keys()) { if (thumbBytes <= THUMBS_MAX || old === k) break; dropThumb(old); }
-  return t.p;
+  const mine = { p: null, size: 0 };
+  mine.p = window.api.readAttachment(f.ref).then((b) => {
+    const url = `data:${f.mime};base64,${b}`;
+    if (thumbs.get(k) === mine) { // counted once it's read, by what's really held
+      mine.size = url.length; thumbChars += url.length;
+      for (const old of thumbs.keys()) { if (thumbChars <= THUMBS_MAX || old === k) break; dropThumb(old); }
+    }
+    return url;
+  });
+  mine.p.catch(() => { if (thumbs.get(k) === mine) dropThumb(k); }); // try again next time
+  thumbs.set(k, mine);
+  return mine.p;
 };
 function fileChip(f) {
   const img = SHOWN.test(f.mime), c = chip({ name: f.name, size: f.size, kind: img ? 'image' : 'file' });
@@ -1253,10 +1259,14 @@ async function showMcpStatus(reload = false) {
   catch (e) { if (mine === mcpStatusSeq) $('mcplist').replaceChildren(mcpRow('Servers', cleanErr(e), true)); return; }
   if (mine === mcpStatusSeq) renderMcpStatus(list);
 }
-async function saveMcp(p) {
-  $('mcperr').hidden = true;
-  try { applyState(await window.api.saveMcp(p)); showMcpStatus(); return true; }
-  catch (e) { $('mcperr').textContent = cleanErr(e); $('mcperr').hidden = false; applyState(state); return false; }
+/** Saves MCP settings `p`; errors show in `err`. The server list redraws unless only auto-approve changed. */
+async function saveMcp(p, err = $('mcperr')) {
+  err.hidden = true;
+  try {
+    applyState(await window.api.saveMcp(p)); $('autoapprove').checked = state.mcp.autoApprove; // new servers turn it off
+    if (p.autoApprove === undefined) showMcpStatus();
+    return true;
+  } catch (e) { err.textContent = cleanErr(e); err.hidden = false; applyState(state); return false; }
 }
 $('mcpconfig').oninput = () => { mcpDirty = true; };
 $('mcpon').onchange = async () => {
@@ -1264,35 +1274,30 @@ $('mcpon').onchange = async () => {
   else if ($('mcpon').checked && !state.mcp.hasConfig && !mcpDirty) { $('mcperr').textContent = 'Paste your servers below and save.'; $('mcperr').hidden = false; }
 };
 $('mcpsave').onclick = async () => {
-  const sent = $('mcpconfig').value;
+  const sent = $('mcpconfig').value, auto = state.mcp.autoApprove;
   if (!(await saveMcp({ config: sent, ...(sent.trim() && { enabled: true }) }))) return; // saving servers turns MCP on
   $('mcpon').checked = state.mcp.enabled;
   if ($('mcpconfig').value === sent) mcpDirty = false; // typed again while saving: stays unsaved
-  toast(sent.trim() ? 'Servers saved' : 'Servers removed');
+  toast(!sent.trim() ? 'Servers removed' : auto && !state.mcp.autoApprove ? 'Servers saved. Auto-approve is off until you turn it on again' : 'Servers saved');
 };
 $('mcpreload').onclick = () => showMcpStatus(true);
 
 // ---- Advanced pane: approve every tool call. Turning it on needs the typed phrase; turning it off doesn't. ----
 const RISK_OK = /^i accept the risk\.?$/i;
-async function saveAutoApprove(on, err) {
-  err.hidden = true;
-  try { applyState(await window.api.saveMcp({ autoApprove: on })); return true; }
-  catch (e) { err.textContent = cleanErr(e); err.hidden = false; return false; }
-}
 $('autoapprove').onchange = async () => {
   if ($('autoapprove').checked) { // stays off until the dialog says yes
     $('autoapprove').checked = false;
     /** @type {HTMLInputElement} */ ($('riskphrase')).value = ''; $('riskgo').disabled = true; $('riskerr').hidden = true;
     $('riskdlg').showModal(); $('riskphrase').focus();
-  } else if (!(await saveAutoApprove(false, $('adverr')))) $('autoapprove').checked = state.mcp.autoApprove;
+  } else if (!(await saveMcp({ autoApprove: false }, $('adverr')))) $('autoapprove').checked = state.mcp.autoApprove;
 };
 $('riskphrase').oninput = () => { $('riskgo').disabled = !RISK_OK.test(/** @type {HTMLInputElement} */ ($('riskphrase')).value.trim()); };
 $('riskcancel').onclick = () => $('riskdlg').close();
 $('riskform').onsubmit = async (e) => {
   e.preventDefault();
   if (!RISK_OK.test(/** @type {HTMLInputElement} */ ($('riskphrase')).value.trim())) return; // Enter before the phrase is typed
-  if (!(await saveAutoApprove(true, $('riskerr')))) return;
-  $('autoapprove').checked = state.mcp.autoApprove; $('riskdlg').close(); toast('Tools now run without asking');
+  if (!(await saveMcp({ autoApprove: true }, $('riskerr')))) return;
+  $('riskdlg').close(); toast('Tools now run without asking');
 };
 
 // Before a tool runs: Deny, Allow once or Always allow. Escape, Back and anything else that closes the dialog mean Deny.

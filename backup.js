@@ -1,6 +1,7 @@
 // Chat export and import. An export is JSON (all chats, importable), plain text (for reading), or JSON locked with a
 // passphrase (PBKDF2 + AES-256-GCM). WebCrypto, like seal.js, so the hosts share it: they only collect, save and pick files.
 const { toB64, fromB64 } = require('./seal');
+const { filesOf } = require('./chats');
 
 const APP = 'javc-chatbot', ITERATIONS = 600000; // OWASP's PBKDF2-SHA256 figure
 // shortcut: an export is one string, so its files are capped (base64 characters; JS strings stop near 512 MB); export files apart if people need more
@@ -99,7 +100,7 @@ const personaNames = (personas) => Object.fromEntries(personas.map((p) => [p.id,
 /** A reply's attachments ({name, mime, size, ref}); the page draws them and the chat store sweeps by `ref`. */
 const validAttachments = (a) => a === undefined || (Array.isArray(a) && a.every((f) => !!f && typeof f === 'object' && typeof f.name === 'string' && typeof f.ref === 'string'));
 const validMessage = (m) => !!m && typeof m === 'object' && typeof m.role === 'string' && (m.files === undefined || Array.isArray(m.files))
-  && validAttachments(m.attachments) && (m.versions === undefined || (Array.isArray(m.versions) && m.versions.every((v) => validAttachments(v?.attachments))));
+  && validAttachments(m.attachments) && (m.versions === undefined || (Array.isArray(m.versions) && m.versions.every((v) => !!v && typeof v === 'object' && validAttachments(v.attachments))));
 const validChat = (c) => !!c && typeof c === 'object' && typeof c.id === 'string' && /^[a-z0-9-]+$/.test(c.id)
   && Array.isArray(c.messages) && c.messages.every(validMessage) && Number.isFinite(c.updated) && (c.title === undefined || typeof c.title === 'string');
 /** The chats in an export file, unlocking it with `passphrase` if it is locked. Chats that don't look right are counted, not kept. */
@@ -134,7 +135,7 @@ async function mergeInto(store, { chats, skipped, files = {} }) {
     if (!have.has(c.id)) added++;
     else if (c.updated > have.get(c.id)) ids.push(c.id);
     else { kept++; continue; }
-    for (const m of c.messages) for (const v of [m, ...(m.versions ?? [])]) for (const a of v?.attachments ?? []) if (Object.hasOwn(files, a.ref)) await store.saveFile(files[a.ref]);
+    for (const ref of filesOf(c)) if (Object.hasOwn(files, ref)) await store.saveFile(files[ref]);
     await store.save(c);
   }
   return { added, updated: ids.length, kept, skipped, ids };

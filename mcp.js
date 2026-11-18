@@ -770,7 +770,7 @@ function gated(set, { allowed, approve, readFile }) {
  * The MCP tools for one reply, each call put to the user through `approve` (unless `autoApprove` is on); "Always allow" is saved. Servers that don't
  * start, and a config that can't be read (a locked keyring), become notes in the reply instead of failing it.
  * @param {ReturnType<typeof makeHub>} hub
- * @param {{mcpForReply: () => Promise<{servers: object, allow: Record<string, string[]>, autoApprove?: boolean}>, allowMcpTool: (server: string, tool: string) => Promise<unknown>}} store
+ * @param {{mcpForReply: () => Promise<{servers: object, allow: Record<string, string[]>}>, mcpAutoApprove: () => Promise<boolean>, allowMcpTool: (server: string, tool: string) => Promise<unknown>}} store
  * @param {{approve: (info: {server: string, tool: string, args: object}) => Promise<string>, onDelta: (d: object) => void, signal?: AbortSignal,
  *   readFile?: Parameters<typeof gated>[1]['readFile']}} reply `readFile` reads what attach_file names by path or URL.
  */
@@ -785,7 +785,7 @@ async function replyTools(hub, store, { approve, onDelta, signal, readFile }) {
     allowed: (server, tool) => !!allow[server]?.includes(tool),
     readFile,
     approve: async (info) => {
-      if (mcp.autoApprove) return 'once'; // Settings → Advanced: tool calls and attach_file paths/URLs run unasked
+      if (await store.mcpAutoApprove()) return 'once'; // Settings → Advanced: tool calls and attach_file paths/URLs run unasked
       const a = await approve(info);
       if (a === 'always' && !info.app) { await store.allowMcpTool(info.server, info.tool); (allow[info.server] ||= []).push(info.tool); } // counts for the rest of this reply too
       return a;

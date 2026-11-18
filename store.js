@@ -102,11 +102,14 @@ module.exports = ({ io, crypto }) => {
     mcpConfig: serial(async () => keyOf((await read()).mcp, 'MCP servers')),
     /** The MCP servers ({name: entry}, see mcp.js), or {} when MCP is off or none are set up. */
     mcpServers: serial(async () => servers((await read()).mcp)),
-    /** What a reply needs, from one read: {servers, allow, autoApprove}. */
-    mcpForReply: serial(async () => { const m = (await read()).mcp; return { servers: await servers(m), allow: m.allow, autoApprove: m.autoApprove }; }),
+    /** What a reply needs, from one read: {servers, allow}. */
+    mcpForReply: serial(async () => { const m = (await read()).mcp; return { servers: await servers(m), allow: m.allow }; }),
+    /** Whether every tool call runs without asking; read at each call, so switching it off counts for a reply already running. */
+    mcpAutoApprove: serial(async () => (await read()).mcp.autoApprove),
     /**
      * Saves {enabled, autoApprove, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
-     * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in.
+     * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in; a new or changed server
+     * turns auto-approve off, since it was confirmed for the servers there were then.
      */
     saveMcp: serial(async (p) => {
       const st = await read();
@@ -118,6 +121,7 @@ module.exports = ({ io, crypto }) => {
         for (const name of new Set([...Object.keys(st.mcp.allow), ...Object.keys(st.mcp.auth)])) {
           if (!next[name] || JSON.stringify(prev[name]) !== JSON.stringify(next[name])) { delete st.mcp.allow[name]; delete st.mcp.auth[name]; }
         }
+        if (Object.keys(next).some((n) => JSON.stringify(prev[n]) !== JSON.stringify(next[n]))) st.mcp.autoApprove = false;
         delete st.mcp.keyEnc; delete st.mcp.keyPlain;
         if (p.config.trim()) Object.assign(st.mcp, await encKey(p.config.trim()));
         st.mcp.names = Object.keys(next);
