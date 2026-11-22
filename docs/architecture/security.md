@@ -30,7 +30,7 @@ The user, the app's own page and the provider they configured are trusted.
 | MCP sign-in is hijacked | PKCE (S256), `state`, issuer check, the `resource` parameter, https-only endpoints, tokens stored encrypted per server. |
 | A local MCP server outlives the app | Servers are stopped on quit, in their own process group on POSIX. |
 | A damaged file loses data | Atomic fsync'd writes; a damaged settings file is quarantined, not overwritten; chat list repair. |
-| An API key follows a redirect | Android's HTTP bridge follows redirects itself (at most 20; 307/308 keep the method and body, 303 and a POST's 301/302 become a GET): once a hop leaves the first URL's origin, only `Content-Type` and `Accept` go along, so no key or token header does. Smoke-tested. |
+| An API key follows a redirect | Android's HTTP bridge follows redirects itself (at most 20; 307/308 keep the method and body, 303 and a POST's 301/302 become a GET): https never redirects to http; once a hop leaves the first URL's origin, only a safelist of non-secret headers goes along, so no key, token or session header does; `redirect: 'manual'` and `'error'` are honored. The cross-origin case is smoke-tested. |
 | Path tricks in storage | Flat names only; chat ids match `^[a-z0-9-]+$`; native file paths are canonicalized under the app folder. |
 | Huge input | Rich pages capped at 2,000,000 characters; MCP output capped (32 MB per message from a server, 20,000 characters to the model); a reply's attached files capped (50 MB each, 20 per reply); user attachments limited in count and size. |
 

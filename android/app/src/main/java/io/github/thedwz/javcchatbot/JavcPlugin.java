@@ -80,6 +80,7 @@ public class JavcPlugin extends Plugin {
         final String method = call.getString("method", "GET");
         final JSObject headers = call.getObject("headers", new JSObject());
         final String body = call.getString("body");
+        final String redirect = call.getString("redirect", "follow"); // fetch's option: follow, manual (hand back the 3xx) or error
         if (id == null || url == null) {
             call.reject("Missing request id or URL");
             return;
@@ -93,7 +94,8 @@ public class JavcPlugin extends Plugin {
             try {
                 // Redirects are followed here: HttpURLConnection can't resend a streamed body, so it would hand back the 307 itself.
                 URL origin = new URL(url), u = origin;
-                String verb = method, sent = body;
+                String verb = method;
+                byte[] sent = body != null ? body.getBytes(StandardCharsets.UTF_8) : null; // encoded once, however many hops
                 Map<String, String> hs = new HashMap<>();
                 for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
                     String k = it.next();
@@ -112,25 +114,27 @@ public class JavcPlugin extends Plugin {
                     conn.setRequestMethod(verb);
                     for (Map.Entry<String, String> e : hs.entrySet()) conn.setRequestProperty(e.getKey(), e.getValue());
                     if (sent != null) {
-                        byte[] bytes = sent.getBytes(StandardCharsets.UTF_8);
                         conn.setDoOutput(true);
-                        conn.setFixedLengthStreamingMode(bytes.length);
+                        conn.setFixedLengthStreamingMode(sent.length);
                         try (OutputStream out = conn.getOutputStream()) {
-                            out.write(bytes);
+                            out.write(sent);
                         }
                     }
                     status = conn.getResponseCode();
                     String loc = conn.getHeaderField("Location");
-                    if (loc == null || (status != 301 && status != 302 && status != 303 && status != 307 && status != 308)) break;
+                    if (loc == null || (status != 301 && status != 302 && status != 303 && status != 307 && status != 308) || "manual".equals(redirect)) break;
+                    if ("error".equals(redirect)) throw new IOException("Redirected to " + loc);
                     if (hop == 20) throw new IOException("Too many redirects"); // fetch's limit, as on the desktop
-                    u = new URL(u, loc);
+                    URL next = new URL(u, loc);
+                    if ("https".equals(u.getProtocol()) && !"https".equals(next.getProtocol())) throw new IOException("Refused a redirect from https to " + next.getProtocol() + ", which would send the request unencrypted");
+                    u = next;
                     conn.disconnect();
                     if ((status == 303 && !"HEAD".equals(verb)) || (status <= 302 && "POST".equals(verb))) { // as fetch: these become a GET without the body
                         verb = "GET";
                         sent = null;
                         hs.keySet().removeIf(k -> k.equalsIgnoreCase("Content-Type"));
                     }
-                    if (!sameOrigin(origin, u)) hs.keySet().removeIf(k -> !k.equalsIgnoreCase("Content-Type") && !k.equalsIgnoreCase("Accept")); // keys and tokens stay with the first origin
+                    if (!sameOrigin(origin, u)) hs.keySet().removeIf(k -> !CROSS_ORIGIN.contains(k.toLowerCase(Locale.ROOT))); // keys, tokens and sessions stay with the first origin
                 }
                 JSObject h = new JSObject();
                 for (Map.Entry<String, List<String>> e : conn.getHeaderFields().entrySet()) {
@@ -166,6 +170,9 @@ public class JavcPlugin extends Plugin {
             }
         });
     }
+
+    /** The only request headers sent on after a redirect to another origin: a safelist, so no key header of any name slips through. */
+    private static final Set<String> CROSS_ORIGIN = new HashSet<>(Arrays.asList("content-type", "accept", "anthropic-version", "anthropic-beta", "mcp-protocol-version"));
 
     /** Whether two URLs share scheme, host and port (a missing port counts as the scheme's default). */
     private static boolean sameOrigin(URL a, URL b) {

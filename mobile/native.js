@@ -22,7 +22,7 @@ function makeNativeFetch(plugin) {
   });
 
   /** Starts the request; resolves once the status and headers arrive, and aborts through `opts.signal` like fetch. */
-  return async function nativeFetch(url, /** @type {{signal?: AbortSignal, method?: string, headers?: HeadersInit, body?: (string|null)}} */ opts = {}) {
+  return async function nativeFetch(url, /** @type {{signal?: AbortSignal, method?: string, headers?: HeadersInit, body?: (string|null), redirect?: string}} */ opts = {}) {
     await listening;
     const signal = opts.signal;
     if (signal?.aborted) throw abortError();
@@ -44,7 +44,7 @@ function makeNativeFetch(plugin) {
     let head;
     try {
       head = await Promise.race([
-        plugin.httpStart({ id, url: String(url), method: opts.method || 'GET', headers: Object.fromEntries(new Headers(opts.headers ?? {})), body: opts.body ?? null }), // plain object: a Headers instance (the Anthropic SDK sends one) crosses the bridge as {}
+        plugin.httpStart({ id, url: String(url), method: opts.method || 'GET', headers: Object.fromEntries(new Headers(opts.headers ?? {})), body: opts.body ?? null, redirect: opts.redirect || 'follow' }), // plain object: a Headers instance (the Anthropic SDK sends one) crosses the bridge as {}
         abortedStart,
       ]);
     } catch (e) {

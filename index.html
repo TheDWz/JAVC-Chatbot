@@ -243,7 +243,7 @@
   .composer { max-width: 760px; margin: 0 auto; display: flex; align-items: flex-end; gap: 2px; padding: 6px; border-radius: 26px; transition: border-color .15s; }
   .composer:focus-within { border-color: var(--ring); }
   .composer textarea { flex: 1; border: 0; outline: 0; background: transparent; resize: none; field-sizing: content; min-height: 36px; overflow-y: auto;
-    max-height: min(200px, calc(100dvh - var(--head-h, 55px) - env(safe-area-inset-bottom, 0px) - 32px)); /* the landscape keyboard leaves ~120px: stay between the header and it */ padding: 6px 8px; line-height: 1.5; }
+    max-height: min(200px, calc(100dvh - var(--head-h, 55px) - var(--foot-rest, 32px) - env(safe-area-inset-bottom, 0px))); /* the landscape keyboard leaves ~120px: stay between the header and it */ padding: 6px 8px; line-height: 1.5; }
   .composer textarea::placeholder { color: var(--faint); }
   .send { width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--grad); color: #fff; display: grid; place-items: center;
     cursor: pointer; flex-shrink: 0; transition: filter .15s; }

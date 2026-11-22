@@ -39,7 +39,8 @@ log('Device', device.model(), 'serial', device.serial());
 const sh = async (cmd) => (await device.shell(cmd)).toString();
 fs.mkdirSync(OUT, { recursive: true });
 
-let failed = null;
+let failed = null, rotation = null; // the device's [auto-rotate, rotation] while the landscape checks run
+const restoreRotation = async () => { await sh(`settings put system user_rotation ${rotation[1]}`); await sh(`settings put system accelerometer_rotation ${rotation[0]}`); };
 try {
   log('Installing', path.basename(apk));
   await device.installApk(fs.readFileSync(apk));
@@ -90,13 +91,18 @@ try {
     throw new Error('Smoke check failed: ' + what);
   };
 
-  log('Landscape with the keyboard up: a long draft stays on screen (#32)');
+  log('Landscape with the keyboard up and a file attached: a long draft stays on screen (#32)');
+  const setting = async (k, d) => { const v = (await sh(`settings get system ${k}`)).trim(); return /^\d+$/.test(v) ? v : d; }; // an unset one reads "null"
+  rotation = [await setting('accelerometer_rotation', '1'), await setting('user_rotation', '0')];
   await sh('settings put system accelerometer_rotation 0');
   await sh('settings put system user_rotation 1');
   await until('the app turns to landscape', () => page.evaluate(() => innerWidth > innerHeight));
+  const tall = await page.evaluate(() => innerHeight);
+  await page.setInputFiles('#picker', { name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('a note') }); // the attachments row sits in the footer too
+  await page.waitForSelector('#attachments > *');
   await tap('#input');
   await until('the keyboard opens on a tap', keyboardUp);
-  await until('the page shrinks above the keyboard', () => page.evaluate(() => innerHeight < 200));
+  await until('the page shrinks above the keyboard', () => page.evaluate((h) => innerHeight < h * 0.75, tall));
   await page.fill('#input', Array.from({ length: 20 }, (_, i) => 'Line ' + (i + 1)).join('\n'));
   await sleep(500);
   const box = await page.evaluate(() => {
@@ -121,7 +127,8 @@ try {
   if (!last || last.method !== 'POST' || last.auth || !last.body.includes('Say hello sideways')) throw new Error('Smoke check failed: a 308 to another origin keeps the POST and body but not the key (' + JSON.stringify(last && { method: last.method, auth: last.auth, body: last.body.length }) + ')');
   if (!(await page.textContent('.row.assistant:last-child .bubble')).includes(REPLY)) throw new Error('Smoke check failed: the redirected reply arrived');
 
-  await sh('settings put system user_rotation 0');
+  await restoreRotation();
+  rotation = null;
   await until('the app turns back to portrait', () => page.evaluate(() => innerWidth < innerHeight));
 
   log('Back with nothing open sends the app to the background');
@@ -137,7 +144,7 @@ try {
   const logcat = await sh('logcat -d -v brief').catch(() => '');
   fs.writeFileSync(path.join(OUT, 'android-smoke-logcat.txt'), logcat);
   if (/FATAL EXCEPTION/.test(logcat) && logcat.includes(PKG)) failed ??= new Error('The app crashed; see android-smoke-logcat.txt');
-  await sh('settings put system user_rotation 0').catch(() => {});
+  if (rotation) await restoreRotation().catch(() => {});
   await device.close();
   server.close();
   other.close();
