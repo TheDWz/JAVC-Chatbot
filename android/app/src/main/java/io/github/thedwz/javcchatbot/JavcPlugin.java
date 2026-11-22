@@ -91,28 +91,47 @@ public class JavcPlugin extends Plugin {
             HttpURLConnection conn = null;
             boolean answered = false;
             try {
-                URL u = new URL(url);
-                if (!"http".equals(u.getProtocol()) && !"https".equals(u.getProtocol())) throw new IOException("Only http and https URLs are supported");
-                conn = (HttpURLConnection) u.openConnection();
-                requests.put(id, conn);
-                if (stopped.contains(id)) throw new IOException("Stopped");
-                conn.setConnectTimeout(30_000);
-                conn.setReadTimeout(300_000); // the same 5 minutes Node's fetch waits on the desktop
-                conn.setUseCaches(false);
-                conn.setRequestMethod(method);
+                // Redirects are followed here: HttpURLConnection can't resend a streamed body, so it would hand back the 307 itself.
+                URL origin = new URL(url), u = origin;
+                String verb = method, sent = body;
+                Map<String, String> hs = new HashMap<>();
                 for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
                     String k = it.next();
-                    conn.setRequestProperty(k, headers.getString(k));
+                    hs.put(k, headers.getString(k));
                 }
-                if (body != null) {
-                    byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-                    conn.setDoOutput(true);
-                    conn.setFixedLengthStreamingMode(bytes.length);
-                    try (OutputStream out = conn.getOutputStream()) {
-                        out.write(bytes);
+                int status;
+                for (int hop = 0; ; hop++) {
+                    if (!"http".equals(u.getProtocol()) && !"https".equals(u.getProtocol())) throw new IOException("Only http and https URLs are supported");
+                    conn = (HttpURLConnection) u.openConnection();
+                    requests.put(id, conn);
+                    if (stopped.contains(id)) throw new IOException("Stopped");
+                    conn.setConnectTimeout(30_000);
+                    conn.setReadTimeout(300_000); // the same 5 minutes Node's fetch waits on the desktop
+                    conn.setUseCaches(false);
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setRequestMethod(verb);
+                    for (Map.Entry<String, String> e : hs.entrySet()) conn.setRequestProperty(e.getKey(), e.getValue());
+                    if (sent != null) {
+                        byte[] bytes = sent.getBytes(StandardCharsets.UTF_8);
+                        conn.setDoOutput(true);
+                        conn.setFixedLengthStreamingMode(bytes.length);
+                        try (OutputStream out = conn.getOutputStream()) {
+                            out.write(bytes);
+                        }
                     }
+                    status = conn.getResponseCode();
+                    String loc = conn.getHeaderField("Location");
+                    if (loc == null || (status != 301 && status != 302 && status != 303 && status != 307 && status != 308)) break;
+                    if (hop == 20) throw new IOException("Too many redirects"); // fetch's limit, as on the desktop
+                    u = new URL(u, loc);
+                    conn.disconnect();
+                    if ((status == 303 && !"HEAD".equals(verb)) || (status <= 302 && "POST".equals(verb))) { // as fetch: these become a GET without the body
+                        verb = "GET";
+                        sent = null;
+                        hs.keySet().removeIf(k -> k.equalsIgnoreCase("Content-Type"));
+                    }
+                    if (!sameOrigin(origin, u)) hs.keySet().removeIf(k -> !k.equalsIgnoreCase("Content-Type") && !k.equalsIgnoreCase("Accept")); // keys and tokens stay with the first origin
                 }
-                int status = conn.getResponseCode();
                 JSObject h = new JSObject();
                 for (Map.Entry<String, List<String>> e : conn.getHeaderFields().entrySet()) {
                     if (e.getKey() != null && e.getValue() != null) h.put(e.getKey().toLowerCase(Locale.ROOT), TextUtils.join(", ", e.getValue()));
@@ -146,6 +165,12 @@ public class JavcPlugin extends Plugin {
                 if (conn != null) conn.disconnect();
             }
         });
+    }
+
+    /** Whether two URLs share scheme, host and port (a missing port counts as the scheme's default). */
+    private static boolean sameOrigin(URL a, URL b) {
+        int pa = a.getPort() == -1 ? a.getDefaultPort() : a.getPort(), pb = b.getPort() == -1 ? b.getDefaultPort() : b.getPort();
+        return a.getProtocol().equals(b.getProtocol()) && a.getHost().equalsIgnoreCase(b.getHost()) && pa == pb;
     }
 
     /** Stops request `id`. A request that already finished is left alone, so nothing is remembered for it. */
@@ -487,12 +512,13 @@ public class JavcPlugin extends Plugin {
             try (OutputStream out = getContext().getContentResolver().openOutputStream(uri, "w")) { // a new document starts empty; some providers (Drive) refuse "wt"
                 if (out == null) throw new IOException("Could not open the file");
                 out.write(base64 ? Base64.decode(data, Base64.DEFAULT) : data.getBytes(StandardCharsets.UTF_8));
-                JSObject r = new JSObject();
-                r.put("saved", true);
-                call.resolve(r);
-            } catch (Exception e) {
+            } catch (Exception e) { // includes an error from close(), which is when some providers write the file
                 call.reject(message(e));
+                return;
             }
+            JSObject r = new JSObject();
+            r.put("saved", true);
+            call.resolve(r);
         });
     }
 

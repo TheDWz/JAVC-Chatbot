@@ -16,7 +16,7 @@
 2. `Lib.richFiles(html, files, tokens)` picks the attachments the HTML names as `attachment:<name>` and gives them a random token (`crypto.randomUUID`, kept in `tokens` for the run: the same files get the same token, so the same page is reused).
 3. The host calls `Lib.richDoc(html, color, scheme, flags, links)` — the same code everywhere — which returns `{doc, csp}`: the model's HTML with each `attachment:<name>` rewritten to its URL, wrapped in a page with a small script that reports its height, plus a Content-Security-Policy string. A name the HTML doesn't name is left alone; only the files of this reply are offered (see [security.md](security.md)).
 4. The host stores the page and returns a URL; the frame loads it. The page is served with `csp` as its CSP header, so the policy comes from the server side of the frame, not from the model's HTML. A file the frame loads is served from the same scheme or host, under `file/<token>/<name>`.
-5. The frame posts `{richHeight}` to the page; `renderer.js` matches `e.source` to a `.rich iframe` and sets its height, capped at 4000 px.
+5. The frame posts `{richHeight}` to the page; `renderer.js` matches `e.source` to a `.rich iframe` and sets its height, capped at 4000 px. If the chat was at the bottom, it scrolls down again, so a preview that grows after the reply finishes doesn't leave the end of the reply under the composer.
 
 Fenced-code Preview frames (`codeBox`) call `richFrame(code)` with no files, so a code sample can't load a reply's files.
 

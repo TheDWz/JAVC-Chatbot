@@ -200,7 +200,10 @@ function expandRich(html, files) {
 addEventListener('message', (e) => {
   const h = e.data?.richHeight; if (typeof h !== 'number') return;
   const f = [.../** @type {NodeListOf<HTMLIFrameElement>} */ (document.querySelectorAll('.rich iframe'))].find((x) => x.contentWindow === e.source);
-  if (f) f.style.height = Math.min(4000, Math.max(24, h)) + 'px';
+  if (!f) return;
+  const stick = nearBottom($('scroll')); // a reader at the bottom stays there as the frame grows; one who scrolled up keeps their place
+  f.style.height = Math.min(4000, Math.max(24, h)) + 'px';
+  if (stick) scrollDown();
 });
 
 function render(bubble, text, files) {
