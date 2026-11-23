@@ -2248,7 +2248,7 @@ test('backup: an export holds attached files up to its cap and counts the rest',
 const Make = require('./make');
 const JSZip = require('jszip');
 const makeLoad = async () => {
-  const pdfmake = require('pdfmake'), fonts = require('pdfmake/fonts/Roboto.js'), dir = path.dirname(fonts.Roboto.normal);
+  const pdfmake = require('pdfmake'), fonts = require('pdfmake/fonts/Roboto.js'), dir = path.resolve(path.dirname(fonts.Roboto.normal)); // resolved like the paths it's checked against (Windows mixes \ and /)
   pdfmake.setFonts(fonts); pdfmake.setUrlAccessPolicy(() => false); pdfmake.setLocalAccessPolicy((p) => path.resolve(p).startsWith(dir + path.sep));
   return { pdfmake, PptxGenJS: require('pptxgenjs'), JSZip, marked: require('marked').marked };
 };
