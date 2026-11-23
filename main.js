@@ -210,6 +210,9 @@ ipcMain.handle('file:save', async (e, ref, name, mime) => {
   return { saved: true };
 });
 
+// a PDF attached to a reply, drawn for the file dialog's preview (Lib.pdfPages)
+ipcMain.handle('file:pages', async (_e, ref) => Lib.pdfPages(require('pdf-parse').PDFParse, new Uint8Array(Buffer.from(await chats.readFile(ref), 'base64'))));
+
 ipcMain.handle('pdf:extract', async (_e, buf) => {
   const { PDFParse } = require('pdf-parse');
   const parser = new PDFParse({ data: new Uint8Array(buf) });

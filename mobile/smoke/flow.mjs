@@ -1,5 +1,5 @@
 // The smoke test's walk through the app on a phone-sized screen: create a profile, pick a model, use the back button,
-// stream a reply with a rich block, read a PDF, and have the model create files. `page` is a Playwright page; `back` presses the platform's back button.
+// stream a reply with a rich block, read a PDF, and have the model create files and preview them. `page` is a Playwright page; `back` presses the platform's back button.
 import { MODEL, REPLY, RICH_HEIGHT, FILE_REPLY } from './mock-api.mjs';
 
 /** Fails the smoke test with `what` unless `ok`. */
@@ -146,8 +146,8 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   const text = await page.evaluate(async (b64) => window.api.extractPdf(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer), tinyPdf('JAVC PDF OK'));
   check(text.includes('JAVC PDF OK'), `PDF text extracted (got ${JSON.stringify(text.slice(0, 80))})`);
 
-  log('The model creates a PDF and a spreadsheet; each is approved, attached and saved encrypted');
-  for (const [fmt, name, magic] of [['pdf', 'notes.pdf', '%PDF-'], ['xlsx', 'budget.xlsx', 'PK']]) {
+  log('The model creates a PDF and a spreadsheet; each is approved, attached, saved encrypted and previewed');
+  for (const [fmt, name, magic, shows] of [['pdf', 'notes.pdf', '%PDF-', 'img.ppage'], ['xlsx', 'budget.xlsx', 'PK', 'td']]) {
     const replies = await page.$$eval('.row.assistant .rfiles', (r) => r.length);
     await page.fill('#input', `Make a ${fmt} file`);
     await page.click('#send');
@@ -166,5 +166,9 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
       return null;
     }, name);
     check(head?.made === true && head.head.startsWith(magic), `${name} is saved and is a real ${fmt} (${JSON.stringify(head)})`);
+    await page.click('.row.assistant:last-of-type .rfiles .att'); // the file dialog previews it: a drawn page, or the sheet's cells
+    await page.waitForSelector(`#filepreview ${shows}`, { timeout: 30_000 });
+    check(fmt === 'pdf' || (await page.textContent('#filepreview')).includes('=SUM(B2:B2)'), `${name} is previewed in the file dialog`);
+    await page.click('#filedlg button[value="close"]');
   }
 }

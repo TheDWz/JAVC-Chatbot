@@ -2,5 +2,6 @@
 // (desktop) or mobile/main.js (Android) puts on window.
 declare const Lib: typeof import('./lib');
 declare const marked: typeof import('marked').marked;
+declare const JSZip: typeof import('jszip');
 // shortcut: the bridge is untyped; describe its methods here if calls to it start going wrong
 interface Window { api: any }

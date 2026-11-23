@@ -33,6 +33,7 @@ const copy = (from, to = from) => fs.copyFileSync(path.join(root, from), path.jo
 copy('renderer.js');
 copy('lib.js');
 copy('node_modules/marked/lib/marked.umd.js', 'vendor/marked.umd.js');
+copy('node_modules/jszip/dist/jszip.min.js', 'vendor/jszip.min.js'); // the file dialog's xlsx and pptx previews
 copy('node_modules/pdf-parse/dist/pdf-parse/web/pdf-parse.es.js', 'vendor/pdf-parse.es.js');
 copy('node_modules/pdf-parse/dist/pdf-parse/web/pdf.worker.mjs', 'vendor/pdf.worker.mjs');
 
@@ -44,6 +45,7 @@ const swap = (from, to) => {
 };
 swap('frame-src chatbot-sandbox:', `frame-src ${SANDBOX}`);
 swap('<script src="node_modules/marked/lib/marked.umd.js"></script>', '<script src="vendor/marked.umd.js"></script>');
+swap('<script src="node_modules/jszip/dist/jszip.min.js"></script>', '<script src="vendor/jszip.min.js"></script>');
 swap('<script src="renderer.js"></script>', '<script src="mobile.js"></script>\n<script src="renderer.js"></script>' + (selftest ? '\n<script src="selftest.js"></script>' : ''));
 fs.writeFileSync(path.join(out, 'index.html'), html);
 
