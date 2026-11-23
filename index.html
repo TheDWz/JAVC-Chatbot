@@ -304,6 +304,17 @@
   #filetitle, #filesub { overflow-wrap: anywhere; }
   #fileimg { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto 12px; border-radius: 12px; object-fit: contain; }
   #fileimg[hidden] { display: none; }
+  /* The file dialog's preview of a document (renderer.js showPreview) */
+  #filepreview { max-height: 70vh; overflow: auto; margin: 0 0 12px; font-size: 14px; overflow-wrap: anywhere; container-type: inline-size; }
+  #filepreview[hidden] { display: none; }
+  #filepreview .pnote { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  #filepreview h3 { font-size: 14px; margin: 14px 0 6px; } #filepreview h3:first-child { margin-top: 0; }
+  #filepreview > pre.ptext { white-space: pre-wrap; margin: 0; font: 13px/1.5 "JetBrains Mono", "Fira Code", ui-monospace, monospace; }
+  .ppage { display: block; max-width: 100%; margin: 0 auto 12px; border-radius: 12px; border: 1px solid var(--line); background: #fff; }
+  .slide { aspect-ratio: 16 / 9; display: flex; flex-direction: column; gap: .4em; padding: 5cqw 6cqw; margin: 0 0 6px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--surface); overflow: hidden; font-size: clamp(12px, 2.6cqw, 22px); }
+  #filepreview .slide h3 { font-size: 1.7em; margin: 0 0 .3em; } .slide p, .slide ul { margin: 0; } .slide ul { padding-left: 1.3em; }
+  .slide-notes { color: var(--muted); font-size: 13px; margin: 0 0 16px; white-space: pre-wrap; }
   /* Reasoning levels: a .selpop that opens above the composer's brain button */
   #reasonpop { width: min(300px, calc(100vw - 20px)); display: flex; flex-direction: column; }
   #reasonpop:not(:popover-open) { display: none; }
@@ -750,6 +761,7 @@
     <h2 id="filetitle"></h2>
     <p class="sub" id="filesub"></p>
     <img id="fileimg" alt="" hidden>
+    <div id="filepreview" class="md" hidden></div>
     <p id="fileerr" class="perr" hidden></p>
     <div class="btns">
       <button type="submit" class="btn" value="close">Close</button>

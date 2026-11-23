@@ -128,6 +128,8 @@ window.api = {
   saveChat: (chat) => chats.save(chat),
   deleteChat: (id) => chats.remove(id),
   readAttachment: (ref) => chats.readFile(ref),
+  /** Where the page finds the libraries the file dialog's previews load (renderer.js LIBS): the copies in www/vendor. */
+  libs: { jszip: 'vendor/jszip.min.js', pdf: 'vendor/pdf-parse.es.js', pdfWorker: 'vendor/pdf.worker.mjs' },
   /** Saves a file the model attached with the system's save screen; resolves {saved}. */
   saveAttachment: async (ref, name, mime) => {
     const { saved } = await Javc.saveFile({ name: Mcp.cleanName(name, 'file'), mime: String(mime || 'application/octet-stream'), data: await chats.readFile(ref), base64: true });

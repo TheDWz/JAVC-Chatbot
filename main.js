@@ -88,7 +88,7 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
 let makeLibs = null;
 /** The libraries create_file uses (make.js), loaded with its first file. pdfmake reads only its own fonts and fetches nothing. */
 const loadMake = () => (makeLibs ??= Promise.resolve().then(() => {
-  const pdfmake = require('pdfmake'), fonts = require('pdfmake/fonts/Roboto.js'), dir = path.dirname(fonts.Roboto.normal);
+  const pdfmake = require('pdfmake'), fonts = require('pdfmake/fonts/Roboto.js'), dir = path.resolve(path.dirname(fonts.Roboto.normal)); // resolved like the paths it's checked against (Windows mixes \ and /)
   pdfmake.setFonts(fonts); pdfmake.setUrlAccessPolicy(() => false); pdfmake.setLocalAccessPolicy((p) => path.resolve(p).startsWith(dir + path.sep));
   return { pdfmake, PptxGenJS: require('pptxgenjs'), JSZip: require('jszip'), marked: require('marked').marked };
 }).catch((e) => { makeLibs = null; throw e; }));

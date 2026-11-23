@@ -33,6 +33,7 @@ const copy = (from, to = from) => fs.copyFileSync(path.join(root, from), path.jo
 copy('renderer.js');
 copy('lib.js');
 copy('node_modules/marked/lib/marked.umd.js', 'vendor/marked.umd.js');
+copy('node_modules/jszip/dist/jszip.min.js', 'vendor/jszip.min.js'); // loaded by the file dialog's xlsx and pptx previews
 copy('node_modules/pdf-parse/dist/pdf-parse/web/pdf-parse.es.js', 'vendor/pdf-parse.es.js');
 copy('node_modules/pdf-parse/dist/pdf-parse/web/pdf.worker.mjs', 'vendor/pdf.worker.mjs');
 

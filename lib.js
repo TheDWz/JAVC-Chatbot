@@ -211,6 +211,42 @@
     ];
   }
 
+  // ---- Previews of a reply's files (the file dialog) ----
+  /** Which preview file `f` ({name, mime}) gets: 'pdf', 'xlsx', 'pptx', 'csv', 'md' or 'text'; null for none. */
+  function previewKind(f) {
+    const mime = String(f?.mime || '').toLowerCase(), ext = /\.([a-z0-9]+)$/i.exec(String(f?.name || ''))?.[1]?.toLowerCase();
+    if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
+    if (mime.includes('spreadsheetml.sheet') || ext === 'xlsx') return 'xlsx';
+    if (mime.includes('presentationml.presentation') || ext === 'pptx') return 'pptx';
+    if (mime === 'text/csv' || ext === 'csv') return 'csv';
+    if (mime === 'text/markdown' || ext === 'md' || ext === 'markdown') return 'md';
+    if (mime.startsWith('text/') || mime === 'application/json' || ext === 'txt' || ext === 'json') return 'text';
+    return null;
+  }
+  /** CSV text as rows of strings (quotes, "" inside them and CRLF handled), at most `max` rows; `more` when it had more. */
+  function csvRows(text, max = 500) {
+    const rows = []; let row = [], cell = '', q = false, i = 0;
+    const endRow = () => { row.push(cell); rows.push(row); row = []; cell = ''; };
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c; }
+      else if (c === '"') q = true;
+      else if (c === ',') { row.push(cell); cell = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; endRow(); if (rows.length > max) break; }
+      else cell += c;
+    }
+    if (cell || row.length) endRow();
+    return { rows: rows.slice(0, max), more: rows.length > max };
+  }
+  /** The first `max` pages of PDF `bytes` as PNG data: URLs, drawn with pdf-parse's `PDFParse` (Node or browser build), and the page count. */
+  async function pdfPages(PDFParse, bytes, max = 10) {
+    const parser = new PDFParse({ data: bytes });
+    try {
+      const r = await parser.getScreenshot({ first: max, desiredWidth: 1000, imageDataUrl: true, imageBuffer: false });
+      return { pages: r.pages.map((p) => p.dataUrl), total: r.total };
+    } finally { await parser.destroy(); }
+  }
+
   // Text files are inlined as fenced blocks; images become image_url parts.
   const IMG_ONLY = 'See the attached image(s).';
   function buildContent(text, atts) {
@@ -313,5 +349,5 @@
     return ids.filter((id) => terms.every((t) => id.toLowerCase().includes(t)));
   }
 
-  return { systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, richFiles, safeColor, RICH_MAX, fmtSize, fitSize, DEFAULT_CTX };
+  return { previewKind, csvRows, pdfPages, systemPrompt, requestMessages, summaryOf, contextTokens, summaryCut, summaryDue, summaryRequest, buildContent, editUser, addVersion, showVersion, matchModels, replyStats, chatStats, splitRich, renderHint, RENDER_KEYS, THEMES, cleanTheme, themeColors, richDoc, richFiles, safeColor, RICH_MAX, fmtSize, fitSize, DEFAULT_CTX };
 });

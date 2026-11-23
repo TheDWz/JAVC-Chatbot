@@ -321,12 +321,201 @@ function openFile(f, url) {
   $('filetitle').textContent = f.name; $('filesub').textContent = `${f.mime} · ${fmtSize(f.size)}`;
   img.hidden = !url; img.src = url; img.alt = f.name;
   $('fileerr').hidden = true;
+  showPreview(f);
   $('filesave').onclick = async () => {
     try { if ((await window.api.saveAttachment(f.ref, f.name, f.mime)).saved) { d.close(); toast('Saved'); } }
     catch (e) { $('fileerr').textContent = 'Could not save: ' + cleanErr(e); $('fileerr').hidden = false; } // a toast would sit under the dialog
   };
   d.showModal(); $('filesave').focus();
 }
+
+// ---- The file dialog's preview: a document drawn from the real file, read as data only (XML through DOMParser, Markdown
+// through mdBlocks, PDFs drawn by pdf.js with its worker). Each kind shows at most a set amount, and says so when there's more.
+const PREVIEW = { rows: 500, cols: 50, sheets: 20, slides: 100, text: 200_000, unzipped: 32 * 1024 * 1024 };
+// The libraries previews load on first use: node_modules on the desktop; mobile/main.js passes its www/vendor copies.
+const LIBS = window.api.libs ?? { jszip: 'node_modules/jszip/dist/jszip.min.js', pdf: 'node_modules/pdf-parse/dist/pdf-parse/web/pdf-parse.es.js', pdfWorker: 'node_modules/pdf-parse/dist/pdf-parse/web/pdf.worker.mjs' };
+/** `load` run once, the first time it's needed; a failed load is tried again next time. */
+const lazy = (load) => { let p = null; return () => (p ??= load().catch((e) => { p = null; throw e; })); };
+const loadZip = lazy(() => new Promise((resolve, reject) => {
+  const s = document.createElement('script'); s.src = LIBS.jszip;
+  s.onload = () => resolve(/** @type {any} */ (window).JSZip); s.onerror = () => reject(new Error("the zip reader couldn't load"));
+  document.head.append(s);
+}));
+const loadPdf = lazy(async () => {
+  const m = await import(new URL(LIBS.pdf, location.href).href);
+  m.PDFParse.setWorker(new URL(LIBS.pdfWorker, location.href).href);
+  return m.PDFParse;
+});
+/** Base64 as bytes; a plain loop, since files can be 50 MB. */
+const bytesOf = (b64) => { const s = atob(b64), out = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i); return out; };
+const pdfDrawn = new Map(); // ref -> its pages, for the last few PDFs, so opening one again doesn't draw it again
+function pdfOf(ref) {
+  let p = pdfDrawn.get(ref);
+  if (p) return p;
+  p = (async () => Lib.pdfPages(await loadPdf(), bytesOf(await window.api.readAttachment(ref))))();
+  p.catch(() => pdfDrawn.delete(ref));
+  pdfDrawn.set(ref, p);
+  if (pdfDrawn.size > 3) pdfDrawn.delete(pdfDrawn.keys().next().value);
+  return p;
+}
+let previewRun = 0; // the dialog's current preview; a slower earlier one that finishes late draws nothing
+async function showPreview(f) {
+  const box = $('filepreview'), kind = Lib.previewKind(f), run = ++previewRun;
+  box.hidden = !kind; box.replaceChildren();
+  if (!kind) return;
+  box.append(el('p', 'pnote', 'Loading preview…'));
+  let out;
+  try { out = await previewOf(kind, f); }
+  catch (e) { out = [el('p', 'pnote', "Couldn't preview this file: " + cleanErr(e))]; }
+  if (run === previewRun) box.replaceChildren(...out);
+}
+// base64 of PREVIEW.text * 4 bytes, which always holds more than PREVIEW.text characters (UTF-8 is at most 4 bytes each)
+const TEXT_B64 = Math.ceil((PREVIEW.text * 4) / 3) * 4;
+/** The elements that preview file `f` as `kind` (Lib.previewKind). */
+async function previewOf(kind, f) {
+  if (kind === 'pdf') {
+    const { pages, total } = await pdfOf(f.ref);
+    const imgs = pages.map((src, i) => { const im = /** @type {HTMLImageElement} */ (el('img', 'ppage')); im.src = src; im.alt = `Page ${i + 1}`; return im; });
+    return [...cutNote(total > pages.length, `${pages.length} of ${total} pages`), ...imgs];
+  }
+  const b64 = await window.api.readAttachment(f.ref);
+  if (kind === 'xlsx') return xlsxPreview(await unzip(b64));
+  if (kind === 'pptx') return pptxPreview(await unzip(b64));
+  return textPreview(kind, b64);
+}
+/** The preview of a text file (`kind` csv, md or text) from its base64; only the start of a big one is decoded. */
+function textPreview(kind, b64) {
+  const part = b64.length > TEXT_B64, text = new TextDecoder().decode(bytesOf(part ? b64.slice(0, TEXT_B64) : b64)); // a BOM is dropped by the decoder
+  if (kind === 'csv') { const { rows, more } = Lib.csvRows(text, PREVIEW.rows); return [...cutNote(more || part, more ? `the first ${PREVIEW.rows} rows` : 'the start of the file'), gridTable(rows)]; }
+  const cut = part || text.length > PREVIEW.text, shown = text.slice(0, PREVIEW.text);
+  const out = cutNote(cut, `the first ${PREVIEW.text.toLocaleString()} characters`);
+  if (kind === 'md') { const d = el('div'); mdBlocks(d, marked.lexer(shown, { gfm: true, breaks: true })); return [...out, d]; }
+  return [...out, el('pre', 'ptext', shown)];
+}
+const cutNote = (more, what) => (more ? [el('p', 'pnote', `Showing ${what}.`)] : []);
+/** Rows of strings as a table, the first row as its header; short rows are padded, so every row has every column. */
+function gridTable(rows) {
+  const wrap = el('div', 'tablewrap'), table = el('table'), head = el('thead'), body = el('tbody'), width = Math.max(0, ...rows.map((r) => r.length));
+  const tr = (tag, r) => { const t = el('tr'); for (let i = 0; i < width; i++) t.append(el(tag, null, r[i] ?? '')); return t; };
+  if (rows.length) head.append(tr('th', rows[0]));
+  body.append(...rows.slice(1).map((r) => tr('td', r)));
+  table.append(head, body); wrap.append(table);
+  return wrap;
+}
+/**
+ * A zip (base64) as a function from an entry's path to its text (null when it isn't there). The size a zip states can lie,
+ * so the bytes are counted as they unpack, for all the entries read together, and reading stops past PREVIEW.unzipped.
+ */
+async function unzip(b64) {
+  const zip = await (await loadZip()).loadAsync(b64, { base64: true });
+  let left = PREVIEW.unzipped;
+  return async (name) => {
+    const e = zip.file(name);
+    if (!e) return null;
+    const parts = []; let n = 0;
+    await new Promise((resolve, reject) => {
+      const s = e.internalStream('uint8array');
+      s.on('data', (c) => {
+        n += c.length;
+        if (n > left) { s.pause(); reject(new Error(`it unpacks to over ${PREVIEW.unzipped / 1024 / 1024} MB`)); } else parts.push(c);
+      }).on('error', reject).on('end', resolve).resume();
+    });
+    left -= n;
+    const all = new Uint8Array(n); let o = 0;
+    for (const p of parts) { all.set(p, o); o += p.length; }
+    return new TextDecoder().decode(all);
+  };
+}
+const xmlOf = (text) => { const d = new DOMParser().parseFromString(text, 'application/xml'); if (d.querySelector('parsererror')) throw new Error('the file is damaged'); return d; };
+/** Elements named `local` (any namespace prefix) under `node`. */
+const tags = (node, local) => [...node.getElementsByTagNameNS('*', local)];
+/** A part's relationship id (`r:id`, any prefix): the namespaced `id`, not a plain one (a slide's `sldId` has both). */
+const relId = (node) => [...node.attributes].find((a) => a.localName === 'id' && a.namespaceURI)?.value ?? null;
+/** Relationship id -> target path, from a part's .rels file; targets are resolved against the part's folder. */
+async function relsOf(read, part) {
+  const dir = part.slice(0, part.lastIndexOf('/') + 1), text = await read(dir + '_rels/' + part.slice(dir.length) + '.rels'), out = new Map();
+  if (!text) return out;
+  for (const r of tags(xmlOf(text), 'Relationship')) {
+    const t = r.getAttribute('Target') || '', parts = (t.startsWith('/') ? t.slice(1) : dir + t).split('/'), path = [];
+    for (const p of parts) { if (p === '..') path.pop(); else if (p && p !== '.') path.push(p); }
+    out.set(r.getAttribute('Id'), { path: path.join('/'), type: r.getAttribute('Type') || '' });
+  }
+  return out;
+}
+/** A string item's text: its runs, without the phonetic reading (`rPh`) some languages add. */
+const runsOf = (node) => tags(node, 't').filter((t) => t.parentNode?.localName !== 'rPh').map((t) => t.textContent).join('');
+/** Column letters of cell reference `r` ("AB12") as a 0-based index. */
+const colOf = (r) => { let n = 0; for (const ch of /^[A-Z]+/.exec(r || '')?.[0] || '') n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
+async function xlsxPreview(read) {
+  const book = xmlOf(await read('xl/workbook.xml') || ''), rels = await relsOf(read, 'xl/workbook.xml');
+  const shared = await read('xl/sharedStrings.xml'), strings = shared ? tags(xmlOf(shared), 'si').map(runsOf) : [];
+  const sheets = tags(book, 'sheet'), out = cutNote(sheets.length > PREVIEW.sheets, `the first ${PREVIEW.sheets} sheets`);
+  for (const s of sheets.slice(0, PREVIEW.sheets)) {
+    const path = rels.get(relId(s))?.path, text = path && (await read(path));
+    out.push(el('h3', null, s.getAttribute('name') || 'Sheet'));
+    if (!text) { out.push(el('p', 'pnote', 'This sheet is empty.')); continue; }
+    const rows = [];
+    let wide = false, long = false;
+    for (const row of tags(xmlOf(text), 'row')) {
+      const r = parseInt(row.getAttribute('r') || '', 10), at = r > 0 ? r - 1 : rows.length; // rows with nothing in them aren't written: keep their place
+      if (at >= PREVIEW.rows) { long = true; break; }
+      const cells = [];
+      for (const c of tags(row, 'c')) {
+        const ref = c.getAttribute('r'), i = ref && colOf(ref) >= 0 ? colOf(ref) : cells.length; // `r` may be left out: the next column
+        if (i >= PREVIEW.cols) { wide = true; continue; }
+        const t = c.getAttribute('t'), v = tags(c, 'v')[0]?.textContent, f = tags(c, 'f')[0]?.textContent;
+        let val = t === 'inlineStr' ? runsOf(c) : t === 's' ? strings[+v] ?? '' : t === 'b' ? (v === '1' ? 'TRUE' : 'FALSE') : v ?? '';
+        if (v === undefined && f) val = '=' + f; // no saved result: Excel works it out on opening
+        cells[i] = val;
+      }
+      rows[at] = Array.from(cells, (x) => x ?? '');
+    }
+    out.push(...cutNote(long || wide, `the first ${PREVIEW.rows} rows and ${PREVIEW.cols} columns`), gridTable(Array.from(rows, (r) => r ?? [])));
+  }
+  return out;
+}
+/**
+ * A slide part's title and paragraphs ({text, bullet}). The title is the shape with a title placeholder or, on slides made
+ * without placeholders (pptxgenjs, so create_file's), the first line. Lines are bulleted when they say so, or when they sit in
+ * a body placeholder (PowerPoint's content boxes, which get their bullets from the layout) and don't turn bullets off.
+ */
+function slideText(doc) {
+  let title = null; const paras = [];
+  for (const sp of tags(doc, 'sp')) {
+    const ph = tags(sp, 'ph')[0], type = ph ? ph.getAttribute('type') || 'body' : null; // a placeholder with no type is a content box
+    const lines = tags(sp, 'p').map((p) => ({ text: tags(p, 't').map((t) => t.textContent).join(''),
+      bullet: tags(p, 'buChar').length + tags(p, 'buAutoNum').length > 0 || ((type === 'body' || type === 'obj') && !tags(p, 'buNone').length) })).filter((x) => x.text.trim());
+    if (title === null && (type === 'title' || type === 'ctrTitle')) title = lines.map((x) => x.text).join(' ');
+    else paras.push(...lines);
+  }
+  if (title === null && paras.length) title = paras.shift().text;
+  return { title, paras };
+}
+async function pptxPreview(read) {
+  const pres = xmlOf(await read('ppt/presentation.xml') || ''), rels = await relsOf(read, 'ppt/presentation.xml');
+  const ids = tags(pres, 'sldId'), out = cutNote(ids.length > PREVIEW.slides, `the first ${PREVIEW.slides} slides`);
+  for (const [k, id] of ids.slice(0, PREVIEW.slides).entries()) {
+    const path = rels.get(relId(id))?.path, text = path && (await read(path));
+    if (!text) continue;
+    const { title, paras } = slideText(xmlOf(text)), card = el('div', 'slide');
+    card.ariaLabel = `Slide ${k + 1}`;
+    if (title) card.append(el('h3', null, title));
+    for (const p of paras) { // bulleted lines in a row share one list
+      if (!p.bullet) { card.append(el('p', null, p.text)); continue; }
+      const last = card.lastElementChild, ul = last?.tagName === 'UL' ? last : card.appendChild(el('ul'));
+      ul.append(el('li', null, p.text));
+    }
+    out.push(card);
+    const notesPath = [...(await relsOf(read, path)).values()].find((r) => r.type.endsWith('/notesSlide'))?.path, notes = notesPath && (await read(notesPath));
+    // the notes page also repeats the slide image and number; its body placeholder holds the notes
+    const body = notes && tags(xmlOf(notes), 'sp').find((sp) => tags(sp, 'ph').some((ph) => ph.getAttribute('type') === 'body'));
+    const said = body ? tags(body, 'p').map((p) => tags(p, 't').map((t) => t.textContent).join('')).join('\n').trim() : '';
+    if (said) out.push(el('p', 'slide-notes', 'Notes: ' + said));
+  }
+  if (!ids.length) out.push(el('p', 'pnote', 'This presentation has no slides.'));
+  return out;
+}
+
 function renderChips() {
   $('attachments').replaceChildren(...pending.map((a, i) => chip(a, () => { pending.splice(i, 1); renderChips(); })));
 }
