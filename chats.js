@@ -132,10 +132,10 @@ function makeChats(io) {
       if (!stored.has(name) || (lost && !known && !(await io.read(name).then((d) => d !== null, () => false)))) { await io.write(name, data); stored.add(name); }
       return name;
     }),
-    /** File `ref` as base64; an error if it's gone. */
+    /** File `ref` as base64; an error (code `GONE`) if it's gone. */
     async readFile(ref) {
       const data = await io.read(fileName(ref));
-      if (data === null) throw new Error('This file is no longer saved');
+      if (data === null) throw Object.assign(new Error('This file is no longer saved'), { code: 'GONE' });
       return data;
     },
     /** Seals any file still saved as plain text (from before encryption). Returns how many it sealed. */

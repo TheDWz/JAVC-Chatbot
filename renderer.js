@@ -454,8 +454,9 @@ const LEVELS = [
 ];
 let modelInfo = {};
 // Models that say they lack `tools` get no search. After a restart modelInfo is empty, so fall back to the flag saved with the profile.
-// a model that turned tools down once (api.js chatStream's fallback) gets none until Settings → Tools offers them again
-const toolsOk = () => !settings.noToolsFor?.includes(settings.model) && (modelInfo[settings.model] ? modelInfo[settings.model].tools !== false : !settings.noTools);
+const toolsOk = () => (modelInfo[settings.model] ? modelInfo[settings.model].tools !== false : !settings.noTools);
+// a model that turned create_file down once (api.js chatStream's fallback) isn't offered it until Settings → Tools does again; search and MCP are unaffected
+const filesOk = () => toolsOk() && state.files.create && !settings.noFilesFor?.includes(settings.model);
 // The chat model's context limit: from its model list (or, after a restart, the copy saved with the profile); when the list gives none,
 // the user's number for unlisted models, or 300K.
 const ctxLimit = () => (modelInfo[settings.model] ? modelInfo[settings.model].ctx : settings.ctx) || (state.contextLimit.on ? state.contextLimit.tokens : Lib.DEFAULT_CTX);
@@ -739,10 +740,10 @@ async function generate(base) {
       reply.delta(d);
     };
     const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render, files: state.files.feedBack }), onDelta,
-      { search: toolsOk(), mcp: toolsOk() && state.mcp.enabled, files: toolsOk() && state.files.create });
-    if (out.noTools && !settings.noToolsFor?.includes(model)) { // the request with create_file failed and the one without worked: remember that
-      settings.noToolsFor = [...(settings.noToolsFor || []), model];
-      window.api.patchSettings({ noToolsFor: settings.noToolsFor }).then(applyState, () => {});
+      { search: toolsOk(), mcp: toolsOk() && state.mcp.enabled, files: filesOk() });
+    if (out.noTools && !settings.noFilesFor?.includes(model)) { // the request with create_file failed and the one without worked: remember that
+      settings.noFilesFor = [...(settings.noFilesFor || []), model];
+      window.api.patchSettings({ noFilesFor: settings.noFilesFor }).then(applyState, () => {});
     }
     const t2 = performance.now(); if (pauseAt) paused += t2 - pauseAt;
     const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, sent: out.sent, text: out.content + out.reasoning, sawReasoning, cost: out.cost });
@@ -1203,7 +1204,7 @@ function loadFilesPane() {
   $('filecreate').checked = f.create; $('fileask').checked = f.ask; $('filefeed').checked = f.feedBack;
   $('fileask').disabled = $('filefeed').disabled = !f.create;
   $('filekeep').value = String(f.keepDays); refreshSel($('filekeep'));
-  $('filenote').hidden = !settings.noToolsFor?.includes(settings.model);
+  $('filenote').hidden = !settings.noFilesFor?.includes(settings.model);
 }
 async function saveFiles(p) {
   try { applyState(await window.api.patchSettings({ files: p })); }
@@ -1214,10 +1215,10 @@ $('filecreate').onchange = () => saveFiles({ create: $('filecreate').checked });
 $('fileask').onchange = () => saveFiles({ ask: $('fileask').checked });
 $('filefeed').onchange = () => saveFiles({ feedBack: $('filefeed').checked });
 $('filekeep').onchange = () => saveFiles({ keepDays: Number($('filekeep').value) });
-$('filetools').onclick = async () => { // Settings → Tools: offer tools to a model that turned them down once
-  settings.noToolsFor = (settings.noToolsFor || []).filter((m) => m !== settings.model);
-  try { applyState(await window.api.patchSettings({ noToolsFor: settings.noToolsFor })); } catch (e) { showError(cleanErr(e)); }
-  loadFilesPane(); toast('Tools will be offered again');
+$('filetools').onclick = async () => { // Settings → Tools: offer file creation again to a model that turned it down once
+  settings.noFilesFor = (settings.noFilesFor || []).filter((m) => m !== settings.model);
+  try { applyState(await window.api.patchSettings({ noFilesFor: settings.noFilesFor })); } catch (e) { showError(cleanErr(e)); }
+  loadFilesPane(); toast('File creation will be offered again');
 };
 
 // ---- Search pane: the key is fetched only when the pane opens, and an untouched field never overwrites the stored one ----

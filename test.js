@@ -2235,12 +2235,12 @@ test('chat store: no sweep while a chat file is left out of the index (it failed
   fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
 });
 
-test('backup: an export holds attached files up to its cap and counts the rest', async () => {
+test('backup: an export holds attached files up to its cap and counts the rest, but not ones already gone', async () => {
   const { dir, store } = tmpChats();
   const a = await store.saveFile(PNG), b = await store.saveFile(Buffer.from('second file').toString('base64'));
   await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a', ref: a }, { name: 'b', ref: b }, { name: 'c', ref: 'a-' + '0'.repeat(64) + '.bin' }] }] });
   const got = await Backup.collect(store, true, PNG.length);
-  assert.deepStrictEqual([Object.keys(got.files), got.filesMissed], [[a], 2]); // b doesn't fit, c is gone
+  assert.deepStrictEqual([Object.keys(got.files), got.filesMissed], [[a], 1]); // b doesn't fit; c is already gone, so the export loses nothing
   fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
 });
 
@@ -2398,7 +2398,7 @@ test('requestMessages: created files go back with their reply when asked, and no
   assert.ok(Lib.contextTokens(chat, null, { files: true }) > Lib.contextTokens(chat, null, {}));
 });
 
-test('settings: files has defaults, keeps valid values and round-trips through patch; noToolsFor is per profile', async () => {
+test('settings: files has defaults, keeps valid values and round-trips through patch; noFilesFor is per profile', async () => {
   assert.deepStrictEqual(profiles.cleanFiles(undefined), { create: true, ask: true, feedBack: true, keepDays: 0 });
   assert.deepStrictEqual(profiles.cleanFiles({ create: false, ask: 'no', keepDays: 3 }), { create: false, ask: true, feedBack: true, keepDays: 0 });
   const { store } = tmpStore();
@@ -2408,6 +2408,6 @@ test('settings: files has defaults, keeps valid values and round-trips through p
   assert.deepStrictEqual(await store.filesForReply(), { ask: true, keepDays: 30 });
   await store.allowCreate();
   assert.strictEqual((await store.get()).files.ask, false);
-  v = await store.patch({ noToolsFor: ['m1', 5, 'm2'] });
-  assert.deepStrictEqual(v.profiles[0].noToolsFor, ['m1', 'm2']);
+  v = await store.patch({ noFilesFor: ['m1', 5, 'm2'] });
+  assert.deepStrictEqual(v.profiles[0].noFilesFor, ['m1', 'm2']);
 });

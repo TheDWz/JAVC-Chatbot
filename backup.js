@@ -14,7 +14,7 @@ const newer = () => new Error('This export is from a newer version of the app. U
 /**
  * Every chat in full, oldest list entry last; a chat that can't be read (another key, damage) is left out and counted.
  * `files` (ref -> base64) holds the files the model attached to their replies (read only `withFiles`); one that can't be read,
- * or doesn't fit in `max` characters, is left out and counted in `filesMissed`.
+ * or doesn't fit in `max` characters, is left out and counted in `filesMissed`. One already gone (an expired created file) isn't counted: the export loses nothing.
  */
 async function collect(chats, withFiles = true, max = EXPORT_FILES_MAX) {
   const out = [], files = {}; let missed = 0, filesMissed = 0, size = 0;
@@ -23,7 +23,7 @@ async function collect(chats, withFiles = true, max = EXPORT_FILES_MAX) {
     if (withFiles) {
       for (const ref of Array.isArray(refs) ? refs : []) {
         if (ref in files) continue;
-        let data = null; try { data = await chats.readFile(ref); } catch {}
+        let data = null; try { data = await chats.readFile(ref); } catch (e) { if (e?.code === 'GONE') continue; }
         if (data === null || size + data.length > max) { filesMissed++; continue; }
         files[ref] = data; size += data.length;
       }

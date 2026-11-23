@@ -166,7 +166,7 @@ module.exports = ({ io, crypto }) => {
       const own = {}; for (const k of ['model', 'meta']) if (patch[k] !== undefined) own[k] = patch[k];
       if (typeof patch.noTools === 'boolean') own.noTools = patch.noTools; // whether the profile's current model is known to lack tool support
       if (Number.isInteger(patch.ctx) && patch.ctx >= 0) own.ctx = patch.ctx; // the current model's context limit from its list; 0 = the list gives none
-      if (Array.isArray(patch.noToolsFor)) own.noToolsFor = patch.noToolsFor.filter((m) => typeof m === 'string').slice(-200); // models that turned tools down (api.js chatStream)
+      if (Array.isArray(patch.noFilesFor)) own.noFilesFor = patch.noFilesFor.filter((m) => typeof m === 'string').slice(-200); // models that turned create_file down (api.js chatStream)
       if (Object.keys(own).length && st.activeId) st = profiles.upsert(st, { id: st.activeId, ...own }); // never create a profile from a patch
       return commit(st);
     }),

@@ -85,7 +85,7 @@ function upsert(state, p) {
   const profiles = state.profiles.map((x) => ({ ...x }));
   let target = p.id && profiles.find((x) => x.id === p.id);
   if (!target) { target = { id: newId(), model: '', format: 'auto', meta: false }; profiles.push(target); }
-  for (const k of ['name', 'endpoint', 'format', 'model', 'meta', 'noTools', 'ctx', 'noToolsFor']) if (p[k] !== undefined) target[k] = p[k];
+  for (const k of ['name', 'endpoint', 'format', 'model', 'meta', 'noTools', 'ctx', 'noFilesFor']) if (p[k] !== undefined) target[k] = p[k];
   if (p.keyEnc !== undefined || p.keyPlain !== undefined) { for (const k of KEY_FIELDS) delete target[k]; Object.assign(target, keyOf(p)); }
   const editing = p.id && state.profiles.some((x) => x.id === p.id) && state.profiles.some((x) => x.id === state.activeId);
   return { ...state, profiles, activeId: editing ? state.activeId : target.id }; // a new profile becomes active; editing another one doesn't switch
@@ -102,8 +102,8 @@ function publicView(state) {
     activeId: state.activeId, effort: state.effort, templates: TEMPLATES, personas: state.personas, personaId: state.personaId, render: state.render, theme: state.theme,
     summarizer: state.summarizer, contextLimit: state.contextLimit, files: state.files, search: { enabled: state.search.enabled, hasKey: hasKey(state.search) },
     mcp: { enabled: state.mcp.enabled, autoApprove: state.mcp.autoApprove, hasConfig: hasKey(state.mcp), servers: state.mcp.names, allow: state.mcp.allow },
-    profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, noTools, ctx, noToolsFor, ...rest }) => ({
-      id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, noTools: !!noTools, ctx: ctx || 0, noToolsFor: Array.isArray(noToolsFor) ? noToolsFor : [], hasKey: hasKey(rest),
+    profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, noTools, ctx, noFilesFor, ...rest }) => ({
+      id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, noTools: !!noTools, ctx: ctx || 0, noFilesFor: Array.isArray(noFilesFor) ? noFilesFor : [], hasKey: hasKey(rest),
     })),
   };
 }
