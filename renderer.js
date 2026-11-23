@@ -77,6 +77,7 @@ async function copy(text) {
 {
   const head = document.querySelector('header'), foot = document.querySelector('footer'), bars = new ResizeObserver(() => {
     $('scroll').style.setProperty('--head-h', head.offsetHeight + 'px'); $('scroll').style.setProperty('--foot-h', foot.offsetHeight + 'px');
+    $('scroll').style.setProperty('--foot-rest', foot.offsetHeight - $('input').offsetHeight + 'px'); // the footer around the message box: attachments, padding, hint
   });
   bars.observe(head, { box: 'border-box' }); bars.observe(foot, { box: 'border-box' }); // the header's padding holds the status-bar inset
 }
@@ -200,7 +201,10 @@ function expandRich(html, files) {
 addEventListener('message', (e) => {
   const h = e.data?.richHeight; if (typeof h !== 'number') return;
   const f = [.../** @type {NodeListOf<HTMLIFrameElement>} */ (document.querySelectorAll('.rich iframe'))].find((x) => x.contentWindow === e.source);
-  if (f) f.style.height = Math.min(4000, Math.max(24, h)) + 'px';
+  if (!f) return;
+  const stick = nearBottom($('scroll')); // a reader at the bottom stays there as the frame grows; one who scrolled up keeps their place
+  f.style.height = Math.min(4000, Math.max(24, h)) + 'px';
+  if (stick && !f.closest('.code')) scrollDown(); // a Preview the user just opened grows in place, so its top stays in view
 });
 
 function render(bubble, text, files) {

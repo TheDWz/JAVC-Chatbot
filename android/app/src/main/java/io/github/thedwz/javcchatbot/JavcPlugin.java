@@ -80,6 +80,7 @@ public class JavcPlugin extends Plugin {
         final String method = call.getString("method", "GET");
         final JSObject headers = call.getObject("headers", new JSObject());
         final String body = call.getString("body");
+        final String redirect = call.getString("redirect", "follow"); // fetch's option: follow, manual (hand back the 3xx) or error
         if (id == null || url == null) {
             call.reject("Missing request id or URL");
             return;
@@ -91,28 +92,50 @@ public class JavcPlugin extends Plugin {
             HttpURLConnection conn = null;
             boolean answered = false;
             try {
-                URL u = new URL(url);
-                if (!"http".equals(u.getProtocol()) && !"https".equals(u.getProtocol())) throw new IOException("Only http and https URLs are supported");
-                conn = (HttpURLConnection) u.openConnection();
-                requests.put(id, conn);
-                if (stopped.contains(id)) throw new IOException("Stopped");
-                conn.setConnectTimeout(30_000);
-                conn.setReadTimeout(300_000); // the same 5 minutes Node's fetch waits on the desktop
-                conn.setUseCaches(false);
-                conn.setRequestMethod(method);
+                // Redirects are followed here: HttpURLConnection can't resend a streamed body, so it would hand back the 307 itself.
+                URL origin = new URL(url), u = origin;
+                String verb = method;
+                byte[] sent = body != null ? body.getBytes(StandardCharsets.UTF_8) : null; // encoded once, however many hops
+                Map<String, String> hs = new HashMap<>();
                 for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
                     String k = it.next();
-                    conn.setRequestProperty(k, headers.getString(k));
+                    hs.put(k, headers.getString(k));
                 }
-                if (body != null) {
-                    byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-                    conn.setDoOutput(true);
-                    conn.setFixedLengthStreamingMode(bytes.length);
-                    try (OutputStream out = conn.getOutputStream()) {
-                        out.write(bytes);
+                int status;
+                for (int hop = 0; ; hop++) {
+                    if (!"http".equals(u.getProtocol()) && !"https".equals(u.getProtocol())) throw new IOException("Only http and https URLs are supported");
+                    conn = (HttpURLConnection) u.openConnection();
+                    requests.put(id, conn);
+                    if (stopped.contains(id)) throw new IOException("Stopped");
+                    conn.setConnectTimeout(30_000);
+                    conn.setReadTimeout(300_000); // the same 5 minutes Node's fetch waits on the desktop
+                    conn.setUseCaches(false);
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setRequestMethod(verb);
+                    for (Map.Entry<String, String> e : hs.entrySet()) conn.setRequestProperty(e.getKey(), e.getValue());
+                    if (sent != null) {
+                        conn.setDoOutput(true);
+                        conn.setFixedLengthStreamingMode(sent.length);
+                        try (OutputStream out = conn.getOutputStream()) {
+                            out.write(sent);
+                        }
                     }
+                    status = conn.getResponseCode();
+                    String loc = conn.getHeaderField("Location");
+                    if (loc == null || (status != 301 && status != 302 && status != 303 && status != 307 && status != 308) || "manual".equals(redirect)) break;
+                    if ("error".equals(redirect)) throw new IOException("Redirected to " + loc);
+                    if (hop == 20) throw new IOException("Too many redirects"); // fetch's limit, as on the desktop
+                    URL next = new URL(u, loc);
+                    if ("https".equals(u.getProtocol()) && !"https".equals(next.getProtocol())) throw new IOException("Refused a redirect from https to " + next.getProtocol() + ", which would send the request unencrypted");
+                    u = next;
+                    conn.disconnect();
+                    if ((status == 303 && !"HEAD".equals(verb)) || (status <= 302 && "POST".equals(verb))) { // as fetch: these become a GET without the body
+                        verb = "GET";
+                        sent = null;
+                        hs.keySet().removeIf(k -> k.equalsIgnoreCase("Content-Type"));
+                    }
+                    if (!sameOrigin(origin, u)) hs.keySet().removeIf(k -> !CROSS_ORIGIN.contains(k.toLowerCase(Locale.ROOT))); // keys, tokens and sessions stay with the first origin
                 }
-                int status = conn.getResponseCode();
                 JSObject h = new JSObject();
                 for (Map.Entry<String, List<String>> e : conn.getHeaderFields().entrySet()) {
                     if (e.getKey() != null && e.getValue() != null) h.put(e.getKey().toLowerCase(Locale.ROOT), TextUtils.join(", ", e.getValue()));
@@ -146,6 +169,15 @@ public class JavcPlugin extends Plugin {
                 if (conn != null) conn.disconnect();
             }
         });
+    }
+
+    /** The only request headers sent on after a redirect to another origin: a safelist, so no key header of any name slips through. */
+    private static final Set<String> CROSS_ORIGIN = new HashSet<>(Arrays.asList("content-type", "accept", "anthropic-version", "anthropic-beta", "mcp-protocol-version"));
+
+    /** Whether two URLs share scheme, host and port (a missing port counts as the scheme's default). */
+    private static boolean sameOrigin(URL a, URL b) {
+        int pa = a.getPort() == -1 ? a.getDefaultPort() : a.getPort(), pb = b.getPort() == -1 ? b.getDefaultPort() : b.getPort();
+        return a.getProtocol().equals(b.getProtocol()) && a.getHost().equalsIgnoreCase(b.getHost()) && pa == pb;
     }
 
     /** Stops request `id`. A request that already finished is left alone, so nothing is remembered for it. */
@@ -487,12 +519,13 @@ public class JavcPlugin extends Plugin {
             try (OutputStream out = getContext().getContentResolver().openOutputStream(uri, "w")) { // a new document starts empty; some providers (Drive) refuse "wt"
                 if (out == null) throw new IOException("Could not open the file");
                 out.write(base64 ? Base64.decode(data, Base64.DEFAULT) : data.getBytes(StandardCharsets.UTF_8));
-                JSObject r = new JSObject();
-                r.put("saved", true);
-                call.resolve(r);
-            } catch (Exception e) {
+            } catch (Exception e) { // includes an error from close(), which is when some providers write the file
                 call.reject(message(e));
+                return;
             }
+            JSObject r = new JSObject();
+            r.put("saved", true);
+            call.resolve(r);
         });
     }
 
