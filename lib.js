@@ -223,9 +223,9 @@
     if (mime.startsWith('text/') || mime === 'application/json' || ext === 'txt' || ext === 'json') return 'text';
     return null;
   }
-  /** CSV text as rows of strings (quotes, "" inside them, CRLF and a BOM handled), at most `max` rows; `more` when it had more. */
+  /** CSV text as rows of strings (quotes, "" inside them and CRLF handled), at most `max` rows; `more` when it had more. */
   function csvRows(text, max = 500) {
-    const rows = []; let row = [], cell = '', q = false, i = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+    const rows = []; let row = [], cell = '', q = false, i = 0;
     const endRow = () => { row.push(cell); rows.push(row); row = []; cell = ''; };
     for (; i < text.length; i++) {
       const c = text[i];

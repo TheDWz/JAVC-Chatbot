@@ -9,6 +9,6 @@ export default [
   { files: ['**/*.js'], languageOptions: { sourceType: 'commonjs', globals: globals.node } },
   { files: ['**/*.mjs'], languageOptions: { globals: globals.node } },
   { files: ['renderer.js'], languageOptions: { sourceType: 'script' } }, // a classic <script>, not a module
-  // Runs in the page (the smoke tests too, inside page.evaluate); index.html loads marked, JSZip and lib.js before renderer.js.
-  { files: ['renderer.js', 'lib.js', 'mobile/main.js', 'mobile/native.js', 'mobile/smoke/*.mjs'], languageOptions: { globals: { ...globals.browser, Lib: 'readonly', marked: 'readonly', JSZip: 'readonly' } } },
+  // Runs in the page (the smoke tests too, inside page.evaluate); index.html loads marked and lib.js before renderer.js.
+  { files: ['renderer.js', 'lib.js', 'mobile/main.js', 'mobile/native.js', 'mobile/smoke/*.mjs'], languageOptions: { globals: { ...globals.browser, Lib: 'readonly', marked: 'readonly' } } },
 ];

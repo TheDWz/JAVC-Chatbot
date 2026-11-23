@@ -34,7 +34,6 @@ contextBridge.exposeInMainWorld('api', {
   deleteChat: (id) => ipcRenderer.invoke('chats:delete', id),
   readAttachment: (ref) => ipcRenderer.invoke('file:read', ref),
   saveAttachment: (ref, name, mime) => ipcRenderer.invoke('file:save', ref, name, mime),
-  pdfPages: (ref) => ipcRenderer.invoke('file:pages', ref),
   extractPdf: (buf) => ipcRenderer.invoke('pdf:extract', buf),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   getMcpConfig: () => ipcRenderer.invoke('mcp:config'),

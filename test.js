@@ -2454,7 +2454,7 @@ test('previews: the kind each file gets, CSV rows, and PDF pages drawn with pdf-
   assert.deepStrictEqual([kind('a.pdf', 'application/octet-stream'), kind('x', 'application/pdf'), kind('b.xlsx', ''), kind('c.pptx', ''), kind('d.csv', 'text/csv'),
     kind('e.md', 'text/markdown'), kind('f.txt', 'text/plain'), kind('g', 'application/json'), kind('h.py', 'text/x-python'), kind('i.png', 'image/png'), kind('j.zip', 'application/zip')],
   ['pdf', 'pdf', 'xlsx', 'pptx', 'csv', 'md', 'text', 'text', 'text', null, null]);
-  assert.deepStrictEqual(Lib.csvRows('﻿a,"b, c"\r\n"say ""hi""",2,\n"two\nlines",x'), { rows: [['a', 'b, c'], ['say "hi"', '2', ''], ['two\nlines', 'x']], more: false });
+  assert.deepStrictEqual(Lib.csvRows('a,"b, c"\r\n"say ""hi""",2,\n"two\nlines",x'), { rows: [['a', 'b, c'], ['say "hi"', '2', ''], ['two\nlines', 'x']], more: false });
   assert.deepStrictEqual(Lib.csvRows('a\nb\nc\n', 2), { rows: [['a'], ['b']], more: true });
   assert.deepStrictEqual(Lib.csvRows('a\nb\n', 2), { rows: [['a'], ['b']], more: false });
   const pdf = await Make.makeFile({ name: 'long', format: 'pdf', content: Array.from({ length: 120 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n') }, makeLoad);

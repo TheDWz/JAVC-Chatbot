@@ -6,7 +6,7 @@ const api = require('../api');
 const Lib = require('../lib');
 const makeStore = require('../store');
 const makeChats = require('../chats');
-const { makeChatSeal, fromB64 } = require('../seal');
+const { makeChatSeal } = require('../seal');
 const Backup = require('../backup');
 const Mcp = require('../mcp');
 const Make = require('../make');
@@ -128,8 +128,8 @@ window.api = {
   saveChat: (chat) => chats.save(chat),
   deleteChat: (id) => chats.remove(id),
   readAttachment: (ref) => chats.readFile(ref),
-  /** A PDF attached to a reply, drawn in the page for the file dialog's preview, with the same pdf-parse that reads attached PDFs. */
-  pdfPages: async (ref) => Lib.pdfPages(await loadPdfParse(), fromB64(await chats.readFile(ref))),
+  /** Where the page finds the libraries the file dialog's previews load (renderer.js LIBS): the copies in www/vendor. */
+  libs: { jszip: 'vendor/jszip.min.js', pdf: 'vendor/pdf-parse.es.js', pdfWorker: 'vendor/pdf.worker.mjs' },
   /** Saves a file the model attached with the system's save screen; resolves {saved}. */
   saveAttachment: async (ref, name, mime) => {
     const { saved } = await Javc.saveFile({ name: Mcp.cleanName(name, 'file'), mime: String(mime || 'application/octet-stream'), data: await chats.readFile(ref), base64: true });
