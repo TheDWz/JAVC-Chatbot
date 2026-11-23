@@ -12,6 +12,7 @@ const makeStore = require('./store');
 const { makeChatSeal } = require('./seal');
 const Backup = require('./backup');
 const Mcp = require('./mcp');
+const Make = require('./make');
 const { makeDisk, migrateLegacy } = require('./disk');
 
 // Rich replies (HTML/CSS/JS from the model) run in sandboxed iframes loaded from this scheme. Being a non-local scheme,
@@ -54,9 +55,10 @@ const seal = makeChatSeal({ io: makeDisk(app.getPath('userData')), crypto: chatK
 ipcMain.handle('settings:get', async () => {
   const st = await store.get();
   await chats.list().catch(() => {}); // loads the chat key (if there are chats) and sets aside ones it can't decrypt, for their notices; the page reports list errors
+  expireMade();
   return { ...st, notice: [store.takeNotice(), seal.takeNotice()].filter(Boolean).join(' ') };
 });
-ipcMain.handle('settings:patch', (_e, patch) => store.patch(patch));
+ipcMain.handle('settings:patch', async (_e, patch) => { const st = await store.patch(patch); if (patch?.files) expireMade(); return st; });
 ipcMain.handle('profiles:save', (_e, p) => store.saveProfile(p));
 ipcMain.handle('personas:save', (_e, p) => store.savePersona(p));
 ipcMain.handle('personas:delete', (_e, id) => store.deletePersona(id));
@@ -77,10 +79,24 @@ ipcMain.handle('chat:send', async (e, id, messages, opts) => {
   const onDelta = (d) => { if (!e.sender.isDestroyed()) e.sender.send('chat:delta', id, d); };
   try {
     const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
-    const { model, extra, search, mcp } = api.requestArgs(s, opts);
-    return await chats.keepFiles(await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: approver(e.sender), onDelta, signal: ctl.signal, readFile }) : undefined));
+    const { model, extra, search, mcp, files } = api.requestArgs(s, opts);
+    const tools = mcp || files ? await Mcp.replyTools(hub, store, { approve: approver(e.sender), onDelta, signal: ctl.signal, readFile, mcp, ...(files && { make: (a) => Make.makeFile(a, loadMake) }) }) : undefined;
+    return await chats.keepFiles(await api.chatStream(s.endpoint, s.key, model, messages, extra, onDelta, undefined, ctl.signal, search, tools));
   } finally { running.delete(id); }
 });
+
+let makeLibs = null;
+/** The libraries create_file uses (make.js), loaded with its first file. pdfmake reads only its own fonts and fetches nothing. */
+const loadMake = () => (makeLibs ??= Promise.resolve().then(() => {
+  const pdfmake = require('pdfmake'), fonts = require('pdfmake/fonts/Roboto.js'), dir = path.dirname(fonts.Roboto.normal);
+  pdfmake.setFonts(fonts); pdfmake.setUrlAccessPolicy(() => false); pdfmake.setLocalAccessPolicy((p) => path.resolve(p).startsWith(dir + path.sep));
+  return { pdfmake, PptxGenJS: require('pptxgenjs'), JSZip: require('jszip'), marked: require('marked').marked };
+}).catch((e) => { makeLibs = null; throw e; }));
+/** Deletes the files the model created that are older than Settings → Tools allows; a failure only goes to the log. */
+async function expireMade() {
+  try { const n = await chats.expire((await store.filesForReply()).keepDays); if (n) console.log(`Deleted ${n} created file${n === 1 ? '' : 's'} past their time`); }
+  catch (e) { console.error('Could not delete old created files:', e.message); }
+}
 
 /** A file attach_file names: an absolute path (or file: URL) on this computer, or an http(s) URL. The user approved it first. */
 async function readFile(ref, signal) {
@@ -203,6 +219,7 @@ ipcMain.handle('pdf:extract', async (_e, buf) => {
 
 app.whenReady().then(() => {
   chats.upgrade().then((n) => { if (n) console.log(`Encrypted ${n} chat files`); }, (e) => console.error('Could not encrypt the saved chats:', e));
+  setInterval(expireMade, 3600_000); // and once when the page loads (settings:get), and when the setting changes
   const win = new BrowserWindow({
     width: 900, height: 700, backgroundColor: '#15161a', autoHideMenuBar: true,
     // shortcut: Wayland ignores this and uses the .desktop file's icon; it matters on Windows and X11.

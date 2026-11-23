@@ -5,6 +5,7 @@
 const { version } = require('./package.json');
 const { toB64 } = require('./seal');
 const { fmtSize } = require('./lib');
+const Make = require('./make');
 
 const PROTOCOL = '2025-11-25';
 const OLDER = ['2025-06-18', '2025-03-26', '2024-11-05']; // tools/list and tools/call are the same in these
@@ -714,20 +715,34 @@ const ATTACH_DEF = {
  * 'once' | 'always' | 'deny'; tools the user always allows (`allowed(server, tool)`) skip it.
  * It adds attach_file: files that tool results return get an id the model attaches them by; a path or URL goes through
  * `approve` every time (with `app: true`, so "Always allow" is never saved) and `readFile`. Attached files collect in `files`.
+ * With `create`, it adds create_file (make.js): the file is made first, then put to `approve` (with `create: true`) unless
+ * `create.allowed()`, and attached like the others. `onlyCreate` says create_file is the only tool (see api.js chatStream).
  * @param {Awaited<ReturnType<ReturnType<typeof makeHub>['tools']>>} set
- * @param {{allowed: (server: string, tool: string) => boolean, approve: (info: {server: string, tool: string, args: object, app?: boolean}) => Promise<string>,
- *   readFile?: (ref: {path?: string, url?: string}, signal?: AbortSignal) => Promise<{name: string, mime: string, data: string, size: number}>}} gate
+ * @param {{allowed: (server: string, tool: string) => boolean, approve: (info: {server: string, tool: string, args: object, app?: boolean, create?: boolean}) => Promise<string>,
+ *   readFile?: (ref: {path?: string, url?: string}, signal?: AbortSignal) => Promise<{name: string, mime: string, data: string, size: number}>,
+ *   create?: {make: (args: object) => Promise<{name: string, mime: string, data: string, size: number}>, allowed: () => boolean | Promise<boolean>}}} gate
  */
-function gated(set, { allowed, approve, readFile }) {
+function gated(set, { allowed, approve, readFile, create }) {
   // shortcut: every file a tool returns stays in `found` until the reply ends (Blender's `look` can return dozens); drop the oldest if that bites
-  const found = new Map(), files = /** @type {{name: string, mime: string, data: string, size: number}[]} */ ([]), offer = set.defs.length > 0;
+  const found = new Map(), files = /** @type {{name: string, mime: string, data: string, size: number, made?: boolean, source?: string}[]} */ ([]), offer = set.defs.length > 0;
   const keep = (f) => {
     if (f.size > FILE_MAX) return `[file "${f.name}" is over 50 MB, too large to attach: save it to a file and attach it by path]`;
     const id = 'f' + (found.size + 1); found.set(id, f);
     return `[file "${f.name}" (${f.mime}, ${fmtSize(f.size)}): attach_file {"id": "${id}"} attaches it to your reply]`;
   };
+  const full = () => files.length >= FILES_MAX && `Not attached: a reply can have at most ${FILES_MAX} files.`;
+  /** Attaches file `f` unless it's too big or already attached; `said(name)` is what the model hears when it is. */
+  const add = (f, said) => {
+    if (f.size > FILE_MAX) return 'Could not attach it: the file is over 50 MB.';
+    const same = files.find((x) => x.data === f.data);
+    if (same) return `It is already attached as "${same.name}".`;
+    let name = f.name;
+    for (let k = 2; files.some((x) => x.name === name); k++) name = numbered(f.name, k);
+    files.push({ ...f, name });
+    return said(name);
+  };
   async function attach(args, signal) {
-    if (files.length >= FILES_MAX) return `Not attached: a reply can have at most ${FILES_MAX} files.`; // before asking or downloading anything
+    if (full()) return full(); // before asking or downloading anything
     let f;
     if (typeof args.id === 'string') {
       f = found.get(args.id);
@@ -739,24 +754,28 @@ function gated(set, { allowed, approve, readFile }) {
       if ((await until(approve({ server: 'The model', tool: ATTACH, args: ref, app: true }), signal)) === 'deny') return DECLINED;
       try { f = await (readFile ?? (() => Promise.reject(new Error("files can't be read here"))))(ref, signal); }
       catch (e) { if (signal?.aborted) throw e; return `Could not attach it: ${e.message}`; }
-      if (f.size > FILE_MAX) return 'Could not attach it: the file is over 50 MB.';
     }
-    const same = files.find((x) => x.data === f.data);
-    if (same) return `It is already attached as "${same.name}".`;
-    let name = f.name;
-    for (let k = 2; files.some((x) => x.name === name); k++) name = numbered(f.name, k);
-    files.push({ ...f, name });
-    return `Attached "${name}"; the user sees it under your reply. An HTML block in your reply can load it from attachment:${name}`;
+    return add(f, (name) => `Attached "${name}"; the user sees it under your reply. An HTML block in your reply can load it from attachment:${name}`);
+  }
+  async function make(args, signal) {
+    if (full()) return full();
+    let f;
+    try { f = await create.make(args); } catch (e) { return `Could not create it: ${e.message}`; } // made first, so the user is only asked about a file that works
+    f = { ...f, name: cleanName(f.name, 'file') };
+    if (!(await create.allowed()) && (await until(approve({ server: 'The model', tool: Make.CREATE, args: { ...args, name: f.name }, create: true }), signal)) === 'deny') return DECLINED;
+    return add(f, (name) => `Created "${name}" and attached it to your reply, where the user can save it.`);
   }
   return {
-    defs: offer ? [...set.defs, ATTACH_DEF] : set.defs,
-    has: (n) => (offer && n === ATTACH) || set.has(n),
-    label: (n) => (n === ATTACH ? 'Attach file' : set.label(n)),
+    defs: [...set.defs, ...(offer ? [ATTACH_DEF] : []), ...(create ? [Make.CREATE_DEF] : [])],
+    has: (n) => (offer && n === ATTACH) || (!!create && n === Make.CREATE) || set.has(n),
+    label: (n) => (n === ATTACH ? 'Attach file' : create && n === Make.CREATE ? 'Create file' : set.label(n)),
+    onlyCreate: !!create && !offer,
     files,
     /** Runs model call `name` with its JSON `argsJson`; resolves to the text the model gets back. */
     async call(name, argsJson, signal) {
       let args = null; try { args = argsJson?.trim() ? JSON.parse(argsJson) : {}; } catch {}
       if (offer && name === ATTACH) return isObj(args) ? attach(args, signal) : 'Error: the arguments must be a JSON object.';
+      if (create && name === Make.CREATE) return isObj(args) ? make(args, signal) : 'Error: the arguments must be a JSON object.';
       const t = set.info(name);
       if (!t) return `Error: there is no tool called "${name}".`;
       if (!isObj(args)) return 'Error: the arguments must be a JSON object.';
@@ -766,28 +785,42 @@ function gated(set, { allowed, approve, readFile }) {
   };
 }
 
+const NO_TOOLS = { defs: [], has: () => false, label: () => '', info: () => null, run: async () => '', failed: [] }; // MCP off: create_file alone
+
 /**
- * The MCP tools for one reply, each call put to the user through `approve` (unless `autoApprove` is on); "Always allow" is saved. Servers that don't
- * start, and a config that can't be read (a locked keyring), become notes in the reply instead of failing it.
+ * The tools for one reply: MCP's (when `mcp`) and create_file (when `make` is given), each call put to the user through `approve` (unless
+ * `autoApprove` is on); "Always allow" is saved (for create_file, as `files.ask = false`). Servers that don't start, and a config that
+ * can't be read (a locked keyring), become notes in the reply instead of failing it.
  * @param {ReturnType<typeof makeHub>} hub
- * @param {{mcpForReply: () => Promise<{servers: object, allow: Record<string, string[]>}>, mcpAutoApprove: () => Promise<boolean>, allowMcpTool: (server: string, tool: string) => Promise<unknown>}} store
+ * @param {{mcpForReply: () => Promise<{servers: object, allow: Record<string, string[]>}>, mcpAutoApprove: () => Promise<boolean>, allowMcpTool: (server: string, tool: string) => Promise<unknown>,
+ *   filesForReply?: () => Promise<{ask: boolean}>, allowCreate?: () => Promise<unknown>}} store `filesForReply` and `allowCreate` are needed with `make`.
  * @param {{approve: (info: {server: string, tool: string, args: object}) => Promise<string>, onDelta: (d: object) => void, signal?: AbortSignal,
- *   readFile?: Parameters<typeof gated>[1]['readFile']}} reply `readFile` reads what attach_file names by path or URL.
+ *   readFile?: Parameters<typeof gated>[1]['readFile'], mcp?: boolean, make?: (args: object) => Promise<{name: string, mime: string, data: string, size: number}>}} reply
+ *   `readFile` reads what attach_file names by path or URL; `make` makes what create_file asks for (make.js `makeFile`).
  */
-async function replyTools(hub, store, { approve, onDelta, signal, readFile }) {
+async function replyTools(hub, store, { approve, onDelta, signal, readFile, mcp = true, make }) {
   const note = (text) => onDelta({ reasoning: text + '\n', content: '', note: true });
-  let mcp;
-  try { mcp = await store.mcpForReply(); } catch (e) { note(`MCP tools are off for this reply: ${e.message}`); return undefined; }
-  hub.configure(mcp.servers);
-  const set = await hub.tools(signal), allow = mcp.allow;
-  for (const f of set.failed) note(f.auth ? `MCP server "${f.name}" needs you to sign in (Settings → Tools).` : `MCP server "${f.name}" didn't start: ${f.error}`);
+  let cfg = null;
+  if (mcp) {
+    try { cfg = await store.mcpForReply(); } catch (e) { note(`MCP tools are off for this reply: ${e.message}`); if (!make) return undefined; }
+  }
+  let set = NO_TOOLS;
+  if (cfg) {
+    hub.configure(cfg.servers);
+    set = await hub.tools(signal);
+    for (const f of set.failed) note(f.auth ? `MCP server "${f.name}" needs you to sign in (Settings → Tools).` : `MCP server "${f.name}" didn't start: ${f.error}`);
+  }
+  const allow = cfg?.allow ?? {};
+  let ask = make ? (await store.filesForReply()).ask : true;
   return gated(set, {
     allowed: (server, tool) => !!allow[server]?.includes(tool),
     readFile,
+    ...(make && { create: { make, allowed: () => !ask } }),
     approve: async (info) => {
-      if (await store.mcpAutoApprove()) return 'once'; // Settings → Advanced: tool calls and attach_file paths/URLs run unasked
+      if (await store.mcpAutoApprove()) return 'once'; // Settings → Advanced: tool calls, attach_file paths/URLs and create_file run unasked
       const a = await approve(info);
-      if (a === 'always' && !info.app) { await store.allowMcpTool(info.server, info.tool); (allow[info.server] ||= []).push(info.tool); } // counts for the rest of this reply too
+      if (a === 'always' && info.create) { await store.allowCreate(); ask = false; } // Settings → Tools turns asking back on
+      else if (a === 'always' && !info.app) { await store.allowMcpTool(info.server, info.tool); (allow[info.server] ||= []).push(info.tool); } // counts for the rest of this reply too
       return a;
     },
   });

@@ -9,6 +9,7 @@ const makeChats = require('../chats');
 const { makeChatSeal } = require('../seal');
 const Backup = require('../backup');
 const Mcp = require('../mcp');
+const Make = require('../make');
 const { makeNativeFetch, makeNativeDisk, makeNativeCrypto } = require('./native');
 
 const Javc = registerPlugin('Javc');
@@ -54,14 +55,23 @@ const loadPdfParse = () => (pdfParse ??= import(asset('vendor/pdf-parse.es.js'))
   (m) => { m.PDFParse.setWorker(asset('vendor/pdf.worker.mjs')); return m.PDFParse; },
   (e) => { pdfParse = null; throw e; },
 ));
+let makeLibs = null;
+/** The libraries create_file uses: www/vendor/make-libs.js (mobile/make-libs.mjs), loaded with the first file (and again if that load failed). */
+const loadMake = () => (makeLibs ??= import(asset('vendor/make-libs.js')).then((m) => m.default, (e) => { makeLibs = null; throw e; }));
+/** Deletes the files the model created that are older than Settings → Tools allows; a failure only goes to the log. */
+async function expireMade() {
+  try { await chats.expire((await store.filesForReply()).keepDays); } catch (e) { console.error('Could not delete old created files:', e); }
+}
+setInterval(expireMade, 3600_000); // and once at the first getSettings, and when the setting changes
 
 window.api = {
   getSettings: async () => {
     const st = await store.get();
     await chats.list().catch(() => {}); // loads the chat key (if there are chats) and sets aside ones it can't decrypt, for their notices; the page reports list errors
+    expireMade();
     return { ...st, notice: [store.takeNotice(), seal.takeNotice()].filter(Boolean).join(' ') };
   },
-  patchSettings: (patch) => store.patch(patch),
+  patchSettings: async (patch) => { const st = await store.patch(patch); if (patch?.files) expireMade(); return st; },
   saveProfile: (p) => store.saveProfile(p),
   savePersona: (p) => store.savePersona(p),
   deletePersona: (id) => store.deletePersona(id),
@@ -96,9 +106,10 @@ window.api = {
     try {
       const sum = opts?.summary, s = await store.load(sum ? { profileId: sum.profileId } : { search: !!opts?.search });
       // Linkup goes through nativeFetch too
-      const { model, extra, search, mcp } = api.requestArgs(s, opts);
+      const { model, extra, search, mcp, files } = api.requestArgs(s, opts);
       const delta = (/** @type {object} */ d) => onDelta?.(d);
-      return await chats.keepFiles(await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, mcp ? await Mcp.replyTools(hub, store, { approve: (i) => approve(i), onDelta: delta, signal: ctl.signal, readFile }) : undefined));
+      const tools = mcp || files ? await Mcp.replyTools(hub, store, { approve: (i) => approve(i), onDelta: delta, signal: ctl.signal, readFile, mcp, ...(files && { make: (a) => Make.makeFile(a, loadMake) }) }) : undefined;
+      return await chats.keepFiles(await api.chatStream(s.endpoint, s.key, model, messages, extra, delta, nativeFetch, ctl.signal, search, tools));
     } finally { if (current === ctl) current = null; }
   },
   stopChat: async () => current?.abort(),

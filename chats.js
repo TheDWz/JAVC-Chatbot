@@ -20,7 +20,9 @@ function makeChats(io) {
     if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) throw new Error('Invalid chat id');
     return id + '.json';
   };
-  const INDEX = '_index.json'; // '_' can't appear in an id, so it never collides with a chat
+  const INDEX = '_index.json'; // '_' can't appear in an id, so it never collides with a chat; no name starting with it is a chat
+  const MADE = '_made.json'; // {ref: time made} for files the model created (create_file), for "Delete created files after"
+  const isChat = (n) => n.endsWith('.json') && !n.startsWith('_');
   const fileName = (ref) => { if (typeof ref !== 'string' || !FILE.test(ref)) throw new Error('Invalid file'); return ref; };
   const fresh = new Set(); // files saved since the app started: a reply's files are saved before its chat is, so they're never swept meanwhile
   let stored = null; // the file names in the folder, listed once, so saving 20 files doesn't list it 20 times
@@ -36,7 +38,7 @@ function makeChats(io) {
     if (ix.some((c) => !Array.isArray(c.files))) return;
     let names; try { names = await io.list(); } catch { return; }
     const listed = new Set(ix.map((c) => c.id + '.json'));
-    if (names.some((n) => n.endsWith('.unreadable') || (n.endsWith('.json') && n !== INDEX && !listed.has(n)))) return;
+    if (names.some((n) => n.endsWith('.unreadable') || (isChat(n) && !listed.has(n)))) return;
     const used = new Set(ix.flatMap((c) => c.files));
     for (const n of names) if (FILE.test(n) && !used.has(n) && !fresh.has(n)) { await io.remove(n).catch(() => {}); stored?.delete(n); }
   };
@@ -45,7 +47,7 @@ function makeChats(io) {
 
   /** The chat file names in the folder, or null when the folder can't be listed. */
   const chatFiles = async () => {
-    try { return (await io.list()).filter((n) => n.endsWith('.json') && n !== INDEX); } catch { return null; }
+    try { return (await io.list()).filter(isChat); } catch { return null; }
   };
   /**
    * Index entries read from the given chat files. A corrupt file, or one whose id doesn't match its name, is skipped
@@ -61,6 +63,8 @@ function makeChats(io) {
     }
     return out;
   };
+  /** The created files and when each was made; empty when there's no list yet or it can't be read (those files are then kept). */
+  const readMade = async () => { try { const m = JSON.parse(await io.read(MADE)); return m && typeof m === 'object' && !Array.isArray(m) ? m : {}; } catch { return {}; } };
   /** The saved index, or null when it's missing or damaged. */
   const readIndex = async () => { try { const ix = JSON.parse(await io.read(INDEX)); return Array.isArray(ix) ? ix : null; } catch { return null; } };
   /** The index, rebuilt from the chat files when it's missing or damaged. */
@@ -144,6 +148,29 @@ function makeChats(io) {
       for (const name of [...all.filter((x) => x !== INDEX), ...(hasIndex ? [INDEX] : [])]) if (await io.needsSeal(name)) { await io.write(name, await io.read(name)); n++; }
       return n;
     }),
+    /** Notes files the model created (refs) as made now; a file made again starts its time over. */
+    noteMade: serial(async (refs) => {
+      const m = await readMade(), now = Date.now();
+      for (const r of refs) if (FILE.test(r)) m[r] = now;
+      await io.write(MADE, JSON.stringify(m));
+    }),
+    /**
+     * Deletes the created files made more than `days` days ago (0: none) and forgets them, along with any already gone (swept with
+     * their chat). Their messages keep them listed; opening one says it's no longer saved. Returns how many it deleted.
+     * shortcut: files an import restores (backup.js mergeInto) aren't noted, so they're kept; note them there if that matters.
+     */
+    expire: serial(async (days, now = Date.now()) => {
+      if (!days) return 0;
+      let names; try { names = new Set(await io.list()); } catch { return 0; }
+      const m = await readMade(), cut = now - days * 86400000, before = Object.keys(m).length;
+      let n = 0;
+      for (const [ref, at] of Object.entries(m)) {
+        if (!FILE.test(ref) || !names.has(ref)) delete m[ref];
+        else if (typeof at !== 'number' || at < cut) { await io.remove(ref); stored?.delete(ref); fresh.delete(ref); delete m[ref]; n++; }
+      }
+      if (Object.keys(m).length !== before) await io.write(MADE, JSON.stringify(m));
+      return n;
+    }),
     /** Deletes the chat, then its index entry. */
     remove: serial(async (id) => {
       await io.remove(file(id));
@@ -152,12 +179,14 @@ function makeChats(io) {
       await sweep(ix);
     }),
   };
-  /** A reply from api.chatStream with its attached files saved: each becomes {name, mime, size, ref}. If they can't be saved, the reply comes back without them and says so. */
+  /** A reply from api.chatStream with its attached files saved: each becomes {name, mime, size, ref} (plus `made` and `source` for created ones). If they can't be saved, the reply comes back without them and says so. */
   store.keepFiles = async (reply) => {
     if (!reply?.files) return reply;
     const { files, ...rest } = reply, out = [];
-    try { for (const { data, ...f } of files) out.push({ ...f, ref: await store.saveFile(data) }); }
+    try { for (const { data, ...f } of files) out.push({ ...f, ref: await store.saveFile(data) }); } // created files keep `made` and `source`
     catch (e) { return { ...rest, error: rest.error || `The attached files couldn't be saved: ${e.message}` }; }
+    const made = out.filter((f) => f.made).map((f) => f.ref);
+    if (made.length) await store.noteMade(made).catch(() => {}); // unnoted, it's only kept for good
     return { ...rest, files: out };
   };
   return store;

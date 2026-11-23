@@ -14,8 +14,8 @@
 
 ## Building the request (`lib.js`)
 
-- `Lib.requestMessages(chat, persona, {render})` strips display-only fields (text, files, reasoning, attachments) and builds one system message from the persona (`systemPrompt`, with `{{user}}`/`{{char}}`), the render hint (`renderHint`, which tells the model only about the formats that are switched on) and the summary if there is one. Only this chat's messages are sent.
-- `api.requestArgs(s, opts)` picks the model, the reasoning parameters and whether search or MCP applies. A summary request uses its own profile and model, no extra parameters, no tools.
+- `Lib.requestMessages(chat, persona, {render, files})` strips display-only fields (text, files, reasoning, attachments); with `files` (Settings → Tools → **Show the model its earlier files**), a reply's created files (`made` attachments) add `[You created the file "name" for this reply. What you put in it:]` and their `source` to its content, so the model can edit them. `contextTokens` counts that too. A summary doesn't keep them and builds one system message from the persona (`systemPrompt`, with `{{user}}`/`{{char}}`), the render hint (`renderHint`, which tells the model only about the formats that are switched on) and the summary if there is one. Only this chat's messages are sent.
+- `api.requestArgs(s, opts)` picks the model, the reasoning parameters and whether search, MCP or `create_file` (`opts.files`) applies. A summary request uses its own profile and model, no extra parameters, no tools.
 - `reasoningParams` / `resolveFormat` (`api.js`) produce one of four shapes: OpenRouter `reasoning: {effort}`, a thinking switch for DeepSeek, Z.ai and Moonshot (`THINKING_SWITCH`, which turns thinking off with `thinking: {type: 'disabled'}`), plain `reasoning_effort`, or just `{effort}` for an Anthropic endpoint. `resolveFormat` answers `anthropic` from the endpoint host before any saved format, so the Reasoning format setting doesn't apply there; `anthropic.js` turns the effort into thinking and `output_config` (below).
 
 ## The client (`api.js`)
@@ -27,7 +27,8 @@
 - Mistral's reasoning models send content as a list of `text` and `thinking` chunks. `parts` splits it into reasoning and content, in both the SSE deltas and a plain-JSON answer.
 - Gemini's tool calls carry `extra_content`, a thought signature. It is kept on the call and sent back with the tool calls on the next round, or Gemini rejects the follow-up.
 - `chatStream` is one `streamOnce` when there are no tools. With tools it loops: up to `TOOL_ROUNDS` (20) rounds when MCP tools are offered, otherwise `SEARCH_ROUNDS` (4); the last round sends `tool_choice: 'none'`. Linkup searches are capped at 4 per reply across rounds. A failing tool becomes tool-result text and the model carries on. Thinking-mode providers get the round's reasoning sent back with its tool calls (they reject the follow-up otherwise). Token usage is summed over rounds; `ctx` is the last round's total and `sent` is the first round's prompt tokens. The files the model attached (MCP `attach_file`) come back as `files` alongside `content` and `reasoning`.
-- The tool exchange is **not** saved with the chat: later turns see only the final answer.
+- **Models that reject tools:** when `create_file` is the only tool (no search, no MCP: the tool set's `onlyCreate`) and the first request fails with a 4xx other than 401, 403, 408 and 429, or a 500, `chatStream` sends it again without tools and returns `noTools: true`. The page then adds the model to the profile's `noToolsFor` (`patchSettings`), and `toolsOk()` offers it no tools again (no search, MCP or files) until Settings → Tools → **Offer tools again**. 502–504 never count.
+- The tool exchange is **not** saved with the chat: later turns see only the final answer (and, when on, the files it created).
 - Web search is a `web_search` tool backed by `linkupSearch` (Linkup `fast` depth, 5 results, 2000 characters each).
 
 ## Anthropic (`anthropic.js`)

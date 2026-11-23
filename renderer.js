@@ -42,7 +42,7 @@ const fitBox = CSS.supports('field-sizing', 'content') ? () => {} : (/** @type {
 document.addEventListener('input', (e) => { if (e.target instanceof HTMLTextAreaElement && e.target.matches('#input, .edit textarea')) fitBox(e.target); });
 
 const newChat = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), title: '', created: Date.now(), updated: Date.now(), personaId: state.personaId, messages: [] });
-let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'indigo', gradient: false }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: Lib.DEFAULT_CTX } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
+let state = { profiles: [], activeId: '', templates: [], effort: '', personas: [], personaId: 'default', render: { markdown: true, html: true, css: true, js: true }, theme: { id: 'indigo', gradient: false }, summarizer: { profileId: '', model: '' }, contextLimit: { on: false, tokens: Lib.DEFAULT_CTX }, files: { create: true, ask: true, feedBack: true, keepDays: 0 } }, settings = {}, chat = newChat(), chatList = [], busy = false, toastTimer, errTimer;
 
 // Red pop-up for failures; long server messages stay a little longer so they can be read.
 function showError(text) {
@@ -454,7 +454,8 @@ const LEVELS = [
 ];
 let modelInfo = {};
 // Models that say they lack `tools` get no search. After a restart modelInfo is empty, so fall back to the flag saved with the profile.
-const toolsOk = () => (modelInfo[settings.model] ? modelInfo[settings.model].tools !== false : !settings.noTools);
+// a model that turned tools down once (api.js chatStream's fallback) gets none until Settings → Tools offers them again
+const toolsOk = () => !settings.noToolsFor?.includes(settings.model) && (modelInfo[settings.model] ? modelInfo[settings.model].tools !== false : !settings.noTools);
 // The chat model's context limit: from its model list (or, after a restart, the copy saved with the profile); when the list gives none,
 // the user's number for unlisted models, or 300K.
 const ctxLimit = () => (modelInfo[settings.model] ? modelInfo[settings.model].ctx : settings.ctx) || (state.contextLimit.on ? state.contextLimit.tokens : Lib.DEFAULT_CTX);
@@ -695,7 +696,7 @@ function summarizer() {
 let sumFail = null; // {id, at}: the chat and its length when summarizing last failed
 async function summarize(reply) {
   if (sumFail?.id === chat.id && chat.messages.length < sumFail.at + 4) return; // a failing summarizer is tried again two turns later, not on every send
-  const cut = Lib.summaryDue(chat, ctxLimit(), personaOf(chat), { render: state.render });
+  const cut = Lib.summaryDue(chat, ctxLimit(), personaOf(chat), { render: state.render, files: state.files.feedBack });
   if (cut < 0) return;
   reply.status('Summarizing earlier messages…');
   const fail = (msg) => { sumFail = { id: chat.id, at: chat.messages.length }; reply.status(null); showError("Couldn't summarize the earlier messages, so the whole chat was sent: " + msg); };
@@ -737,12 +738,17 @@ async function generate(base) {
       else { if (pauseAt) { paused += now - pauseAt; pauseAt = 0; } t1 ||= now; sawReasoning ||= !!d.reasoning; }
       reply.delta(d);
     };
-    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render }), onDelta, { search: toolsOk(), mcp: toolsOk() && state.mcp.enabled });
+    const out = await window.api.chat(Lib.requestMessages(chat, personaOf(chat), { render: state.render, files: state.files.feedBack }), onDelta,
+      { search: toolsOk(), mcp: toolsOk() && state.mcp.enabled, files: toolsOk() && state.files.create });
+    if (out.noTools && !settings.noToolsFor?.includes(model)) { // the request with create_file failed and the one without worked: remember that
+      settings.noToolsFor = [...(settings.noToolsFor || []), model];
+      window.api.patchSettings({ noToolsFor: settings.noToolsFor }).then(applyState, () => {});
+    }
     const t2 = performance.now(); if (pauseAt) paused += t2 - pauseAt;
     const stats = Lib.replyStats({ model, t0, t1, t2, paused, usage: out.usage, ctx: out.ctx, sent: out.sent, text: out.content + out.reasoning, sawReasoning, cost: out.cost });
     chat.used = (chat.used || 0) + (stats.total || 0); // a running total: it stays when this reply is later replaced or dropped
     if (out.cost != null) chat.cost = (chat.cost || 0) + out.cost; // the same, in USD, when the provider reports it
-    const fields = { content: out.content, reasoning: out.reasoning, stats, ...(out.files && { attachments: out.files }) }; // all but content are display-only, never sent back
+    const fields = { content: out.content, reasoning: out.reasoning, stats, ...(out.files && { attachments: out.files }) }; // display-only but content, and created files' `source` (Lib.requestMessages)
     const m = base ? Lib.addVersion(base, fields) : { role: 'assistant', ...fields };
     chat.messages.push(m); reply.done(out.content, out.reasoning, m);
     return out;
@@ -1133,7 +1139,7 @@ $('impform').onsubmit = async (e) => {
 };
 function openPrefs(pane) {
   const now = Lib.themeColors(state.theme); $('c1').value = now.a1; $('c2').value = now.a2; $('gradon').checked = state.theme.gradient; // shortcut: custom colors start from the current theme; they aren't remembered while a preset is active
-  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); loadMcpPane(); loadChatsPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
+  renderThemes(); renderProfiles(); syncReplies(); loadSearchPane(); loadFilesPane(); loadMcpPane(); loadChatsPane(); showPane(pane); $('prefs').showModal(); $('tab-' + pane).focus();
 }
 for (const n of PANES) $('tab-' + n).onclick = () => showPane(n);
 $('prefs').querySelector('[role=tablist]').onkeydown = (e) => {
@@ -1189,6 +1195,29 @@ for (const c of /** @type {NodeListOf<HTMLInputElement>} */ (document.querySelec
   try { applyState(await window.api.patchSettings({ render: { [c.dataset.render]: c.checked } })); prefsDirty = true; }
   catch (e) { showError(cleanErr(e)); applyState(state); }
   syncReplies();
+};
+
+// ---- Files the model creates (Settings → Tools): each control saves as it changes ----
+function loadFilesPane() {
+  const f = state.files;
+  $('filecreate').checked = f.create; $('fileask').checked = f.ask; $('filefeed').checked = f.feedBack;
+  $('fileask').disabled = $('filefeed').disabled = !f.create;
+  $('filekeep').value = String(f.keepDays); refreshSel($('filekeep'));
+  $('filenote').hidden = !settings.noToolsFor?.includes(settings.model);
+}
+async function saveFiles(p) {
+  try { applyState(await window.api.patchSettings({ files: p })); }
+  catch (e) { $('fileerr').textContent = cleanErr(e); $('fileerr').hidden = false; }
+  loadFilesPane();
+}
+$('filecreate').onchange = () => saveFiles({ create: $('filecreate').checked });
+$('fileask').onchange = () => saveFiles({ ask: $('fileask').checked });
+$('filefeed').onchange = () => saveFiles({ feedBack: $('filefeed').checked });
+$('filekeep').onchange = () => saveFiles({ keepDays: Number($('filekeep').value) });
+$('filetools').onclick = async () => { // Settings → Tools: offer tools to a model that turned them down once
+  settings.noToolsFor = (settings.noToolsFor || []).filter((m) => m !== settings.model);
+  try { applyState(await window.api.patchSettings({ noToolsFor: settings.noToolsFor })); } catch (e) { showError(cleanErr(e)); }
+  loadFilesPane(); toast('Tools will be offered again');
 };
 
 // ---- Search pane: the key is fetched only when the pane opens, and an untouched field never overwrites the stored one ----
@@ -1305,15 +1334,20 @@ $('riskform').onsubmit = async (e) => {
 };
 
 // Before a tool runs: Deny, Allow once or Always allow. Escape, Back and anything else that closes the dialog mean Deny.
-// A file the model attaches by path or URL (`app`) is asked every time, so it gets no Always allow.
-window.api.onToolApproval?.((/** @type {{server: string, tool: string, args: object, app?: boolean}} */ info) => new Promise((resolve) => {
-  const d = $('tooldlg');
+// A file the model attaches by path or URL (`app`) is asked every time, so it gets no Always allow. A file it creates (`create`)
+// shows its name; its contents can be long, so only the start is shown.
+window.api.onToolApproval?.((/** @type {{server: string, tool: string, args: any, app?: boolean, create?: boolean}} */ info) => new Promise((resolve) => {
+  const d = $('tooldlg'), args = JSON.stringify(info.args, null, 2);
   $('toolalways').hidden = !!info.app;
-  $('toolsub').textContent = `${info.server} wants to run ${info.tool} with:`;
-  $('toolargs').textContent = JSON.stringify(info.args, null, 2);
-  $('toolwarn').hidden = !/order|trade|buy|sell|transfer|withdraw|delete|remove|write|send|pay/i.test(info.tool);
+  $('tooltitle').textContent = info.create ? 'Create this file?' : 'Allow this tool?';
+  $('toolsub').textContent = info.create ? `The model wants to create ${info.args.name} and attach it to its reply:` : `${info.server} wants to run ${info.tool} with:`;
+  $('toolargs').textContent = args.length > 2000 ? args.slice(0, 2000) + '\n…' : args;
+  $('toolwarn').hidden = !!info.create || !/order|trade|buy|sell|transfer|withdraw|delete|remove|write|send|pay/i.test(info.tool);
   d.returnValue = 'deny';
-  d.addEventListener('close', () => resolve(d.returnValue || 'deny'), { once: true });
+  d.addEventListener('close', () => {
+    if (info.create && d.returnValue === 'always') state.files = { ...state.files, ask: false }; // the host saved it; Settings → Tools shows it
+    resolve(d.returnValue || 'deny');
+  }, { once: true });
   d.showModal(); $('tooldeny').focus();
 }));
 

@@ -85,11 +85,11 @@ function reasoningParams(endpoint, effort, /** @type {{format?: string, meta?: b
 
 /** What one chat or summary request sends: the model, the extra params, the search config ({key}) and whether MCP tools are offered. A summary goes to its own profile and model, with no reasoning level and no tools.
  * @param {{model?: string, endpoint?: string, effort?: string, format?: string, meta?: boolean, search?: {key: string}}} s
- * @param {{summary?: {profileId: string, model?: string}, search?: boolean, mcp?: boolean}} [opts]
+ * @param {{summary?: {profileId: string, model?: string}, search?: boolean, mcp?: boolean, files?: boolean}} [opts] `files`: offer create_file.
  */
 function requestArgs(s, opts) {
   const sum = opts?.summary;
-  return { model: sum?.model || s.model, extra: sum ? {} : reasoningParams(s.endpoint, s.effort, s), search: !sum && opts?.search ? s.search : null, mcp: !sum && !!opts?.mcp };
+  return { model: sum?.model || s.model, extra: sum ? {} : reasoningParams(s.endpoint, s.effort, s), search: !sum && opts?.search ? s.search : null, mcp: !sum && !!opts?.mcp, files: !sum && !!opts?.files };
 }
 
 // Local R1-style models put reasoning in content as <think>…</think>. Only a block at the very start counts,
@@ -254,6 +254,10 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
   return cut ? { ...out, ...cut } : out;
 }
 
+// An error that can mean "this model takes no tools": a 4xx other than a bad key, a block, a timeout or a rate limit, or a 500 (llama.cpp
+// answers tools it can't template that way). 502-504 are passing trouble, never a reason to drop tools for good.
+const TOOLS_REFUSED = (e) => { const m = /^HTTP (\d{3}):/.exec(e?.message || ''), s = m ? +m[1] : 0; return (s >= 400 && s < 500 && ![401, 403, 408, 429].includes(s)) || s === 500; };
+
 // Streams a reply. Without tools (`search` ({key}) or `mcp`) this is a single request. With them, the model may call tools over
 // several rounds before answering; text and reasoning from every round are joined. shortcut: the tool exchange stays inside this
 // call and isn't saved with the chat, so later turns see only the final answer, not the raw tool results.
@@ -267,7 +271,9 @@ async function streamOnce(endpoint, key, model, messages, extra, onDelta, fetchF
  * @param {(url: string, opts?: object) => Promise<any>} [fetchFn]
  * @param {AbortSignal} [signal]
  * @param {{key: string}} [search]
- * @param {{defs: object[], has: (name: string) => boolean, label: (name: string) => string, call: (name: string, argsJson: string, signal?: AbortSignal) => Promise<string>, files?: object[]}} [mcp] MCP tools (see mcp.js `gated`); the files it attached come back as `files`
+ * @param {{defs: object[], has: (name: string) => boolean, label: (name: string) => string, call: (name: string, argsJson: string, signal?: AbortSignal) => Promise<string>, files?: object[], onlyCreate?: boolean}} [mcp]
+ *   MCP tools and create_file (see mcp.js `gated`); the files it attached come back as `files`. When create_file is all there is and the first
+ *   request fails, it's sent again without tools, and the reply says `noTools: true` (the model likely has none).
  */
 async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = () => {}, fetchFn = fetch, signal, search, mcp) {
   if (!mcp?.defs.length) mcp = null;
@@ -292,7 +298,12 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     const final = round >= rounds, calls = [];
     // tools stay in the request on the last round (tool_choice none): some backends reject tool messages when no tools are defined
     const out = await once(endpoint, key, model, msgs, { ...extra, tools, tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
-      .catch((e) => { if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) }; throw e; });
+      .catch((e) => {
+        if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) };
+        if (round === 0 && !search && mcp.onlyCreate && !signal?.aborted && TOOLS_REFUSED(e)) return { content: '', reasoning: '', refused: true };
+        throw e;
+      });
+    if (out.refused) { const r = await once(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []); delete r.blocks; return { ...r, noTools: true }; }
     add(out.reasoning, out.content); addUsage(out.usage);
     if (out.cost !== undefined) total.cost = (total.cost || 0) + out.cost; // every round is billed
     if (out.error || out.stopped || final || !calls.length) return end({ ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) });
