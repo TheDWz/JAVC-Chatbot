@@ -2235,12 +2235,12 @@ test('chat store: no sweep while a chat file is left out of the index (it failed
   fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
 });
 
-test('backup: an export holds attached files up to its cap and counts the rest, but not ones already gone', async () => {
+test('backup: an export holds attached files up to its cap and counts the rest', async () => {
   const { dir, store } = tmpChats();
   const a = await store.saveFile(PNG), b = await store.saveFile(Buffer.from('second file').toString('base64'));
   await store.save({ id: 'c1', title: 'A', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a', ref: a }, { name: 'b', ref: b }, { name: 'c', ref: 'a-' + '0'.repeat(64) + '.bin' }] }] });
   const got = await Backup.collect(store, true, PNG.length);
-  assert.deepStrictEqual([Object.keys(got.files), got.filesMissed], [[a], 1]); // b doesn't fit; c is already gone, so the export loses nothing
+  assert.deepStrictEqual([Object.keys(got.files), got.filesMissed], [[a], 2]); // b doesn't fit, c is gone
   fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
 });
 
@@ -2342,11 +2342,11 @@ test('replyTools: create_file without MCP; "always" stops asking and is saved; a
 
 test('chatStream: when create_file is the only tool and the model refuses tools, it answers without them once', async () => {
   const tools = (only) => ({ defs: [Make.CREATE_DEF], has: () => true, label: () => 'Create file', call: async () => '', files: [], onlyCreate: only });
-  const run = async (status, only = true, search) => {
+  const run = async (status, only = true, search, said = 'tools are not supported') => {
     const bodies = [];
     const fetchFn = async (url, opts) => {
       const body = JSON.parse(opts.body); bodies.push(body);
-      if (body.tools) return { ok: false, status, headers: new Headers(), text: async () => 'tools are not supported' };
+      if (body.tools) return { ok: false, status, headers: new Headers(), text: async () => said };
       return sse(frames([{ reasoning_content: 'r' }, { content: 'hello' }]))(url, opts);
     };
     const out = await chatStream('http://x', '', 'm', [{ role: 'user', content: 'hi' }], {}, () => {}, fetchFn, undefined, search, tools(only)).catch((e) => e);
@@ -2356,6 +2356,8 @@ test('chatStream: when create_file is the only tool and the model refuses tools,
   assert.deepStrictEqual(ok.out, { content: 'hello', reasoning: 'r', noTools: true });
   assert.strictEqual(ok.bodies.filter((b) => b.tools).length > 0 && !ok.bodies.at(-1).tools, true);
   assert.strictEqual((await run(500)).out.noTools, true);
+  const passing = await run(500, true, undefined, 'internal error'); // answered without tools, but not remembered: it may work next time
+  assert.deepStrictEqual([passing.out.content, passing.out.noTools], ['hello', undefined]);
   for (const s of [401, 403, 408, 429, 502, 503]) assert.match(String((await run(s)).out.message), new RegExp(`HTTP ${s}`)); // never a reason to drop tools
   assert.match(String((await run(400, false)).out.message), /HTTP 400/); // MCP tools too: not create_file's to drop
   assert.match(String((await run(400, true, { key: 'l' })).out.message), /HTTP 400/); // nor web search's
@@ -2369,16 +2371,19 @@ test('chats: created files are noted and expire; other files and "never" are lef
   const reply = await store.keepFiles({ content: 'x', files: [
     { name: 'a.csv', mime: 'text/csv', data: 'YQ==', size: 1, made: true, source: 'a' }, { name: 'img.png', mime: 'image/png', data: 'aW1n', size: 3 },
   ] });
-  const [made, tool] = reply.files;
-  assert.deepStrictEqual([made.made, made.source, tool.made], [true, 'a', undefined]);
-  await store.save({ id: 'c1', title: 'C', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: reply.files }] });
+  const [made, tool] = reply.files, same = await store.saveFile('YQ==');
+  assert.deepStrictEqual([made.made, made.source, tool.made, same === made.ref], [true, 'a', undefined, false]);
+  await store.save({ id: 'c1', title: 'C', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [...reply.files, { name: 'a.csv', ref: same }] }] });
   assert.ok(fs.existsSync(path.join(dir, '_made.json')));
   assert.deepStrictEqual((await store.list()).map((c) => c.id), ['c1']); // the manifest isn't listed as a chat
   assert.strictEqual(await store.expire(0), 0); assert.strictEqual(await store.expire(7), 0); // made just now
   assert.strictEqual(await store.expire(7, Date.now() + 8 * 86400000), 1);
-  await assert.rejects(store.readFile(made.ref), /no longer saved/);
+  await assert.rejects(store.readFile(made.ref), (/** @type {any} */ e) => e.code === 'EXPIRED' && /deleted/.test(e.message));
   assert.strictEqual(await store.readFile(tool.ref), 'aW1n'); // not created: kept
-  assert.strictEqual(await store.expire(1, Date.now() + 100 * 86400000), 0); // forgotten once deleted
+  assert.strictEqual(await store.readFile(same), 'YQ=='); // the same bytes attached otherwise: a different ref, kept
+  assert.deepStrictEqual([(await Backup.collect(store)).filesMissed], [0]); // an export doesn't warn about an expired file
+  await assert.rejects(store.readFile('a-' + '0'.repeat(64) + '.bin'), (/** @type {any} */ e) => e.code === undefined); // gone for another reason: still an error to count
+  assert.strictEqual(await store.expire(1, Date.now() + 100 * 86400000), 0); // never deleted twice
   // a later launch still sweeps: the manifest doesn't look like an unlisted chat
   const next = makeChats(sealFor(dir).io);
   await next.save({ id: 'c1', title: 'C', updated: 2, messages: [] });
@@ -2410,4 +2415,36 @@ test('settings: files has defaults, keeps valid values and round-trips through p
   assert.strictEqual((await store.get()).files.ask, false);
   v = await store.patch({ noFilesFor: ['m1', 5, 'm2'] });
   assert.deepStrictEqual(v.profiles[0].noFilesFor, ['m1', 'm2']);
+});
+
+test('create_file follow-ups: files survive a failing next round, Stop asks nothing, imports keep created refs, summaries keep the files', async () => {
+  // a round that made a file, then an HTTP error: the reply keeps the file, with the error
+  const files = [], tools = { defs: [Make.CREATE_DEF], has: () => true, label: () => 'Create file', files, onlyCreate: true,
+    call: async () => { files.push({ name: 'a.txt', mime: 'text/plain', data: 'YQ==', size: 1, made: true }); return 'Created "a.txt"'; } };
+  let n = 0;
+  const fetchFn = async (url, opts) => (n++ === 0
+    ? sse(frames([{ tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'create_file', arguments: '{}' } }] }]))(url, opts)
+    : { ok: false, status: 500, headers: new Headers(), text: async () => 'down' });
+  const out = await chatStream('http://x', '', 'm', [{ role: 'user', content: 'hi' }], {}, () => {}, fetchFn, undefined, undefined, tools);
+  assert.deepStrictEqual([out.files.length, out.content], [1, '']); assert.match(out.error, /HTTP 500/);
+  // stopped while the file was being made: no dialog
+  const ctl = new AbortController(), asked = [];
+  const g = Mcp.gated(fakeSet(), { allowed: () => false, approve: async (i) => { asked.push(i); return 'once'; },
+    create: { make: async () => { ctl.abort(); return { name: 'x.txt', mime: 'text/plain', data: 'eA==', size: 1, made: true }; }, allowed: () => false } });
+  await assert.rejects(g.call('create_file', '{}', ctl.signal), /Stopped/); assert.deepStrictEqual(asked, []);
+  // an import brings a created file back under the same ref, kept apart from the same bytes attached otherwise
+  const { store } = tmpChats(), ref = await store.saveFile('YQ==', true);
+  const chat = { id: 'c2', title: 'C', updated: 5, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.txt', ref, made: true }] }] };
+  const next = tmpChats().store;
+  await Backup.mergeInto(next, { chats: [chat], skipped: 0, files: { [ref]: 'YQ==' } });
+  assert.strictEqual(await next.readFile(ref), 'YQ==');
+  // a summary over the reply that made a file keeps the file's last version in the system message
+  const sum = { summary: { text: 'S', upto: 4, at: 4 }, messages: [
+    { role: 'user', content: 'make it' }, { role: 'assistant', content: 'ok', attachments: [{ name: 'a.csv', made: true, source: 'v1' }] },
+    { role: 'user', content: 'change it' }, { role: 'assistant', content: 'ok', attachments: [{ name: 'a.csv', made: true, source: 'v2' }] },
+    { role: 'user', content: 'now' },
+  ] };
+  const on = Lib.requestMessages(sum, null, { files: true })[0].content, off = Lib.requestMessages(sum, null, {})[0].content;
+  assert.match(on, /Summary of the earlier conversation:\nS\n\nFiles you created earlier[^]*\[File "a.csv":\]\nv2$/); assert.doesNotMatch(on, /v1/);
+  assert.doesNotMatch(off, /Files you created/);
 });

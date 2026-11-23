@@ -109,6 +109,8 @@ function rpc(send) {
   };
 }
 
+/** The user's answer to `approve(info)`; a reply already stopped asks nothing and rejects with Stopped. */
+const ask = (approve, info, signal) => (signal?.aborted ? Promise.reject(new Error('Stopped')) : until(approve(info), signal));
 /** `p`, unless `signal` aborts first; then it rejects with Stopped and `p` carries on by itself. */
 const until = (p, signal) => (!signal ? p : new Promise((resolve, reject) => {
   const stop = () => reject(new Error('Stopped'));
@@ -734,7 +736,7 @@ function gated(set, { allowed, approve, readFile, create }) {
   /** Attaches file `f` unless it's too big or already attached; `said(name)` is what the model hears when it is. */
   const add = (f, said) => {
     if (f.size > FILE_MAX) return 'Could not attach it: the file is over 50 MB.';
-    const same = files.find((x) => x.data === f.data);
+    const same = files.find((x) => x.data === f.data && !x.made === !f.made); // a created file is kept apart from the same bytes attached (chats.saveFile)
     if (same) return `It is already attached as "${same.name}".`;
     let name = f.name;
     for (let k = 2; files.some((x) => x.name === name); k++) name = numbered(f.name, k);
@@ -751,7 +753,7 @@ function gated(set, { allowed, approve, readFile, create }) {
       const ref = typeof args.path === 'string' && args.path ? { path: args.path } : typeof args.url === 'string' && args.url ? { url: args.url } : null;
       if (!ref) return 'Error: call attach_file with an "id", a "path" or a "url".';
       // every path and URL is asked, even after "Always allow": one allowed file must not open the rest of the disk to the model
-      if ((await until(approve({ server: 'The model', tool: ATTACH, args: ref, app: true }), signal)) === 'deny') return DECLINED;
+      if ((await ask(approve, { server: 'The model', tool: ATTACH, args: ref, app: true }, signal)) === 'deny') return DECLINED;
       try { f = await (readFile ?? (() => Promise.reject(new Error("files can't be read here"))))(ref, signal); }
       catch (e) { if (signal?.aborted) throw e; return `Could not attach it: ${e.message}`; }
     }
@@ -762,7 +764,7 @@ function gated(set, { allowed, approve, readFile, create }) {
     let f;
     try { f = await create.make(args); } catch (e) { return `Could not create it: ${e.message}`; } // made first, so the user is only asked about a file that works
     f = { ...f, name: cleanName(f.name, 'file') };
-    if (!(await create.allowed()) && (await until(approve({ server: 'The model', tool: Make.CREATE, args: { ...args, name: f.name }, create: true }), signal)) === 'deny') return DECLINED;
+    if (!(await create.allowed()) && (await ask(approve, { server: 'The model', tool: Make.CREATE, args: { ...args, name: f.name }, create: true }, signal)) === 'deny') return DECLINED;
     return add(f, (name) => `Created "${name}" and attached it to your reply, where the user can save it.`);
   }
   return {
@@ -779,7 +781,7 @@ function gated(set, { allowed, approve, readFile, create }) {
       const t = set.info(name);
       if (!t) return `Error: there is no tool called "${name}".`;
       if (!isObj(args)) return 'Error: the arguments must be a JSON object.';
-      if (!allowed(t.server, t.tool) && (await until(approve({ server: t.server, tool: t.tool, args }), signal)) === 'deny') return DECLINED;
+      if (!allowed(t.server, t.tool) && (await ask(approve, { server: t.server, tool: t.tool, args }, signal)) === 'deny') return DECLINED;
       return set.run(name, args, signal, keep);
     },
   };

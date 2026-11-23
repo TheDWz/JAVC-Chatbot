@@ -285,7 +285,8 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
   const add = (r, c) => { total.reasoning += r; total.content += c; };
   const note = (text) => { add(text, ''); onDelta({ reasoning: text, content: '', note: true }); }; // our own text, so stats don't time it as the model's
   const end = (more) => ({ ...total, ...(mcp?.files?.length && { files: mcp.files }), ...more }); // files the model attached (mcp.js attach_file)
-  const stopped = (e) => { if (total.content) return end({ stopped: true }); throw new Error('Stopped', { cause: e }); };
+  const kept = () => total.content || mcp?.files?.length; // something to keep: text, or files already made or attached
+  const stopped = (e) => { if (kept()) return end({ stopped: true }); throw new Error('Stopped', { cause: e }); };
   // every round is billed, so token counts add up; the last round's total is the context size
   const addUsage = (u) => {
     if (!u) return;
@@ -299,11 +300,14 @@ async function chatStream(endpoint, key, model, messages, extra = {}, onDelta = 
     // tools stay in the request on the last round (tool_choice none): some backends reject tool messages when no tools are defined
     const out = await once(endpoint, key, model, msgs, { ...extra, tools, tool_choice: final ? 'none' : 'auto' }, onDelta, fetchFn, signal, calls)
       .catch((e) => {
-        if (total.content) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) };
-        if (round === 0 && !search && mcp.onlyCreate && !signal?.aborted && TOOLS_REFUSED(e)) return { content: '', reasoning: '', refused: true };
+        if (kept()) return { content: '', reasoning: '', ...(signal?.aborted ? { stopped: true } : { error: e.message }) };
+        if (round === 0 && !search && mcp.onlyCreate && !signal?.aborted && TOOLS_REFUSED(e)) return { content: '', reasoning: '', refused: e };
         throw e;
       });
-    if (out.refused) { const r = await once(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []); delete r.blocks; return { ...r, noTools: true }; }
+    if (out.refused) { // remembered (noTools) only when the error is about tools: a passing 500 or some other 400 must not turn files off for good
+      const r = await once(endpoint, key, model, messages, extra, onDelta, fetchFn, signal, []); delete r.blocks;
+      return { ...r, ...(/\btools?\b|function|tool_choice/i.test(out.refused.message) && { noTools: true }) };
+    }
     add(out.reasoning, out.content); addUsage(out.usage);
     if (out.cost !== undefined) total.cost = (total.cost || 0) + out.cost; // every round is billed
     if (out.error || out.stopped || final || !calls.length) return end({ ...(out.error && { error: out.error }), ...(out.stopped && { stopped: true }) });

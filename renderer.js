@@ -1342,7 +1342,7 @@ window.api.onToolApproval?.((/** @type {{server: string, tool: string, args: any
   $('toolalways').hidden = !!info.app;
   $('tooltitle').textContent = info.create ? 'Create this file?' : 'Allow this tool?';
   $('toolsub').textContent = info.create ? `The model wants to create ${info.args.name} and attach it to its reply:` : `${info.server} wants to run ${info.tool} with:`;
-  $('toolargs').textContent = args.length > 2000 ? args.slice(0, 2000) + '\n…' : args;
+  $('toolargs').textContent = info.create && args.length > 2000 ? args.slice(0, 2000) + '\n…' : args; // a tool's arguments are shown whole: a destination may come last
   $('toolwarn').hidden = !!info.create || !/order|trade|buy|sell|transfer|withdraw|delete|remove|write|send|pay/i.test(info.tool);
   d.returnValue = 'deny';
   d.addEventListener('close', () => {
