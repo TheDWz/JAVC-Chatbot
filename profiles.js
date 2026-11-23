@@ -48,6 +48,12 @@ const str = (v) => (typeof v === 'string' ? v : '');
 // Summarizer: {profileId, model}; an empty profileId means the chat model writes the summaries. Returns null when `v` isn't one.
 const cleanSummarizer = (v) => (v && typeof v === 'object' ? { profileId: str(v.profileId), model: str(v.profileId) ? str(v.model) : '' } : null);
 // The context limit used for models whose list gives none: {on, tokens}. Returns null for anything that isn't a whole number of at least 1000 tokens.
+// Files the model makes (create_file): {create, ask, feedBack, keepDays}. Missing or bad fields get their defaults; keepDays 0 keeps them forever.
+const KEEP_DAYS = [0, 1, 7, 30, 90];
+const cleanFiles = (v) => {
+  const o = v && typeof v === 'object' ? v : {}, flag = (k) => (typeof o[k] === 'boolean' ? o[k] : true);
+  return { create: flag('create'), ask: flag('ask'), feedBack: flag('feedBack'), keepDays: KEEP_DAYS.includes(o.keepDays) ? o.keepDays : 0 };
+};
 const cleanContextLimit = (v) => (v && typeof v === 'object' && Number.isInteger(v.tokens) && v.tokens >= 1000 ? { on: v.on === true, tokens: v.tokens } : null);
 
 // Personas: {id, name, user, bot, prompt, summarizer?}. `summarizer` is there only while the persona's own-summary-model switch is on. 'default' always exists and can't be deleted. `render` (which reply formats are shown and hinted) and `theme` have defaults; `rich` is the old single switch.
@@ -69,7 +75,7 @@ function finishState(state, raw) {
   // Aurora was the default before the gradient switch existed; a theme saved without `gradient` is from then, so it moves to the new default once.
   const oldDefault = raw?.theme?.id === 'aurora' && !('gradient' in raw.theme);
   const summarizer = cleanSummarizer(raw?.summarizer) || { profileId: '', model: '' }, contextLimit = cleanContextLimit(raw?.contextLimit) || { on: false, tokens: Lib.DEFAULT_CTX };
-  return { ...state, search, mcp, summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(oldDefault ? null : raw?.theme) || { id: 'indigo', gradient: false } };
+  return { ...state, search, mcp, files: cleanFiles(raw?.files), summarizer, contextLimit, personas, personaId: personas.some((p) => p.id === raw?.personaId) ? raw.personaId : 'default', render, theme: Lib.cleanTheme(oldDefault ? null : raw?.theme) || { id: 'indigo', gradient: false } };
 }
 
 const newId = () => 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -79,7 +85,7 @@ function upsert(state, p) {
   const profiles = state.profiles.map((x) => ({ ...x }));
   let target = p.id && profiles.find((x) => x.id === p.id);
   if (!target) { target = { id: newId(), model: '', format: 'auto', meta: false }; profiles.push(target); }
-  for (const k of ['name', 'endpoint', 'format', 'model', 'meta', 'noTools', 'ctx']) if (p[k] !== undefined) target[k] = p[k];
+  for (const k of ['name', 'endpoint', 'format', 'model', 'meta', 'noTools', 'ctx', 'noFilesFor']) if (p[k] !== undefined) target[k] = p[k];
   if (p.keyEnc !== undefined || p.keyPlain !== undefined) { for (const k of KEY_FIELDS) delete target[k]; Object.assign(target, keyOf(p)); }
   const editing = p.id && state.profiles.some((x) => x.id === p.id) && state.profiles.some((x) => x.id === state.activeId);
   return { ...state, profiles, activeId: editing ? state.activeId : target.id }; // a new profile becomes active; editing another one doesn't switch
@@ -94,12 +100,12 @@ function remove(state, id) {
 function publicView(state) {
   return {
     activeId: state.activeId, effort: state.effort, templates: TEMPLATES, personas: state.personas, personaId: state.personaId, render: state.render, theme: state.theme,
-    summarizer: state.summarizer, contextLimit: state.contextLimit, search: { enabled: state.search.enabled, hasKey: hasKey(state.search) },
+    summarizer: state.summarizer, contextLimit: state.contextLimit, files: state.files, search: { enabled: state.search.enabled, hasKey: hasKey(state.search) },
     mcp: { enabled: state.mcp.enabled, autoApprove: state.mcp.autoApprove, hasConfig: hasKey(state.mcp), servers: state.mcp.names, allow: state.mcp.allow },
-    profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, noTools, ctx, ...rest }) => ({
-      id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, noTools: !!noTools, ctx: ctx || 0, hasKey: hasKey(rest),
+    profiles: state.profiles.map(({ id, name, endpoint, model, format, meta, noTools, ctx, noFilesFor, ...rest }) => ({
+      id, name, endpoint, model: model || '', format: format || 'auto', meta: !!meta, noTools: !!noTools, ctx: ctx || 0, noFilesFor: Array.isArray(noFilesFor) ? noFilesFor : [], hasKey: hasKey(rest),
     })),
   };
 }
 
-module.exports = { TEMPLATES, known, migrate, upsert, remove, publicView, cleanSummarizer, cleanContextLimit };
+module.exports = { TEMPLATES, known, migrate, upsert, remove, publicView, cleanSummarizer, cleanContextLimit, cleanFiles };

@@ -1,6 +1,6 @@
 // The smoke test's walk through the app on a phone-sized screen: create a profile, pick a model, use the back button,
-// stream a reply with a rich block, read a PDF. `page` is a Playwright page; `back` presses the platform's back button.
-import { MODEL, REPLY, RICH_HEIGHT } from './mock-api.mjs';
+// stream a reply with a rich block, read a PDF, and have the model create files. `page` is a Playwright page; `back` presses the platform's back button.
+import { MODEL, REPLY, RICH_HEIGHT, FILE_REPLY } from './mock-api.mjs';
 
 /** Fails the smoke test with `what` unless `ok`. */
 const check = (ok, what) => { if (!ok) throw new Error('Smoke check failed: ' + what); };
@@ -145,4 +145,26 @@ export async function runFlow(page, { endpoint, key, back, log = console.log }) 
   log('Reading a PDF on the device');
   const text = await page.evaluate(async (b64) => window.api.extractPdf(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer), tinyPdf('JAVC PDF OK'));
   check(text.includes('JAVC PDF OK'), `PDF text extracted (got ${JSON.stringify(text.slice(0, 80))})`);
+
+  log('The model creates a PDF and a spreadsheet; each is approved, attached and saved encrypted');
+  for (const [fmt, name, magic] of [['pdf', 'notes.pdf', '%PDF-'], ['xlsx', 'budget.xlsx', 'PK']]) {
+    const replies = await page.$$eval('.row.assistant .rfiles', (r) => r.length);
+    await page.fill('#input', `Make a ${fmt} file`);
+    await page.click('#send');
+    await page.waitForSelector('#tooldlg[open]', { timeout: 30_000 });
+    check((await page.textContent('#tooltitle')) === 'Create this file?', 'the create prompt asks first');
+    await page.click('#tooldlg button[value="once"]');
+    await page.waitForFunction((n) => document.querySelectorAll('.row.assistant .rfiles').length > n, replies, { timeout: 60_000 }); // the first loads make-libs.js
+    check((await page.textContent('.row.assistant:last-of-type .rfiles')).includes(name), `${name} is attached`);
+    check((await page.textContent('.row.assistant:last-of-type .bubble')).includes(FILE_REPLY), 'the model answered after the file was made');
+    const head = await page.evaluate(async (n) => { // saves are async, so poll until the chat with the file is on disk
+      for (let i = 0; i < 50; i++) {
+        const c = await window.api.loadChat((await window.api.listChats())[0].id), a = c.messages.flatMap((m) => m.attachments || []).find((x) => x.name === n);
+        if (a) return { made: a.made, head: atob((await window.api.readAttachment(a.ref)).slice(0, 8)) };
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      return null;
+    }, name);
+    check(head?.made === true && head.head.startsWith(magic), `${name} is saved and is a real ${fmt} (${JSON.stringify(head)})`);
+  }
 }

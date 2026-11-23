@@ -106,6 +106,10 @@ module.exports = ({ io, crypto }) => {
     mcpForReply: serial(async () => { const m = (await read()).mcp; return { servers: await servers(m), allow: m.allow }; }),
     /** Whether every tool call runs without asking; read at each call, so switching it off counts for a reply already running. */
     mcpAutoApprove: serial(async () => (await read()).mcp.autoApprove),
+    /** The create_file settings a reply and the cleanup need: {ask, keepDays}. */
+    filesForReply: serial(async () => { const f = (await read()).files; return { ask: f.ask, keepDays: f.keepDays }; }),
+    /** "Always allow" on a create_file prompt: stop asking (Settings → Tools turns it back on). */
+    allowCreate: serial(async () => { const st = await read(); st.files = { ...st.files, ask: false }; return commit(st); }),
     /**
      * Saves {enabled, autoApprove, config} for MCP. `config` is checked first, so a bad paste throws and saves nothing; '' removes every server.
      * A server whose entry changed, or that is gone, loses its "Always allow" tools and its sign-in; a new or changed server
@@ -158,9 +162,11 @@ module.exports = ({ io, crypto }) => {
       const theme = Lib.cleanTheme(patch.theme); if (theme) st.theme = theme;
       const sum = profiles.cleanSummarizer(patch.summarizer); if (sum) st.summarizer = sum;
       const lim = profiles.cleanContextLimit(patch.contextLimit); if (lim) st.contextLimit = lim;
+      if (patch.files && typeof patch.files === 'object') st.files = profiles.cleanFiles({ ...st.files, ...patch.files });
       const own = {}; for (const k of ['model', 'meta']) if (patch[k] !== undefined) own[k] = patch[k];
       if (typeof patch.noTools === 'boolean') own.noTools = patch.noTools; // whether the profile's current model is known to lack tool support
       if (Number.isInteger(patch.ctx) && patch.ctx >= 0) own.ctx = patch.ctx; // the current model's context limit from its list; 0 = the list gives none
+      if (Array.isArray(patch.noFilesFor)) own.noFilesFor = patch.noFilesFor.filter((m) => typeof m === 'string').slice(-200); // models that turned create_file down (api.js chatStream)
       if (Object.keys(own).length && st.activeId) st = profiles.upsert(st, { id: st.activeId, ...own }); // never create a profile from a patch
       return commit(st);
     }),

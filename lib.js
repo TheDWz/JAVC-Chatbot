@@ -157,12 +157,27 @@
   /**
    * @param {{messages?: {role: string, content: (string|object)}[]}} chat
    * @param {object} [persona]
-   * @param {{render?: object}} [opts]
+   * @param {{render?: object, files?: boolean}} [opts] `files`: a reply's created files (create_file) go back with it, so the model can edit them.
    */
-  function requestMessages(chat, persona, { render } = {}) {
-    const s = summaryOf(chat), msgs = chat.messages.slice(s ? s.upto : 0).map(({ role, content }) => ({ role, content }));
-    const sys = [systemPrompt(persona), render && renderHint(render), s && 'Summary of the earlier conversation:\n' + s.text].filter(Boolean).join('\n\n');
+  function requestMessages(chat, persona, { render, files } = {}) {
+    const s = summaryOf(chat), msgs = chat.messages.slice(s ? s.upto : 0).map((m) => sent(m, files));
+    const sys = [systemPrompt(persona), render && renderHint(render), s && 'Summary of the earlier conversation:\n' + s.text, files && s && earlierFiles(chat.messages.slice(0, s.upto))].filter(Boolean).join('\n\n');
     return sys ? [{ role: 'system', content: sys }, ...msgs] : msgs;
+  }
+
+  /** The files the model created for reply `m` that carry what it put in them. */
+  const madeIn = (m) => (m.role === 'assistant' && Array.isArray(m.attachments) ? m.attachments.filter((a) => a?.made && typeof a.source === 'string') : []);
+  /** The files created in summarized messages `ms`, the last of each name, so the model can still edit them; '' when there are none. */
+  function earlierFiles(ms) {
+    const last = new Map();
+    for (const m of ms) for (const a of madeIn(m)) last.set(a.name, a.source);
+    return last.size ? ['Files you created earlier in this chat (the summary covers their replies), as you last wrote them:', ...[...last].map(([n, src]) => `[File "${n}":]\n${src}`)].join('\n\n') : '';
+  }
+  /** Message `m` as it is sent: role and content, plus what the model put in the files it created when `files` is on. */
+  function sent(m, files) {
+    const made = files && typeof m.content === 'string' ? madeIn(m) : [];
+    if (!made.length) return { role: m.role, content: m.content };
+    return { role: m.role, content: [m.content, ...made.map((a) => `[You created the file "${a.name}" for this reply. What you put in it:]\n${a.source}`)].filter(Boolean).join('\n\n') };
   }
 
   /**
@@ -174,7 +189,7 @@
     const s = summaryOf(chat), ms = chat.messages, start = s ? Math.max(s.upto, s.at) : 0;
     const i = ms.findLastIndex((m, k) => k >= start && m.role === 'assistant' && m.stats?.prompt);
     if (i < 0) return requestMessages(chat, persona, opts).reduce((n, m) => n + tokensOf(m), 0);
-    return ms.slice(i).reduce((n, m) => n + tokensOf(m), ms[i].stats.prompt);
+    return ms.slice(i).reduce((n, m) => n + tokensOf(sent(m, opts?.files)), ms[i].stats.prompt);
   }
   /** Where a new summary should end: a user message that leaves the last KEEP messages as they are and adds something new. -1 when there is none. */
   function summaryCut(chat) {

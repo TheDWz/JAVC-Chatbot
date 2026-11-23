@@ -1499,9 +1499,11 @@ test('store: summary model, context limit and a persona\'s own summary model are
 // ---- requestArgs ----
 test('requestArgs: a summary takes its own model, no reasoning and no search; a chat takes the settings', () => {
   const s = { model: 'gpt', endpoint: 'https://openrouter.ai/api/v1', effort: 'high', search: { key: 'k' } };
-  assert.deepStrictEqual(requestArgs(s, { summary: { profileId: 'p', model: 'cheap' }, search: true, mcp: true }), { model: 'cheap', extra: {}, search: null, mcp: false });
+  assert.deepStrictEqual(requestArgs(s, { summary: { profileId: 'p', model: 'cheap' }, search: true, mcp: true }), { model: 'cheap', extra: {}, search: null, mcp: false, files: false });
   assert.strictEqual(requestArgs(s, { summary: { profileId: 'p', model: '' } }).model, 'gpt');
-  assert.deepStrictEqual(requestArgs(s, { search: true, mcp: true }), { model: 'gpt', extra: { reasoning: { effort: 'high' } }, search: { key: 'k' }, mcp: true });
+  assert.deepStrictEqual(requestArgs(s, { search: true, mcp: true }), { model: 'gpt', extra: { reasoning: { effort: 'high' } }, search: { key: 'k' }, mcp: true, files: false });
+  assert.strictEqual(requestArgs(s, { files: true }).files, true);
+  assert.strictEqual(requestArgs(s, { summary: { profileId: 'p' }, files: true }).files, false);
   assert.strictEqual(requestArgs(s, {}).search, null);
 });
 
@@ -2240,4 +2242,209 @@ test('backup: an export holds attached files up to its cap and counts the rest',
   const got = await Backup.collect(store, true, PNG.length);
   assert.deepStrictEqual([Object.keys(got.files), got.filesMissed], [[a], 2]); // b doesn't fit, c is gone
   fs.rmSync(dir, { recursive: true }); fs.rmSync(dir + '-set', { recursive: true, force: true });
+});
+
+// ---- create_file (make.js): files the model makes, the approval in front of them, the fallback, and their cleanup ----
+const Make = require('./make');
+const JSZip = require('jszip');
+const makeLoad = async () => {
+  const pdfmake = require('pdfmake'), fonts = require('pdfmake/fonts/Roboto.js'), dir = path.dirname(fonts.Roboto.normal);
+  pdfmake.setFonts(fonts); pdfmake.setUrlAccessPolicy(() => false); pdfmake.setLocalAccessPolicy((p) => path.resolve(p).startsWith(dir + path.sep));
+  return { pdfmake, PptxGenJS: require('pptxgenjs'), JSZip, marked: require('marked').marked };
+};
+const bytesOf = (f) => Buffer.from(f.data, 'base64');
+
+test('makeFile: xlsx has its cells, numbers, booleans, a formula and safe sheet names', async () => {
+  const f = await Make.makeFile({ name: 'Budget.xlsx', format: 'xlsx', sheets: [
+    { name: 'Q1/Q2', rows: [['Item', 'Cost', 'Paid'], ['Rent & <more>', 1200, true], ['Total', '=SUM(B2:B2)', null]] }, { name: 'Q1/Q2', rows: [['x']] },
+  ] }, makeLoad);
+  assert.strictEqual(f.name, 'Budget.xlsx'); assert.strictEqual(f.mime, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  assert.strictEqual(f.made, true); assert.strictEqual(f.size, bytesOf(f).length);
+  const zip = await JSZip.loadAsync(bytesOf(f)), sheet = await zip.file('xl/worksheets/sheet1.xml').async('string'), book = await zip.file('xl/workbook.xml').async('string');
+  assert.match(sheet, /<c r="A2" t="inlineStr"><is><t xml:space="preserve">Rent &amp; &lt;more&gt;<\/t><\/is><\/c>/);
+  assert.match(sheet, /<c r="B2"><v>1200<\/v><\/c><c r="C2" t="b"><v>1<\/v><\/c>/);
+  assert.match(sheet, /<c r="B3"><f>SUM\(B2:B2\)<\/f><\/c>/);
+  assert.match(sheet, /<c r="A1" t="inlineStr" s="1">/); // the header is bold
+  assert.match(book, /<sheet name="Q1 Q2" sheetId="1".*<sheet name="Q1 Q2 2" sheetId="2"/);
+  assert.match(f.source, /^Sheet "Q1\/Q2":\nItem,Cost,Paid\r\nRent & <more>,1200,true\r\n/);
+});
+
+test('makeFile: pdf from Markdown, pptx slides and notes, csv, md and txt', async () => {
+  const pdf = await Make.makeFile({ name: 'r', format: 'pdf', content: '# Title\n\n- a\n- b\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```' }, makeLoad);
+  assert.strictEqual(bytesOf(pdf).subarray(0, 5).toString(), '%PDF-'); assert.strictEqual(pdf.name, 'r.pdf'); assert.match(pdf.source, /^# Title/);
+  const deck = await Make.makeFile({ name: 'deck', format: 'ppt', title: 'Plan', slides: [{ title: 'One', bullets: ['first', 'second'], notes: 'say hi' }] }, makeLoad);
+  assert.strictEqual(deck.name, 'deck.pptx');
+  const zip = await JSZip.loadAsync(bytesOf(deck)), slides = Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n));
+  assert.strictEqual(slides.length, 2); // the title slide and one more
+  assert.match(await zip.file('ppt/slides/slide2.xml').async('string'), /One[\s\S]*first[\s\S]*second/);
+  assert.match(deck.source, /# Plan\n\n## Slide 1: One\n- first\n- second\nNotes: say hi/);
+  const csv = await Make.makeFile({ name: 'd', format: 'csv', sheets: [{ rows: [['a', 'b, c'], ['say "hi"', 2, null]] }] }, makeLoad);
+  assert.strictEqual(bytesOf(csv).toString(), '﻿a,"b, c"\r\n"say ""hi""",2,\r\n');
+  assert.strictEqual(bytesOf(await Make.makeFile({ name: 'd', format: 'csv', content: 'x,y\n' }, makeLoad)).toString(), '﻿x,y\n');
+  const md = await Make.makeFile({ name: 'notes.md', format: 'md', content: '# hé' }, makeLoad);
+  assert.deepStrictEqual([md.name, md.mime, bytesOf(md).toString(), md.source], ['notes.md', 'text/markdown', '# hé', '# hé']);
+  const long = await Make.makeFile({ name: 't', format: 'txt', content: 'x'.repeat(Make.SOURCE_MAX + 10) }, makeLoad);
+  assert.strictEqual(long.size, Make.SOURCE_MAX + 10); assert.ok(long.source.length < Make.SOURCE_MAX + 100 && long.source.endsWith('the file has it all]'));
+});
+
+test('makeFile: bad arguments are refused with a message for the model', async () => {
+  const no = (args, re) => assert.rejects(Make.makeFile(args, makeLoad), re);
+  await no({ name: 'x', format: 'docx', content: 'a' }, /"format" must be one of/);
+  await no({ name: 'x', format: 'txt' }, /"content"/);
+  await no({ name: 'x', format: 'txt', content: '   ' }, /"content"/);
+  await no({ name: 5, format: 'txt', content: 'a' }, /"name" must be a string/);
+  await no({ name: 'x', format: 'xlsx', sheets: [] }, /Give "sheets"/);
+  await no({ name: 'x', format: 'xlsx', sheets: [{ rows: [['a', { b: 1 }]] }] }, /every row must be an array/);
+  await no({ name: 'x', format: 'xlsx', sheets: [{ rows: [[NaN]] }] }, /every row must be an array/);
+  await no({ name: 'x', format: 'pptx', slides: [] }, /Give "slides"/);
+  await no({ name: 'x', format: 'pptx', slides: [{ bullets: 'a' }] }, /"bullets" must be an array/);
+});
+
+test('gated create_file: made, then asked unless allowed; shares the limits with attach_file; works with no MCP tools', async () => {
+  const asked = [], made = [];
+  let allowed = false, answer = 'once';
+  const create = { make: async (a) => { made.push(a); if (a.bad) throw new Error('nope'); return { name: a.name + '.txt', mime: 'text/plain', data: Buffer.from(a.text).toString('base64'), size: a.text.length, made: true, source: a.text }; }, allowed: () => allowed };
+  const g = Mcp.gated({ defs: [], has: () => false, label: () => '', info: () => undefined, run: async () => '', failed: [] }, { allowed: () => false, approve: async (i) => { asked.push(i); return answer; }, create });
+  assert.deepStrictEqual(g.defs.map((d) => d.function.name), ['create_file']); assert.strictEqual(g.onlyCreate, true); assert.strictEqual(g.label('create_file'), 'Create file');
+  assert.match(await g.call('create_file', '{"name":"a b","text":"hi"}'), /^Created "a_b.txt"/);
+  assert.deepStrictEqual(asked.map((i) => [i.tool, i.create, i.args.name]), [['create_file', true, 'a_b.txt']]);
+  assert.match(await g.call('create_file', '{"name":"c","text":"hi"}'), /already attached as "a_b.txt"/);
+  assert.match(await g.call('create_file', '{"name":"c","bad":true,"text":"x"}'), /^Could not create it: nope/);
+  answer = 'deny'; assert.strictEqual(await g.call('create_file', '{"name":"d","text":"no"}'), Mcp.DECLINED);
+  allowed = true; asked.length = 0; assert.match(await g.call('create_file', '{"name":"d","text":"yes"}'), /^Created "d.txt"/); assert.deepStrictEqual(asked, []);
+  assert.deepStrictEqual(g.files.map((f) => [f.name, f.made, f.source]), [['a_b.txt', true, 'hi'], ['d.txt', true, 'yes']]);
+  assert.strictEqual(await g.call('create_file', '[1]'), 'Error: the arguments must be a JSON object.');
+  for (let i = 0; i < 18; i++) await g.call('create_file', JSON.stringify({ name: 'f' + i, text: 't' + i }));
+  made.length = 0; assert.match(await g.call('create_file', '{"name":"z","text":"z"}'), /at most 20 files/); assert.deepStrictEqual(made, []); // refused before making
+  const big = Mcp.gated(fakeSet(), { allowed: () => true, approve: async () => 'once', create: { make: async () => ({ name: 'b.txt', mime: 'text/plain', data: 'eA==', size: Mcp.FILE_MAX + 1 }), allowed: () => true } });
+  assert.strictEqual(big.onlyCreate, false); assert.ok(big.has('create_file') && big.has('attach_file'));
+  assert.match(await big.call('create_file', '{}'), /over 50 MB/);
+});
+
+test('replyTools: create_file without MCP; "always" stops asking and is saved; auto-approve covers it', async () => {
+  const asked = [];
+  let allowCalls = 0, auto = false, mcpRead = 0;
+  const store = { mcpForReply: async () => { mcpRead++; return { servers: {}, allow: {} }; }, mcpAutoApprove: async () => auto, allowMcpTool: async () => {},
+    filesForReply: async () => ({ ask: true, keepDays: 0 }), allowCreate: async () => { allowCalls++; } };
+  const make = async (a) => ({ name: a.name, mime: 'text/plain', data: Buffer.from(a.name).toString('base64'), size: a.name.length, made: true });
+  const hub = { configure() { throw new Error('the hub is not used with MCP off'); }, tools: async () => fakeSet() };
+  const tools = await Mcp.replyTools(/** @type {any} */ (hub), store, { approve: async (i) => { asked.push(i.tool); return 'always'; }, onDelta: () => {}, mcp: false, make });
+  assert.strictEqual(mcpRead, 0); assert.deepStrictEqual(tools.defs.map((d) => d.function.name), ['create_file']);
+  await tools.call('create_file', '{"name":"a.txt"}'); await tools.call('create_file', '{"name":"b.txt"}');
+  assert.deepStrictEqual(asked, ['create_file']); assert.strictEqual(allowCalls, 1); assert.strictEqual(tools.files.length, 2);
+  auto = true;
+  const again = await Mcp.replyTools(/** @type {any} */ (hub), store, { approve: async (i) => { asked.push(i.tool); return 'deny'; }, onDelta: () => {}, mcp: false, make });
+  assert.match(await again.call('create_file', '{"name":"c.txt"}'), /^Created/); assert.strictEqual(asked.length, 1);
+  const locked = { ...store, mcpForReply: async () => { throw new Error('locked'); } }, notes = [];
+  const kept = await Mcp.replyTools(/** @type {any} */ (hub), locked, { approve: async () => 'once', onDelta: (/** @type {any} */ d) => notes.push(d.reasoning), make });
+  assert.deepStrictEqual(kept.defs.map((d) => d.function.name), ['create_file']); assert.match(notes[0], /MCP tools are off/); // MCP can't load, files still work
+});
+
+test('chatStream: when create_file is the only tool and the model refuses tools, it answers without them once', async () => {
+  const tools = (only) => ({ defs: [Make.CREATE_DEF], has: () => true, label: () => 'Create file', call: async () => '', files: [], onlyCreate: only });
+  const run = async (status, only = true, search, said = 'tools are not supported') => {
+    const bodies = [];
+    const fetchFn = async (url, opts) => {
+      const body = JSON.parse(opts.body); bodies.push(body);
+      if (body.tools) return { ok: false, status, headers: new Headers(), text: async () => said };
+      return sse(frames([{ reasoning_content: 'r' }, { content: 'hello' }]))(url, opts);
+    };
+    const out = await chatStream('http://x', '', 'm', [{ role: 'user', content: 'hi' }], {}, () => {}, fetchFn, undefined, search, tools(only)).catch((e) => e);
+    return { out, bodies };
+  };
+  const ok = await run(400);
+  assert.deepStrictEqual(ok.out, { content: 'hello', reasoning: 'r', noTools: true });
+  assert.strictEqual(ok.bodies.filter((b) => b.tools).length > 0 && !ok.bodies.at(-1).tools, true);
+  assert.strictEqual((await run(500)).out.noTools, true);
+  const passing = await run(500, true, undefined, 'internal error'); // answered without tools, but not remembered: it may work next time
+  assert.deepStrictEqual([passing.out.content, passing.out.noTools], ['hello', undefined]);
+  for (const s of [401, 403, 408, 429, 502, 503]) assert.match(String((await run(s)).out.message), new RegExp(`HTTP ${s}`)); // never a reason to drop tools
+  assert.match(String((await run(400, false)).out.message), /HTTP 400/); // MCP tools too: not create_file's to drop
+  assert.match(String((await run(400, true, { key: 'l' })).out.message), /HTTP 400/); // nor web search's
+  // a model that takes tools but doesn't call one streams as it would without them
+  const plain = await chatStream('http://x', '', 'm', [], {}, () => {}, sse(frames([{ reasoning_content: 'r' }, { content: 'hi' }])), undefined, undefined, tools(true));
+  assert.deepStrictEqual(plain, { content: 'hi', reasoning: 'r' });
+});
+
+test('chats: created files are noted and expire; other files and "never" are left alone; _made.json is not a chat', async () => {
+  const { dir, store } = tmpChats();
+  const reply = await store.keepFiles({ content: 'x', files: [
+    { name: 'a.csv', mime: 'text/csv', data: 'YQ==', size: 1, made: true, source: 'a' }, { name: 'img.png', mime: 'image/png', data: 'aW1n', size: 3 },
+  ] });
+  const [made, tool] = reply.files, same = await store.saveFile('YQ==');
+  assert.deepStrictEqual([made.made, made.source, tool.made, same === made.ref], [true, 'a', undefined, false]);
+  await store.save({ id: 'c1', title: 'C', updated: 1, messages: [{ role: 'assistant', content: 'x', attachments: [...reply.files, { name: 'a.csv', ref: same }] }] });
+  assert.ok(fs.existsSync(path.join(dir, '_made.json')));
+  assert.deepStrictEqual((await store.list()).map((c) => c.id), ['c1']); // the manifest isn't listed as a chat
+  assert.strictEqual(await store.expire(0), 0); assert.strictEqual(await store.expire(7), 0); // made just now
+  assert.strictEqual(await store.expire(7, Date.now() + 8 * 86400000), 1);
+  await assert.rejects(store.readFile(made.ref), (/** @type {any} */ e) => e.code === 'EXPIRED' && /deleted/.test(e.message));
+  assert.strictEqual(await store.readFile(tool.ref), 'aW1n'); // not created: kept
+  assert.strictEqual(await store.readFile(same), 'YQ=='); // the same bytes attached otherwise: a different ref, kept
+  assert.deepStrictEqual([(await Backup.collect(store)).filesMissed], [0]); // an export doesn't warn about an expired file
+  await assert.rejects(store.readFile('a-' + '0'.repeat(64) + '.bin'), (/** @type {any} */ e) => e.code === undefined); // gone for another reason: still an error to count
+  assert.strictEqual(await store.expire(1, Date.now() + 100 * 86400000), 0); // never deleted twice
+  // a later launch still sweeps: the manifest doesn't look like an unlisted chat
+  const next = makeChats(sealFor(dir).io);
+  await next.save({ id: 'c1', title: 'C', updated: 2, messages: [] });
+  await makeChats(sealFor(dir).io).list();
+  await assert.rejects(next.readFile(tool.ref), /no longer saved/);
+});
+
+test('requestMessages: created files go back with their reply when asked, and nothing else changes', () => {
+  const chat = { messages: [
+    { role: 'user', content: [{ type: 'text', text: 'see' }, { type: 'image_url', image_url: { url: 'data:x' } }] },
+    { role: 'assistant', content: 'Here it is.', attachments: [{ name: 'a.csv', made: true, source: 'x,y' }, { name: 'p.png', ref: 'r' }] },
+  ] };
+  const on = Lib.requestMessages(chat, null, { files: true }), off = Lib.requestMessages(chat, null, {});
+  assert.deepStrictEqual(on[0], off[0]); // an image message stays as it is
+  assert.strictEqual(on[1].content, 'Here it is.\n\n[You created the file "a.csv" for this reply. What you put in it:]\nx,y');
+  assert.deepStrictEqual(off[1], { role: 'assistant', content: 'Here it is.' });
+  assert.ok(Lib.contextTokens(chat, null, { files: true }) > Lib.contextTokens(chat, null, {}));
+});
+
+test('settings: files has defaults, keeps valid values and round-trips through patch; noFilesFor is per profile', async () => {
+  assert.deepStrictEqual(profiles.cleanFiles(undefined), { create: true, ask: true, feedBack: true, keepDays: 0 });
+  assert.deepStrictEqual(profiles.cleanFiles({ create: false, ask: 'no', keepDays: 3 }), { create: false, ask: true, feedBack: true, keepDays: 0 });
+  const { store } = tmpStore();
+  await store.saveProfile({ name: 'P', endpoint: 'http://x/v1', key: 'k' });
+  let v = await store.patch({ files: { keepDays: 30, feedBack: false } });
+  assert.deepStrictEqual(v.files, { create: true, ask: true, feedBack: false, keepDays: 30 });
+  assert.deepStrictEqual(await store.filesForReply(), { ask: true, keepDays: 30 });
+  await store.allowCreate();
+  assert.strictEqual((await store.get()).files.ask, false);
+  v = await store.patch({ noFilesFor: ['m1', 5, 'm2'] });
+  assert.deepStrictEqual(v.profiles[0].noFilesFor, ['m1', 'm2']);
+});
+
+test('create_file follow-ups: files survive a failing next round, Stop asks nothing, imports keep created refs, summaries keep the files', async () => {
+  // a round that made a file, then an HTTP error: the reply keeps the file, with the error
+  const files = [], tools = { defs: [Make.CREATE_DEF], has: () => true, label: () => 'Create file', files, onlyCreate: true,
+    call: async () => { files.push({ name: 'a.txt', mime: 'text/plain', data: 'YQ==', size: 1, made: true }); return 'Created "a.txt"'; } };
+  let n = 0;
+  const fetchFn = async (url, opts) => (n++ === 0
+    ? sse(frames([{ tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'create_file', arguments: '{}' } }] }]))(url, opts)
+    : { ok: false, status: 500, headers: new Headers(), text: async () => 'down' });
+  const out = await chatStream('http://x', '', 'm', [{ role: 'user', content: 'hi' }], {}, () => {}, fetchFn, undefined, undefined, tools);
+  assert.deepStrictEqual([out.files.length, out.content], [1, '']); assert.match(out.error, /HTTP 500/);
+  // stopped while the file was being made: no dialog
+  const ctl = new AbortController(), asked = [];
+  const g = Mcp.gated(fakeSet(), { allowed: () => false, approve: async (i) => { asked.push(i); return 'once'; },
+    create: { make: async () => { ctl.abort(); return { name: 'x.txt', mime: 'text/plain', data: 'eA==', size: 1, made: true }; }, allowed: () => false } });
+  await assert.rejects(g.call('create_file', '{}', ctl.signal), /Stopped/); assert.deepStrictEqual(asked, []);
+  // an import brings a created file back under the same ref, kept apart from the same bytes attached otherwise
+  const { store } = tmpChats(), ref = await store.saveFile('YQ==', true);
+  const chat = { id: 'c2', title: 'C', updated: 5, messages: [{ role: 'assistant', content: 'x', attachments: [{ name: 'a.txt', ref, made: true }] }] };
+  const next = tmpChats().store;
+  await Backup.mergeInto(next, { chats: [chat], skipped: 0, files: { [ref]: 'YQ==' } });
+  assert.strictEqual(await next.readFile(ref), 'YQ==');
+  // a summary over the reply that made a file keeps the file's last version in the system message
+  const sum = { summary: { text: 'S', upto: 4, at: 4 }, messages: [
+    { role: 'user', content: 'make it' }, { role: 'assistant', content: 'ok', attachments: [{ name: 'a.csv', made: true, source: 'v1' }] },
+    { role: 'user', content: 'change it' }, { role: 'assistant', content: 'ok', attachments: [{ name: 'a.csv', made: true, source: 'v2' }] },
+    { role: 'user', content: 'now' },
+  ] };
+  const on = Lib.requestMessages(sum, null, { files: true })[0].content, off = Lib.requestMessages(sum, null, {})[0].content;
+  assert.match(on, /Summary of the earlier conversation:\nS\n\nFiles you created earlier[^]*\[File "a.csv":\]\nv2$/); assert.doesNotMatch(on, /v1/);
+  assert.doesNotMatch(off, /Files you created/);
 });

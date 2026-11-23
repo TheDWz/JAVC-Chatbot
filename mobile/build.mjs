@@ -22,6 +22,11 @@ const bundle = (entry, file) => build({
 });
 await bundle('main.js', 'mobile.js');
 if (selftest) await bundle('smoke/ios-selftest.mjs', 'selftest.js');
+// create_file's libraries (about 2.5 MB), loaded only with the first file the model makes
+await build({
+  entryPoints: [path.join(root, 'mobile', 'make-libs.mjs')], outfile: path.join(out, 'vendor', 'make-libs.js'),
+  bundle: true, format: 'esm', platform: 'browser', target: ['chrome123', 'safari17.5'], minify: true, legalComments: 'eof', logLevel: 'warning',
+});
 
 /** Copies a file from the repository into www/. */
 const copy = (from, to = from) => fs.copyFileSync(path.join(root, from), path.join(out, to));

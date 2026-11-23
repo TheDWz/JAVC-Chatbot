@@ -1,7 +1,18 @@
 // A tiny OpenAI-compatible server for the smoke test: one model, and a streamed reply with reasoning, Markdown and a rich HTML block.
+// "Make a <format> file" gets a create_file call instead, and the round with its result gets FILE_REPLY.
 export const MODEL = 'mock-model';
 export const REPLY = 'Hello from the mock API!';
 export const RICH_HEIGHT = 160;
+export const FILE_REPLY = 'Your file is attached.';
+/** What the model puts in the file it's asked for, by format. */
+export const FILE_ARGS = {
+  pdf: { name: 'notes', format: 'pdf', content: '# Notes\n\n- one\n- two' },
+  xlsx: { name: 'budget', format: 'xlsx', sheets: [{ name: 'Q1', rows: [['Item', 'Cost'], ['Rent', 1200], ['Total', '=SUM(B2:B2)']] }] },
+  pptx: { name: 'deck', format: 'pptx', title: 'Plan', slides: [{ title: 'One', bullets: ['a', 'b'] }] },
+  csv: { name: 'data', format: 'csv', sheets: [{ rows: [['a', 'b'], [1, 2]] }] },
+  md: { name: 'readme', format: 'md', content: '# Hi' },
+  txt: { name: 'note', format: 'txt', content: 'plain' },
+};
 
 const frame = (delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -21,6 +32,13 @@ export async function handleApi(req, res, requests) {
     res.end(JSON.stringify({ data: [{ id: MODEL }] }));
   } else if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+    const msgs = JSON.parse(body).messages || [], last = msgs.at(-1), text = (m) => (typeof m?.content === 'string' ? m.content : (m?.content || []).map((p) => p.text || '').join(''));
+    const want = /Make an? (\w+) file/.exec(text(last))?.[1];
+    if (last?.role === 'tool' || (want && FILE_ARGS[want])) { // a create_file round: call it, then answer once its result is back
+      res.write(frame(last?.role === 'tool' ? { content: FILE_REPLY } : { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'create_file', arguments: JSON.stringify(FILE_ARGS[want]) } }] }));
+      res.end('data: [DONE]\n\n');
+      return true;
+    }
     const parts = [
       { reasoning_content: 'Thinking about ' }, { reasoning_content: 'the answer…' },
       { content: `${REPLY} Here is **bold** text, ` }, { content: 'streamed in pieces.\n\n' },

@@ -14,7 +14,7 @@ const newer = () => new Error('This export is from a newer version of the app. U
 /**
  * Every chat in full, oldest list entry last; a chat that can't be read (another key, damage) is left out and counted.
  * `files` (ref -> base64) holds the files the model attached to their replies (read only `withFiles`); one that can't be read,
- * or doesn't fit in `max` characters, is left out and counted in `filesMissed`.
+ * or doesn't fit in `max` characters, is left out and counted in `filesMissed`. One the "Delete created files after" setting deleted isn't counted.
  */
 async function collect(chats, withFiles = true, max = EXPORT_FILES_MAX) {
   const out = [], files = {}; let missed = 0, filesMissed = 0, size = 0;
@@ -23,7 +23,7 @@ async function collect(chats, withFiles = true, max = EXPORT_FILES_MAX) {
     if (withFiles) {
       for (const ref of Array.isArray(refs) ? refs : []) {
         if (ref in files) continue;
-        let data = null; try { data = await chats.readFile(ref); } catch {}
+        let data = null; try { data = await chats.readFile(ref); } catch (e) { if (e?.code === 'EXPIRED') continue; }
         if (data === null || size + data.length > max) { filesMissed++; continue; }
         files[ref] = data; size += data.length;
       }
@@ -123,7 +123,7 @@ async function readExport(t, passphrase = '') {
 /**
  * Saves imported chats into the store: new ids are added, and a chat already here is replaced only by a newer copy.
  * The attached files of each chat that is saved go first; the store names a file by its contents, so the chats' references still match.
- * @param {{list(): Promise<{id: string, updated: number}[]>, save(chat: object): Promise<void>, saveFile(data: string): Promise<string>}} store The chat store.
+ * @param {{list(): Promise<{id: string, updated: number}[]>, save(chat: object): Promise<void>, saveFile(data: string, made?: boolean): Promise<string>}} store The chat store.
  * @param {{chats: any[], skipped: number, files?: Record<string, string>}} got What readExport returned.
  * @returns {Promise<{added: number, updated: number, kept: number, skipped: number, ids: string[]}>} `ids` are the chats replaced.
  */
@@ -135,7 +135,8 @@ async function mergeInto(store, { chats, skipped, files = {} }) {
     if (!have.has(c.id)) added++;
     else if (c.updated > have.get(c.id)) ids.push(c.id);
     else { kept++; continue; }
-    for (const ref of filesOf(c)) if (Object.hasOwn(files, ref)) await store.saveFile(files[ref]);
+    const made = new Set(c.messages.flatMap((m) => [m, ...(Array.isArray(m?.versions) ? m.versions : [])]).flatMap((m) => m?.attachments || []).filter((a) => a?.made).map((a) => a.ref));
+    for (const ref of filesOf(c)) if (Object.hasOwn(files, ref)) await store.saveFile(files[ref], made.has(ref)); // the same ref back: created files hash apart
     await store.save(c);
   }
   return { added, updated: ids.length, kept, skipped, ids };
